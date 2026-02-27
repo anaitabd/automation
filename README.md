@@ -76,7 +76,6 @@ cached in-memory.
 
 | Secret Name | Key(s) in JSON | Where to get it |
 |-------------|----------------|-----------------|
-| `nexus/anthropic_api_key` | `api_key` | [Anthropic Console](https://console.anthropic.com) |
 | `nexus/openai_api_key` | `api_key` | [OpenAI Platform](https://platform.openai.com) |
 | `nexus/perplexity_api_key` | `api_key` | [Perplexity Labs](https://www.perplexity.ai/settings/api) |
 | `nexus/elevenlabs_api_key` | `api_key` | [ElevenLabs](https://elevenlabs.io) |
@@ -116,7 +115,7 @@ pip install sentence-transformers torch torchvision --index-url https://download
 
 # api-layer
 mkdir -p layers/api/python
-pip install requests anthropic openai boto3 python-dotenv psycopg2-binary -t layers/api/python
+pip install requests openai boto3 python-dotenv psycopg2-binary -t layers/api/python
 ```
 
 ### 2. Upload channel profiles to S3
