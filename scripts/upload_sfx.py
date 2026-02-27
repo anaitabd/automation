@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""
-scripts/upload_sfx.py — Download free SFX from Freesound API and upload to S3.
-
-Usage:
-    # Set your Freesound API key first:
-    export FREESOUND_API_KEY=your_key_here
-
-    python scripts/upload_sfx.py [--bucket nexus-assets] [--dry-run]
-
-Required SFX files (saved to sfx/ prefix in the assets bucket):
-    sfx/whoosh_soft.wav         — for lower_third events
-    sfx/counter_tick.wav        — for stat_counter events
-    sfx/typewriter_impact.wav   — for documentary stat_counter
-    sfx/paper_rustle.wav        — for documentary quote_card
-
-The script queries Freesound for CC0-licensed audio, downloads the preview,
-and uploads it with the canonical filename the pipeline expects.
-Requires: pip install requests boto3
-"""
 
 import argparse
 import os
@@ -36,7 +17,6 @@ except ImportError:
 FREESOUND_API_BASE = "https://freesound.org/apiv2"
 S3_PREFIX = "sfx/"
 
-# Map our canonical SFX name → Freesound search query + filter
 SFX_QUERIES = {
     "whoosh_soft.wav": {
         "query": "soft whoosh transition",
@@ -62,7 +42,6 @@ SFX_QUERIES = {
 
 
 def _freesound_search(query: str, filter_str: str, fields: str, api_key: str) -> dict | None:
-    """Return the first result from Freesound search."""
     params = urllib.parse.urlencode({
         "query": query,
         "filter": filter_str,
@@ -84,9 +63,7 @@ def _freesound_search(query: str, filter_str: str, fields: str, api_key: str) ->
 
 
 def _download_preview(result: dict, tmpdir: str, canonical_name: str) -> str | None:
-    """Download the high-quality preview (.mp3 usually) and convert filename."""
     previews = result.get("previews", {})
-    # Prefer hq, fall back to lq
     url = previews.get("preview-hq-mp3") or previews.get("preview-lq-mp3")
     if not url:
         return None
@@ -102,7 +79,6 @@ def _download_preview(result: dict, tmpdir: str, canonical_name: str) -> str | N
 
 
 def _convert_to_wav(mp3_path: str, wav_path: str) -> bool:
-    """Convert mp3 to wav using ffmpeg if available."""
     try:
         import subprocess
         result = subprocess.run(
@@ -111,7 +87,6 @@ def _convert_to_wav(mp3_path: str, wav_path: str) -> bool:
         )
         return result.returncode == 0
     except Exception:
-        # ffmpeg not available locally — just copy the mp3 with .wav extension
         import shutil
         shutil.copy2(mp3_path, wav_path)
         return True
@@ -190,7 +165,7 @@ def main():
             if uploaded:
                 success_count += 1
 
-            time.sleep(0.5)  # Rate limit Freesound API
+            time.sleep(0.5)
 
     total = len(SFX_QUERIES)
     print(f"\n✅ Done. {success_count}/{total} SFX files processed.\n")
