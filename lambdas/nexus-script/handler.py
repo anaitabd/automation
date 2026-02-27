@@ -1,25 +1,8 @@
-"""
-nexus-script Lambda
-Runtime: Python 3.12 | Memory: 1 GB | Timeout: 10 min
-
-Multi-pass script generation:
-  Pass 1 — Structure          (Bedrock claude-opus-4-0)
-  Pass 2 — Hook rewrite       (Bedrock claude-opus-4-0)
-  Pass 3 — Visual cues        (Bedrock claude-opus-4-0)
-  Pass 4 — Pacing polish      (Bedrock claude-opus-4-0)
-  Pass 5 — Fact check (finance only, Perplexity sonar-pro)
-
-Writes script JSON to s3://nexus-outputs/{run_id}/script.json.
-"""
-
 import json
 import time
 import boto3
 import urllib.request
 
-# ---------------------------------------------------------------------------
-# Secrets cache
-# ---------------------------------------------------------------------------
 _cache: dict = {}
 
 
@@ -32,9 +15,6 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 S3_OUTPUTS_BUCKET = "nexus-outputs"
 BEDROCK_MODEL_ID = "anthropic.claude-opus-4-0"
 
@@ -64,9 +44,6 @@ SCRIPT_JSON_SCHEMA = """{
 }"""
 
 
-# ---------------------------------------------------------------------------
-# HTTP helper
-# ---------------------------------------------------------------------------
 def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     data = json.dumps(body).encode("utf-8")
     for attempt in range(retries):
@@ -81,9 +58,6 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     raise RuntimeError("Unreachable")
 
 
-# ---------------------------------------------------------------------------
-# Bedrock helper
-# ---------------------------------------------------------------------------
 def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3) -> str:
     client = boto3.client("bedrock-runtime")
     body = json.dumps(
@@ -109,9 +83,6 @@ def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3) -> str:
     raise RuntimeError("Unreachable")
 
 
-# ---------------------------------------------------------------------------
-# Pass 1 — Structure (Bedrock)
-# ---------------------------------------------------------------------------
 def _pass1_structure(topic: str, angle: str, context: str, profile: dict) -> dict:
     target_min = profile.get("script", {}).get("target_duration_min", 10)
     target_max = profile.get("script", {}).get("target_duration_max", 16)
@@ -133,9 +104,6 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict) -> dic
     return json.loads(raw)
 
 
-# ---------------------------------------------------------------------------
-# Pass 2 — Hook rewrite (Bedrock)
-# ---------------------------------------------------------------------------
 def _pass2_hook_rewrite(script: dict) -> dict:
     prompt = (
         "You are an expert at writing viral YouTube hooks. "
@@ -157,9 +125,6 @@ def _pass2_hook_rewrite(script: dict) -> dict:
     return script
 
 
-# ---------------------------------------------------------------------------
-# Pass 3 — Visual cues (Bedrock)
-# ---------------------------------------------------------------------------
 def _pass3_visual_cues(script: dict, profile: dict) -> dict:
     color_grade = profile.get("visuals", {}).get("color_grade_default", "cinematic_warm")
     transition = profile.get("editing", {}).get("default_transition", "dissolve")
@@ -199,9 +164,6 @@ def _pass3_visual_cues(script: dict, profile: dict) -> dict:
     return script
 
 
-# ---------------------------------------------------------------------------
-# Pass 4 — Pacing polish (Bedrock)
-# ---------------------------------------------------------------------------
 def _pass4_pacing(script: dict, profile: dict) -> dict:
     cpm = profile.get("editing", {}).get("cuts_per_minute_target", 8)
     prompt = (
@@ -219,9 +181,6 @@ def _pass4_pacing(script: dict, profile: dict) -> dict:
         return script
 
 
-# ---------------------------------------------------------------------------
-# Pass 5 — Fact check (finance, Perplexity)
-# ---------------------------------------------------------------------------
 def _pass5_fact_check(script: dict, perplexity_key: str) -> dict:
     headers = {
         "Authorization": f"Bearer {perplexity_key}",
@@ -259,9 +218,6 @@ def _pass5_fact_check(script: dict, perplexity_key: str) -> dict:
         return script
 
 
-# ---------------------------------------------------------------------------
-# Save to S3
-# ---------------------------------------------------------------------------
 def _save_to_s3(run_id: str, script: dict) -> str:
     s3 = boto3.client("s3")
     key = f"{run_id}/script.json"
@@ -274,9 +230,6 @@ def _save_to_s3(run_id: str, script: dict) -> str:
     return key
 
 
-# ---------------------------------------------------------------------------
-# Error writer
-# ---------------------------------------------------------------------------
 def _write_error(run_id: str, step: str, exc: Exception) -> None:
     try:
         s3 = boto3.client("s3")
@@ -290,9 +243,6 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
@@ -302,7 +252,6 @@ def lambda_handler(event: dict, context) -> dict:
     dry_run: bool = event.get("dry_run", False)
 
     try:
-        # Load channel profile from S3
         s3 = boto3.client("s3")
         profile_obj = s3.get_object(Bucket="nexus-config", Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
@@ -337,15 +286,10 @@ def lambda_handler(event: dict, context) -> dict:
         else:
             perplexity_key = get_secret("nexus/perplexity_api_key")["api_key"]
 
-            # Pass 1: Structure
             script = _pass1_structure(topic, angle, trending_context, profile)
-            # Pass 2: Hook rewrite
             script = _pass2_hook_rewrite(script)
-            # Pass 3: Visual cues
             script = _pass3_visual_cues(script, profile)
-            # Pass 4: Pacing polish
             script = _pass4_pacing(script, profile)
-            # Pass 5: Fact check (finance only)
             if profile_name == "finance":
                 script = _pass5_fact_check(script, perplexity_key)
 
