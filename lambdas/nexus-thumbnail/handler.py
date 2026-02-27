@@ -1,14 +1,3 @@
-"""
-nexus-thumbnail Lambda
-Runtime: Python 3.12 | Memory: 1 GB | Timeout: 5 min
-
-1. Extract 6 keyframes from final video (skip first/last 10%)
-2. Score each frame via Bedrock claude-opus-4-0 Vision (0.0-1.0)
-3. Generate 3 thumbnail concepts via Bedrock claude-opus-4-0
-4. Render 3 thumbnail variants with ffmpeg (gradient + text + badge)
-5. Upload all variants + primary thumbnail to S3
-"""
-
 import base64
 import json
 import os
@@ -18,9 +7,6 @@ import time
 import urllib.request
 import boto3
 
-# ---------------------------------------------------------------------------
-# Secrets cache
-# ---------------------------------------------------------------------------
 _cache: dict = {}
 
 
@@ -33,9 +19,6 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 S3_ASSETS_BUCKET = "nexus-assets"
 S3_OUTPUTS_BUCKET = "nexus-outputs"
 FFMPEG_BIN = "/opt/bin/ffmpeg"
@@ -43,9 +26,6 @@ FFPROBE_BIN = "/opt/bin/ffprobe"
 BEDROCK_MODEL_ID = "anthropic.claude-opus-4-0"
 
 
-# ---------------------------------------------------------------------------
-# HTTP helpers
-# ---------------------------------------------------------------------------
 def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     data = json.dumps(body).encode("utf-8")
     for attempt in range(retries):
@@ -60,9 +40,6 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     raise RuntimeError("Unreachable")
 
 
-# ---------------------------------------------------------------------------
-# Video duration
-# ---------------------------------------------------------------------------
 def _get_duration(path: str) -> float:
     try:
         result = subprocess.run(
@@ -80,12 +57,8 @@ def _get_duration(path: str) -> float:
     return 60.0
 
 
-# ---------------------------------------------------------------------------
-# Keyframe extraction
-# ---------------------------------------------------------------------------
 def _extract_keyframes(video_path: str, tmpdir: str, n: int = 6) -> list[str]:
     duration = _get_duration(video_path)
-    # Skip first/last 10%
     start = duration * 0.10
     end = duration * 0.90
     usable = end - start
@@ -107,9 +80,6 @@ def _extract_keyframes(video_path: str, tmpdir: str, n: int = 6) -> list[str]:
     return frame_paths
 
 
-# ---------------------------------------------------------------------------
-# Bedrock Vision frame scoring
-# ---------------------------------------------------------------------------
 def _score_frame_bedrock(frame_path: str) -> float:
     with open(frame_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -159,13 +129,9 @@ def _score_frame_bedrock(frame_path: str) -> float:
         return 0.5
 
 
-# ---------------------------------------------------------------------------
-# Thumbnail concept generation (Bedrock)
-# ---------------------------------------------------------------------------
 def _generate_thumbnail_concepts(
     title: str, mood: str, accent_color: str
 ) -> list[dict]:
-    """Generate 3 thumbnail concepts via Bedrock claude-opus-4-0."""
     client = boto3.client("bedrock-runtime")
     prompt = (
         f"You are a YouTube thumbnail strategist. Create 3 distinct thumbnail concepts for:\n"
@@ -208,9 +174,6 @@ def _generate_thumbnail_concepts(
     return []
 
 
-# ---------------------------------------------------------------------------
-# ffmpeg thumbnail rendering
-# ---------------------------------------------------------------------------
 def _render_thumbnail(
     frame_path: str,
     concept: dict,
@@ -226,14 +189,11 @@ def _render_thumbnail(
     sub_text = concept.get("sub_text", "")[:45].replace("'", "\\'").replace(":", "\\:")
 
     vf_parts = [
-        # Contrast + saturation boost
         "eq=contrast=1.15:saturation=1.25:brightness=0.02",
-        # Dark gradient overlay on lower 45%
         (
             "drawbox=x=0:y=ih*0.55:width=iw:height=ih*0.45"
             ":color=black@0.75:t=fill"
         ),
-        # Top text — 88px, white, black border, drop shadow
         (
             f"drawtext=text='{top_text}'"
             ":fontcolor=white:fontsize=88"
@@ -241,14 +201,12 @@ def _render_thumbnail(
             ":shadowcolor=black@0.9:shadowx=3:shadowy=3"
             ":bordercolor=black:borderw=2"
         ),
-        # Subtitle — 52px
         (
             f"drawtext=text='{sub_text}'"
             ":fontcolor=#DDDDDD:fontsize=52"
             ":x=(w-text_w)/2:y=ih*0.60"
             ":shadowcolor=black@0.9:shadowx=2:shadowy=2"
         ),
-        # Channel badge top-right
         (
             f"drawbox=x=iw-280:y=10:width=270:height=60"
             f":color={accent_color}@0.9:t=fill,"
@@ -270,9 +228,6 @@ def _render_thumbnail(
     return out_path
 
 
-# ---------------------------------------------------------------------------
-# Error writer
-# ---------------------------------------------------------------------------
 def _write_error(run_id: str, step: str, exc: Exception) -> None:
     try:
         s3 = boto3.client("s3")
@@ -286,16 +241,12 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
     final_video_s3_key: str = event["final_video_s3_key"]
     script_s3_key: str = event["script_s3_key"]
     dry_run: bool = event.get("dry_run", False)
-    # Echo through for downstream states
     title_passthrough: str = event.get("title", "")
     video_duration_sec: float = float(event.get("video_duration_sec", 0))
 
@@ -330,30 +281,24 @@ def lambda_handler(event: dict, context) -> dict:
             }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # 1. Download final video
             video_local = os.path.join(tmpdir, "final_video.mp4")
             s3.download_file(S3_OUTPUTS_BUCKET, final_video_s3_key, video_local)
 
-            # 2. Extract keyframes
             frames = _extract_keyframes(video_local, tmpdir, n=6)
 
-            # 3. Score frames
             scores = [_score_frame_bedrock(f) for f in frames]
             best_frame_idx = scores.index(max(scores))
             best_frame = frames[best_frame_idx]
 
-            # 4. Generate concepts
             concepts = _generate_thumbnail_concepts(title, mood, accent_color)
             if len(concepts) < 3:
                 concepts += [concepts[0]] * (3 - len(concepts))
 
-            # 5. Render thumbnails
             thumbnail_local_paths = []
             for i, concept in enumerate(concepts[:3]):
                 t_path = _render_thumbnail(best_frame, concept, profile, tmpdir, i)
                 thumbnail_local_paths.append(t_path)
 
-            # 6. Upload thumbnails
             thumbnail_s3_keys = []
             for i, t_path in enumerate(thumbnail_local_paths):
                 key = f"{run_id}/thumbnails/thumbnail_{i}.jpg"
