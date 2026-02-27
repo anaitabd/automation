@@ -4,7 +4,7 @@ Runtime: Python 3.12 | Memory: 1 GB | Timeout: 10 min
 
 Multi-pass script generation:
   Pass 1 — Structure          (Bedrock claude-opus-4-0)
-  Pass 2 — Hook rewrite       (OpenAI gpt-4o)
+  Pass 2 — Hook rewrite       (Bedrock claude-opus-4-0)
   Pass 3 — Visual cues        (Bedrock claude-opus-4-0)
   Pass 4 — Pacing polish      (Bedrock claude-opus-4-0)
   Pass 5 — Fact check (finance only, Perplexity sonar-pro)
@@ -134,41 +134,26 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict) -> dic
 
 
 # ---------------------------------------------------------------------------
-# Pass 2 — Hook rewrite (OpenAI gpt-4o)
+# Pass 2 — Hook rewrite (Bedrock)
 # ---------------------------------------------------------------------------
-def _pass2_hook_rewrite(script: dict, openai_key: str) -> dict:
-    headers = {
-        "Authorization": f"Bearer {openai_key}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": "gpt-4o",
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert at writing viral YouTube hooks. "
-                    "Rewrite the given hook to be punchy, emotionally gripping, and impossible to click away from. "
-                    "Return ONLY a JSON object with keys 'hook' (string) and 'hook_emotion' "
-                    "(tense|excited|curious|dramatic)."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Original hook: {script['hook']}\n"
-                    f"Video topic: {script['title']}\n"
-                    f"Mood: {script.get('mood', 'neutral')}"
-                ),
-            },
-        ],
-        "response_format": {"type": "json_object"},
-        "max_tokens": 512,
-    }
-    result = _http_post("https://api.openai.com/v1/chat/completions", headers=headers, body=body)
-    rewrite = json.loads(result["choices"][0]["message"]["content"])
-    script["hook"] = rewrite.get("hook", script["hook"])
-    script["hook_emotion"] = rewrite.get("hook_emotion", script.get("hook_emotion", "curious"))
+def _pass2_hook_rewrite(script: dict) -> dict:
+    prompt = (
+        "You are an expert at writing viral YouTube hooks. "
+        "Rewrite the given hook to be punchy, emotionally gripping, and impossible to click away from. "
+        "Return ONLY a JSON object (no markdown) with keys 'hook' (string) and 'hook_emotion' "
+        "(tense|excited|curious|dramatic).\n\n"
+        f"Original hook: {script['hook']}\n"
+        f"Video topic: {script['title']}\n"
+        f"Mood: {script.get('mood', 'neutral')}"
+    )
+    raw = _bedrock_call(prompt, max_tokens=512)
+    raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    try:
+        rewrite = json.loads(raw)
+        script["hook"] = rewrite.get("hook", script["hook"])
+        script["hook_emotion"] = rewrite.get("hook_emotion", script.get("hook_emotion", "curious"))
+    except json.JSONDecodeError:
+        pass
     return script
 
 
@@ -350,13 +335,12 @@ def lambda_handler(event: dict, context) -> dict:
                 "mood": "neutral",
             }
         else:
-            openai_key = get_secret("nexus/openai_api_key")["api_key"]
             perplexity_key = get_secret("nexus/perplexity_api_key")["api_key"]
 
             # Pass 1: Structure
             script = _pass1_structure(topic, angle, trending_context, profile)
             # Pass 2: Hook rewrite
-            script = _pass2_hook_rewrite(script, openai_key)
+            script = _pass2_hook_rewrite(script)
             # Pass 3: Visual cues
             script = _pass3_visual_cues(script, profile)
             # Pass 4: Pacing polish

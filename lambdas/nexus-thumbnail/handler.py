@@ -3,7 +3,7 @@ nexus-thumbnail Lambda
 Runtime: Python 3.12 | Memory: 1 GB | Timeout: 5 min
 
 1. Extract 6 keyframes from final video (skip first/last 10%)
-2. Score each frame via GPT-4o Vision (0.0-1.0)
+2. Score each frame via Bedrock claude-opus-4-0 Vision (0.0-1.0)
 3. Generate 3 thumbnail concepts via Bedrock claude-opus-4-0
 4. Render 3 thumbnail variants with ffmpeg (gradient + text + badge)
 5. Upload all variants + primary thumbnail to S3
@@ -108,43 +108,52 @@ def _extract_keyframes(video_path: str, tmpdir: str, n: int = 6) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# GPT-4o Vision frame scoring
+# Bedrock Vision frame scoring
 # ---------------------------------------------------------------------------
-def _score_frame_gpt4o(frame_path: str, openai_key: str) -> float:
+def _score_frame_bedrock(frame_path: str) -> float:
     with open(frame_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
 
-    headers = {
-        "Authorization": f"Bearer {openai_key}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": "gpt-4o",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "Rate this YouTube thumbnail frame on a scale of 0.0 to 1.0 based on: "
-                            "contrast, subject clarity, emotional impact, and legibility at small size. "
-                            "Respond with ONLY a JSON object: {\"score\": 0.0}"
-                        ),
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                    },
-                ],
-            }
-        ],
-        "response_format": {"type": "json_object"},
-        "max_tokens": 64,
-    }
+    client = boto3.client("bedrock-runtime")
+    body = json.dumps(
+        {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 64,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": b64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                "Rate this YouTube thumbnail frame on a scale of 0.0 to 1.0 based on: "
+                                "contrast, subject clarity, emotional impact, and legibility at small size. "
+                                "Respond with ONLY a JSON object: {\"score\": 0.0}"
+                            ),
+                        },
+                    ],
+                }
+            ],
+        }
+    )
     try:
-        result = _http_post("https://api.openai.com/v1/chat/completions", headers=headers, body=body)
-        data = json.loads(result["choices"][0]["message"]["content"])
+        response = client.invoke_model(
+            modelId=BEDROCK_MODEL_ID,
+            body=body,
+            contentType="application/json",
+            accept="application/json",
+        )
+        raw = json.loads(response["body"].read())["content"][0]["text"]
+        raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        data = json.loads(raw)
         return float(data.get("score", 0.5))
     except Exception:
         return 0.5
@@ -320,8 +329,6 @@ def lambda_handler(event: dict, context) -> dict:
                 "primary_thumbnail_s3_key": f"{run_id}/thumbnails/thumbnail_0.jpg",
             }
 
-        openai_key = get_secret("nexus/openai_api_key")["api_key"]
-
         with tempfile.TemporaryDirectory() as tmpdir:
             # 1. Download final video
             video_local = os.path.join(tmpdir, "final_video.mp4")
@@ -331,7 +338,7 @@ def lambda_handler(event: dict, context) -> dict:
             frames = _extract_keyframes(video_local, tmpdir, n=6)
 
             # 3. Score frames
-            scores = [_score_frame_gpt4o(f, openai_key) for f in frames]
+            scores = [_score_frame_bedrock(f) for f in frames]
             best_frame_idx = scores.index(max(scores))
             best_frame = frames[best_frame_idx]
 
