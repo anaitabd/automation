@@ -1,18 +1,3 @@
-"""
-nexus-editor Lambda
-Runtime: Python 3.12 | Memory: 3 GB | Timeout: 30 min
-
-Beat-synced video assembly:
-  1. Detect BPM / beat timestamps via librosa
-  2. Build intro slate (5s) with ffmpeg drawtext
-  3. Per-section: J-cut / L-cut, transitions, overlay filters
-  4. Build outro slate (8s)
-  5. Concatenate + composite audio
-  6. Offload to AWS MediaConvert for long videos (>10 min)
-
-Final video: s3://nexus-outputs/{run_id}/final_video.mp4
-"""
-
 import json
 import math
 import os
@@ -21,12 +6,8 @@ import tempfile
 import time
 import boto3
 
-# Videos longer than this are offloaded to AWS MediaConvert
 MEDIACONVERT_THRESHOLD_SECONDS = 600
 
-# ---------------------------------------------------------------------------
-# Secrets cache
-# ---------------------------------------------------------------------------
 _cache: dict = {}
 
 
@@ -39,23 +20,16 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 S3_ASSETS_BUCKET = "nexus-assets"
 S3_OUTPUTS_BUCKET = "nexus-outputs"
 FFMPEG_BIN = "/opt/bin/ffmpeg"
 FFPROBE_BIN = "/opt/bin/ffprobe"
 
 
-# ---------------------------------------------------------------------------
-# Beat detection
-# ---------------------------------------------------------------------------
 def _detect_beats(audio_path: str) -> list[float]:
-    """Return list of beat timestamps in seconds using librosa."""
     try:
-        import librosa  # type: ignore
-        import numpy as np  # type: ignore
+        import librosa
+        import numpy as np
         y, sr = librosa.load(audio_path, sr=22050, mono=True)
         tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
         beat_times = librosa.frames_to_time(beat_frames, sr=sr).tolist()
@@ -65,7 +39,6 @@ def _detect_beats(audio_path: str) -> list[float]:
 
 
 def _snap_to_beat(timestamp: float, beats: list[float], window: float = 0.4) -> float:
-    """Snap a timestamp to the nearest beat within the window."""
     if not beats:
         return timestamp
     closest = min(beats, key=lambda b: abs(b - timestamp))
@@ -74,9 +47,6 @@ def _snap_to_beat(timestamp: float, beats: list[float], window: float = 0.4) -> 
     return timestamp
 
 
-# ---------------------------------------------------------------------------
-# Clip duration helpers
-# ---------------------------------------------------------------------------
 def _get_duration(path: str) -> float:
     try:
         result = subprocess.run(
@@ -94,9 +64,6 @@ def _get_duration(path: str) -> float:
     return 5.0
 
 
-# ---------------------------------------------------------------------------
-# Slate builders
-# ---------------------------------------------------------------------------
 def _build_intro_slate(
     channel_name: str,
     video_title: str,
@@ -156,9 +123,6 @@ def _build_outro_slate(
     return out
 
 
-# ---------------------------------------------------------------------------
-# Overlay filter builder
-# ---------------------------------------------------------------------------
 def _build_overlay_filter(overlay_type: str, overlay_text: str, accent_color: str) -> str:
     if overlay_type == "lower_third" and overlay_text:
         text_esc = overlay_text[:45].replace("'", "\\'").replace(":", "\\:")
@@ -185,9 +149,6 @@ def _build_overlay_filter(overlay_type: str, overlay_text: str, accent_color: st
     return ""
 
 
-# ---------------------------------------------------------------------------
-# Transition builder
-# ---------------------------------------------------------------------------
 def _apply_transition(
     clip_a: str,
     clip_b: str,
@@ -210,7 +171,6 @@ def _apply_transition(
     xfade_name = xfade_map.get(transition)
 
     if xfade_name is None:
-        # Hard cut: just concatenate
         list_file = os.path.join(tmpdir, f"concat_{idx}.txt")
         with open(list_file, "w") as f:
             f.write(f"file '{clip_a}'\n")
@@ -236,15 +196,11 @@ def _apply_transition(
     return out
 
 
-# ---------------------------------------------------------------------------
-# AWS MediaConvert offload
-# ---------------------------------------------------------------------------
 def _submit_mediaconvert_job(
     input_s3_uri: str,
     output_s3_prefix: str,
     run_id: str,
 ) -> str:
-    """Submit an AWS MediaConvert job and wait for it to complete."""
     mc = boto3.client("mediaconvert", endpoint_url=_get_mediaconvert_endpoint())
     job_settings = {
         "Inputs": [
@@ -303,8 +259,7 @@ def _submit_mediaconvert_job(
     job = mc.create_job(Role=role_arn, Settings=job_settings)
     job_id = job["Job"]["Id"]
 
-    # Poll until complete
-    deadline = time.time() + 1800  # 30 min
+    deadline = time.time() + 1800
     while time.time() < deadline:
         time.sleep(30)
         status = mc.get_job(Id=job_id)["Job"]["Status"]
@@ -322,9 +277,6 @@ def _get_mediaconvert_endpoint() -> str:
     return endpoints["Endpoints"][0]["Url"]
 
 
-# ---------------------------------------------------------------------------
-# Error writer
-# ---------------------------------------------------------------------------
 def _write_error(run_id: str, step: str, exc: Exception) -> None:
     try:
         s3 = boto3.client("s3")
@@ -338,9 +290,6 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
@@ -348,17 +297,14 @@ def lambda_handler(event: dict, context) -> dict:
     mixed_audio_s3_key: str = event["mixed_audio_s3_key"]
     script_s3_key: str = event["script_s3_key"]
     dry_run: bool = event.get("dry_run", False)
-    # Echo through for downstream states
     title_passthrough: str = event.get("title", "")
 
     try:
         s3 = boto3.client("s3")
 
-        # Load script for metadata
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
         script: dict = json.loads(script_obj["Body"].read())
 
-        # Load profile
         profile_obj = s3.get_object(Bucket="nexus-config", Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
 
@@ -390,19 +336,15 @@ def lambda_handler(event: dict, context) -> dict:
             }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # 1. Download audio
             audio_local = os.path.join(tmpdir, "mixed_audio.wav")
             s3.download_file(S3_ASSETS_BUCKET, mixed_audio_s3_key, audio_local)
 
-            # 2. Beat detection
             beats = _detect_beats(audio_local) if beat_sync else []
 
-            # 3. Intro slate
             intro_path = _build_intro_slate(
                 channel_name, script.get("title", ""), tmpdir, accent_color
             )
 
-            # 4. Download and process section clips
             clip_paths: list[str] = []
             for sec in sections:
                 clip_key = sec.get("clip_s3_key", "")
@@ -436,12 +378,10 @@ def lambda_handler(event: dict, context) -> dict:
 
                 clip_paths.append(local_clip)
 
-            # 5. Outro slate
             outro_path = _build_outro_slate(
                 channel_name, f"@{channel_name.lower().replace(' ', '')}", tmpdir, accent_color
             )
 
-            # 6. Assemble all clips with transitions
             all_clips = [intro_path] + clip_paths + [outro_path]
 
             if len(all_clips) < 2:
@@ -460,7 +400,6 @@ def lambda_handler(event: dict, context) -> dict:
                     )
                 assembled = current
 
-            # 7. Composite audio onto video
             final_local = os.path.join(tmpdir, "final_video.mp4")
             subprocess.run(
                 [
@@ -478,7 +417,6 @@ def lambda_handler(event: dict, context) -> dict:
             video_dur = _get_duration(final_local)
             final_s3_key = f"{run_id}/final_video.mp4"
 
-            # Use MediaConvert for long or complex exports
             if video_dur > MEDIACONVERT_THRESHOLD_SECONDS:
                 raw_s3_key = f"{run_id}/raw_assembled.mp4"
                 s3.upload_file(final_local, S3_OUTPUTS_BUCKET, raw_s3_key)
