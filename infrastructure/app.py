@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""CDK app entry point for Nexus Cloud."""
 
 import aws_cdk as cdk
 from nexus_stack import NexusStack
