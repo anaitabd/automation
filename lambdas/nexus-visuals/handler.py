@@ -1,20 +1,3 @@
-"""
-nexus-visuals Lambda
-Runtime: Python 3.12 | Memory: 3 GB | Timeout: 15 min
-
-Per-section footage pipeline:
-  1. Storyblocks API       (if STORYBLOCKS_API_KEY configured)
-  2. Pexels API            (always attempted)
-  3. Archive.org           (documentary only)
-  4. Runway gen3a_turbo    (AI generation fallback, score < threshold)
-
-Scores clips with sentence-transformers CLIP-ViT-B-32.
-Processes with ffmpeg: trim → camera motion → LUT colour grade → vignette
-→ film grain → sharpening.
-
-Uploads processed clips to s3://nexus-assets/{run_id}/clips/.
-"""
-
 import hashlib
 import json
 import os
@@ -25,9 +8,6 @@ import urllib.parse
 import urllib.request
 import boto3
 
-# ---------------------------------------------------------------------------
-# Secrets cache
-# ---------------------------------------------------------------------------
 _cache: dict = {}
 
 
@@ -40,9 +20,6 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 S3_ASSETS_BUCKET = "nexus-assets"
 S3_OUTPUTS_BUCKET = "nexus-outputs"
 FFMPEG_BIN = "/opt/bin/ffmpeg"
@@ -70,9 +47,6 @@ GRAIN_DEFAULTS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# HTTP helpers
-# ---------------------------------------------------------------------------
 def _http_get(url: str, headers: dict | None = None, retries: int = 3) -> bytes:
     req = urllib.request.Request(url, headers=headers or {})
     for attempt in range(retries):
@@ -100,26 +74,21 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     raise RuntimeError("Unreachable")
 
 
-# ---------------------------------------------------------------------------
-# Scoring (CLIP)
-# ---------------------------------------------------------------------------
 _clip_model = None
 
 
 def _get_clip_model():
     global _clip_model
     if _clip_model is None:
-        from sentence_transformers import SentenceTransformer  # type: ignore
+        from sentence_transformers import SentenceTransformer
         _clip_model = SentenceTransformer("clip-ViT-B-32")
     return _clip_model
 
 
 def _score_clip(local_path: str, query: str) -> float:
-    """Score visual relevance of a video frame against the query using CLIP."""
     try:
-        from PIL import Image  # type: ignore
+        from PIL import Image
         model = _get_clip_model()
-        # Extract middle frame
         frame_path = local_path.replace(".mp4", "_frame.jpg")
         subprocess.run(
             [FFMPEG_BIN, "-y", "-i", local_path, "-vf", "select=eq(n\\,30)", "-vframes", "1", frame_path],
@@ -129,9 +98,8 @@ def _score_clip(local_path: str, query: str) -> float:
         if not os.path.exists(frame_path):
             return 0.5
         img = Image.open(frame_path)
-        import numpy as np  # type: ignore
+        import numpy as np
         embeddings = model.encode([img, query])
-        # Cosine similarity
         a, b = embeddings
         cos = float(
             np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9)
@@ -141,11 +109,7 @@ def _score_clip(local_path: str, query: str) -> float:
         return 0.5
 
 
-# ---------------------------------------------------------------------------
-# Footage sources
-# ---------------------------------------------------------------------------
 def _search_pexels(query: str, api_key: str, per_page: int = 5) -> list[str]:
-    """Return video download URLs from Pexels."""
     encoded = urllib.parse.quote(query)
     url = f"https://api.pexels.com/videos/search?query={encoded}&per_page={per_page}&orientation=landscape"
     headers = {"Authorization": api_key}
@@ -163,7 +127,6 @@ def _search_pexels(query: str, api_key: str, per_page: int = 5) -> list[str]:
 
 
 def _search_storyblocks(query: str, api_key: str, private_key: str, per_page: int = 5) -> list[str]:
-    """Return video download URLs from Storyblocks."""
     try:
         import hmac
         expires = str(int(time.time()) + 600)
@@ -187,7 +150,6 @@ def _search_storyblocks(query: str, api_key: str, private_key: str, per_page: in
 
 
 def _search_archive_org(query: str, per_page: int = 3) -> list[str]:
-    """Return video download URLs from Internet Archive."""
     encoded = urllib.parse.quote(query)
     url = (
         f"https://archive.org/advancedsearch.php?q={encoded}+mediatype:movies"
@@ -199,7 +161,6 @@ def _search_archive_org(query: str, per_page: int = 3) -> list[str]:
         for doc in data.get("response", {}).get("docs", []):
             ident = doc.get("identifier")
             if ident:
-                # Use IA streaming URL
                 urls.append(f"https://archive.org/download/{ident}/{ident}.mp4")
         return urls
     except Exception:
@@ -207,14 +168,12 @@ def _search_archive_org(query: str, per_page: int = 3) -> list[str]:
 
 
 def _generate_runway(prompt: str, api_key: str, tmpdir: str) -> str | None:
-    """Generate a short clip via Runway gen3a_turbo. Returns local path or None."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "X-Runway-Version": "2024-11-06",
     }
     try:
-        # Create generation job
         body = {
             "model": "gen3a_turbo",
             "promptText": prompt,
@@ -226,7 +185,6 @@ def _generate_runway(prompt: str, api_key: str, tmpdir: str) -> str | None:
         if not task_id:
             return None
 
-        # Poll for completion (max 90s)
         deadline = time.time() + 90
         while time.time() < deadline:
             time.sleep(5)
@@ -252,9 +210,6 @@ def _generate_runway(prompt: str, api_key: str, tmpdir: str) -> str | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Video download
-# ---------------------------------------------------------------------------
 def _download_video(url: str, tmpdir: str, idx: int) -> str | None:
     try:
         video_bytes = _http_get(url)
@@ -266,9 +221,6 @@ def _download_video(url: str, tmpdir: str, idx: int) -> str | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# ffmpeg processing
-# ---------------------------------------------------------------------------
 def _get_duration(path: str) -> float:
     try:
         result = subprocess.run(
@@ -310,7 +262,7 @@ def _build_camera_motion_filter(style: str) -> str:
             "zoompan=z='1.08':x='iw/2-(iw/zoom/2)-t*3':y='ih/2-(ih/zoom/2)'"
             ":d=125:s=1920x1080:fps=25"
         )
-    else:  # static
+    else:
         return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
 
 
@@ -322,7 +274,6 @@ def _process_clip(
     lut_local_path: str | None,
     output_path: str,
 ) -> bool:
-    """Apply trim, camera motion, LUT, vignette, grain, sharpening."""
     try:
         target_dur = profile.get("visuals", {}).get("avg_clip_duration_sec", 5.0)
         clip_dur = min(_get_duration(raw_path), target_dur)
@@ -332,20 +283,15 @@ def _process_clip(
 
         filters = []
 
-        # Trim to target duration
         filters.append(_build_camera_motion_filter(camera_style))
 
-        # LUT colour grading
         if lut_local_path and os.path.exists(lut_local_path):
             filters.append(f"lut3d=file='{lut_local_path}'")
 
-        # Vignette
         filters.append(f"vignette=angle={vignette_angle}:mode=backward")
 
-        # Film grain
         filters.append(f"noise=alls={grain_strength}:allf=t+u")
 
-        # Unsharp (sharpening)
         filters.append("unsharp=5:5:1.0:5:5:0.0")
 
         vf = ",".join(filters)
@@ -366,9 +312,6 @@ def _process_clip(
         return False
 
 
-# ---------------------------------------------------------------------------
-# Main per-section pipeline
-# ---------------------------------------------------------------------------
 def _source_and_process_section(
     section: dict,
     section_idx: int,
@@ -392,7 +335,7 @@ def _source_and_process_section(
 
     candidates: list[str] = []
 
-    for query in queries[:2]:  # limit queries
+    for query in queries[:2]:
         if has_storyblocks:
             candidates += _search_storyblocks(query, storyblocks_key, storyblocks_private)
         candidates += _search_pexels(query, pexels_key)
@@ -413,7 +356,6 @@ def _source_and_process_section(
         if score >= threshold:
             break
 
-    # Runway fallback
     if (best_score < threshold or best_path is None) and has_runway:
         runway_path = _generate_runway(" ".join(queries[:1]), runway_key, tmpdir)
         if runway_path:
@@ -425,14 +367,12 @@ def _source_and_process_section(
     if best_path is None:
         return None
 
-    # Process clip
     out_filename = f"section_{section_idx:03d}.mp4"
     out_path = os.path.join(tmpdir, out_filename)
     success = _process_clip(best_path, section, profile, profile_name, lut_local_path, out_path)
     if not success:
         return None
 
-    # Upload to S3
     s3_key = f"{run_id}/clips/{out_filename}"
     s3.upload_file(out_path, S3_ASSETS_BUCKET, s3_key)
 
@@ -450,9 +390,6 @@ def _source_and_process_section(
     }
 
 
-# ---------------------------------------------------------------------------
-# LUT download helper
-# ---------------------------------------------------------------------------
 def _download_lut(color_grade: str, tmpdir: str, s3) -> str | None:
     lut_s3_key = LUT_MAP.get(color_grade)
     if not lut_s3_key:
@@ -465,9 +402,6 @@ def _download_lut(color_grade: str, tmpdir: str, s3) -> str | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Error writer
-# ---------------------------------------------------------------------------
 def _write_error(run_id: str, step: str, exc: Exception) -> None:
     try:
         s3 = boto3.client("s3")
@@ -481,15 +415,11 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
     script_s3_key: str = event["script_s3_key"]
     dry_run: bool = event.get("dry_run", False)
-    # Echo through for downstream states
     mixed_audio_s3_key: str = event.get("mixed_audio_s3_key", "")
     total_duration_estimate: float = float(event.get("total_duration_estimate", 0))
 
@@ -526,7 +456,6 @@ def lambda_handler(event: dict, context) -> dict:
                 ],
             }
 
-        # Credentials
         pexels_key = get_secret("nexus/pexels_api_key")["api_key"]
 
         storyblocks_key = ""
