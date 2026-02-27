@@ -166,13 +166,12 @@ def _search_storyblocks(query: str, api_key: str, private_key: str, per_page: in
     """Return video download URLs from Storyblocks."""
     try:
         import hmac
-        ts = str(int(time.time()))
         expires = str(int(time.time()) + 600)
         hmac_key = private_key + expires
-        sig = hmac.new(hmac_key.encode(), ts.encode(), "sha256").hexdigest()
+        sig = hmac.new(hmac_key.encode(), api_key.encode(), hashlib.sha256).hexdigest()
         encoded = urllib.parse.quote(query)
         url = (
-            f"https://api.graphicstock.com/api/v2/videos/search?"
+            f"https://api.storyblocks.com/api/v2/videos/search?"
             f"keywords={encoded}&num_results={per_page}&page_num=1"
             f"&APIKEY={api_key}&EXPIRES={expires}&HMAC={sig}"
         )
