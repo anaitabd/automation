@@ -64,7 +64,36 @@ automation/
 - AWS CLI configured (`aws configure`)
 - AWS CDK v2: `npm install -g aws-cdk`
 - Python 3.12+
+- Docker and Docker Compose (for local testing)
 - `pip install aws-cdk-lib constructs`
+
+---
+
+## Local Testing with Docker
+
+Start the full local stack (LocalStack + PostgreSQL + all Lambda containers):
+
+```bash
+docker compose up --build
+```
+
+This starts:
+- **LocalStack** on port 4566 (S3, Secrets Manager, Step Functions)
+- **PostgreSQL** on port 5432 (user: `nexus`, password: `nexus_local`, db: `nexus`)
+- **9 Lambda containers** on ports 9001–9009
+
+Invoke a Lambda locally:
+
+```bash
+curl -X POST http://localhost:9001/2015-03-31/functions/function/invocations \
+  -d '{"niche": "obscure history", "profile": "documentary", "dry_run": true}'
+```
+
+Stop all services:
+
+```bash
+docker compose down -v
+```
 
 ---
 

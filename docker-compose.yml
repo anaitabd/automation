@@ -1,0 +1,210 @@
+services:
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,secretsmanager,stepfunctions,iam,mediaconvert
+      - DEFAULT_REGION=us-east-1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus_local
+      POSTGRES_DB: nexus
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  setup:
+    image: amazon/aws-cli:latest
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        aws --endpoint-url=http://localstack:4566 s3 mb s3://nexus-assets
+        aws --endpoint-url=http://localstack:4566 s3 mb s3://nexus-outputs
+        aws --endpoint-url=http://localstack:4566 s3 mb s3://nexus-config
+        aws --endpoint-url=http://localstack:4566 secretsmanager create-secret --name nexus/perplexity_api_key --secret-string '{"api_key":"test-pplx-key"}'
+        aws --endpoint-url=http://localstack:4566 secretsmanager create-secret --name nexus/elevenlabs_api_key --secret-string '{"api_key":"test-el-key"}'
+        aws --endpoint-url=http://localstack:4566 secretsmanager create-secret --name nexus/pexels_api_key --secret-string '{"api_key":"test-pexels-key","pixabay_key":"test-pixabay-key"}'
+        aws --endpoint-url=http://localstack:4566 secretsmanager create-secret --name nexus/storyblocks_api_key --secret-string '{"api_key":"test-sb-key","private_key":"test-sb-private"}'
+        aws --endpoint-url=http://localstack:4566 secretsmanager create-secret --name nexus/runwayml_api_key --secret-string '{"api_key":"test-runway-key"}'
+        aws --endpoint-url=http://localstack:4566 secretsmanager create-secret --name nexus/youtube_credentials --secret-string '{"client_id":"test","client_secret":"test","refresh_token":"test"}'
+        aws --endpoint-url=http://localstack:4566 secretsmanager create-secret --name nexus/discord_webhook_url --secret-string '{"url":"https://discord.com/api/webhooks/test/test"}'
+        aws --endpoint-url=http://localstack:4566 secretsmanager create-secret --name nexus/db_credentials --secret-string '{"host":"postgres","port":"5432","dbname":"nexus","user":"nexus","password":"nexus_local"}'
+        echo "LocalStack setup complete"
+
+  nexus-research:
+    build:
+      context: .
+      args:
+        LAMBDA_DIR: lambdas/nexus-research
+    ports:
+      - "9001:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  nexus-script:
+    build:
+      context: .
+      args:
+        LAMBDA_DIR: lambdas/nexus-script
+    ports:
+      - "9002:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  nexus-audio:
+    build:
+      context: .
+      args:
+        LAMBDA_DIR: lambdas/nexus-audio
+    ports:
+      - "9003:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  nexus-visuals:
+    build:
+      context: .
+      args:
+        LAMBDA_DIR: lambdas/nexus-visuals
+    ports:
+      - "9004:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  nexus-editor:
+    build:
+      context: .
+      args:
+        LAMBDA_DIR: lambdas/nexus-editor
+    ports:
+      - "9005:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - MEDIACONVERT_ROLE_ARN=arn:aws:iam::000000000000:role/test
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  nexus-thumbnail:
+    build:
+      context: .
+      args:
+        LAMBDA_DIR: lambdas/nexus-thumbnail
+    ports:
+      - "9006:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  nexus-upload:
+    build:
+      context: .
+      args:
+        LAMBDA_DIR: lambdas/nexus-upload
+    ports:
+      - "9007:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  nexus-notify:
+    build:
+      context: .
+      args:
+        LAMBDA_DIR: lambdas/nexus-notify
+    ports:
+      - "9008:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  nexus-api:
+    build:
+      context: .
+      args:
+        LAMBDA_DIR: lambdas/nexus-api
+    ports:
+      - "9009:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - STATE_MACHINE_ARN=arn:aws:states:us-east-1:000000000000:stateMachine:nexus-pipeline
+      - OUTPUTS_BUCKET=nexus-outputs
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+volumes:
+  localstack_data:
+  pg_data:
