@@ -1,12 +1,3 @@
-"""
-nexus-research Lambda
-Runtime: Python 3.12 | Memory: 512 MB | Timeout: 5 min
-
-Finds trending topics via Perplexity sonar-pro, then uses
-AWS Bedrock claude-opus-4-0 to pick the best angle.
-Writes output to s3://nexus-outputs/{run_id}/research.json.
-"""
-
 import json
 import time
 import uuid
@@ -14,9 +5,6 @@ import boto3
 import urllib.request
 import urllib.error
 
-# ---------------------------------------------------------------------------
-# Secrets cache
-# ---------------------------------------------------------------------------
 _cache: dict = {}
 
 
@@ -29,9 +17,6 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 S3_OUTPUTS_BUCKET = "nexus-outputs"
 BEDROCK_MODEL_ID = "anthropic.claude-opus-4-0"
 
@@ -51,7 +36,6 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
 
 
 def _perplexity_search(query: str, api_key: str) -> str:
-    """Call Perplexity sonar-pro to find trending info about the query."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -84,7 +68,6 @@ def _perplexity_search(query: str, api_key: str) -> str:
 
 
 def _bedrock_select_topic(niche: str, perplexity_context: str) -> dict:
-    """Use Bedrock claude-opus-4-0 to pick the best topic + angle."""
     client = boto3.client("bedrock-runtime")
     prompt = (
         f"You are an expert YouTube strategist. Based on the following research about '{niche}', "
@@ -113,7 +96,6 @@ def _bedrock_select_topic(niche: str, perplexity_context: str) -> dict:
                 accept="application/json",
             )
             raw = json.loads(response["body"].read())["content"][0]["text"]
-            # Strip potential markdown code fences
             raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
             return json.loads(raw)
         except Exception as exc:
@@ -135,9 +117,6 @@ def _save_to_s3(run_id: str, data: dict) -> str:
     return key
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 def lambda_handler(event: dict, context) -> dict:
     run_id = event.get("run_id") or str(uuid.uuid4())
     niche: str = event["niche"]

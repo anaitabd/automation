@@ -1,0 +1,4 @@
+boto3
+requests
+psycopg2-binary
+python-dotenv

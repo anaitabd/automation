@@ -1,13 +1,3 @@
-"""
-nexus-api Lambda — API Gateway handler
-Runtime: Python 3.12 | Memory: 256 MB | Timeout: 30 sec
-
-Routes:
-  POST /run          → start Step Functions execution
-  GET  /status/{id}  → describe execution
-  GET  /outputs/{id} → presigned URLs for outputs
-"""
-
 import json
 import os
 import time
@@ -70,11 +60,9 @@ def _handle_status(run_id: str) -> dict:
             stateMachineArn=STATE_MACHINE_ARN,
             maxResults=1,
         )
-        # Find the execution matching run_id (name == run_id)
         for ex in executions.get("executions", []):
             if ex["name"] == run_id:
                 detail = sfn.describe_execution(executionArn=ex["executionArn"])
-                # Determine current step from execution history
                 step = _get_current_step(ex["executionArn"])
                 return _response(
                     200,

@@ -1,21 +1,10 @@
-"""
-nexus-notify Lambda
-Runtime: Python 3.12 | Memory: 256 MB | Timeout: 1 min
-
-1. Sends a Discord webhook embed with run summary
-2. Logs the run to PostgreSQL (RDS / Aurora Serverless v2)
-"""
-
 import json
 import time
 import urllib.request
 import urllib.error
 import boto3
-import psycopg2  # type: ignore  # installed via Lambda layer
+import psycopg2
 
-# ---------------------------------------------------------------------------
-# Secrets cache
-# ---------------------------------------------------------------------------
 _cache: dict = {}
 
 
@@ -28,15 +17,9 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 S3_OUTPUTS_BUCKET = "nexus-outputs"
 
 
-# ---------------------------------------------------------------------------
-# Discord notification
-# ---------------------------------------------------------------------------
 def _send_discord(
     webhook_url: str,
     title: str,
@@ -76,13 +59,9 @@ def _send_discord(
         with urllib.request.urlopen(req, timeout=15):
             pass
     except Exception:
-        # Discord notification failure is non-fatal
         pass
 
 
-# ---------------------------------------------------------------------------
-# PostgreSQL logging
-# ---------------------------------------------------------------------------
 def _log_to_db(
     db_config: dict,
     run_id: str,
@@ -134,9 +113,6 @@ def _log_to_db(
         conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Error writer
-# ---------------------------------------------------------------------------
 def _write_error(run_id: str, step: str, exc: Exception) -> None:
     try:
         s3 = boto3.client("s3")
@@ -150,9 +126,6 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
@@ -171,7 +144,6 @@ def lambda_handler(event: dict, context) -> dict:
     try:
         s3 = boto3.client("s3")
 
-        # Build presigned thumbnail URL for Discord embed
         thumbnail_url = ""
         if primary_thumbnail_s3_key and not dry_run:
             thumbnail_url = s3.generate_presigned_url(
@@ -181,7 +153,6 @@ def lambda_handler(event: dict, context) -> dict:
             )
 
         if not dry_run:
-            # Discord
             discord_webhook = get_secret("nexus/discord_webhook_url").get("url", "")
             if discord_webhook:
                 _send_discord(
@@ -195,7 +166,6 @@ def lambda_handler(event: dict, context) -> dict:
                     niche,
                 )
 
-            # PostgreSQL
             try:
                 db_config = get_secret("nexus/db_credentials")
                 _log_to_db(
@@ -203,7 +173,6 @@ def lambda_handler(event: dict, context) -> dict:
                     video_duration_sec, video_url, elapsed,
                 )
             except Exception:
-                # DB logging failure is non-fatal
                 pass
 
         return {
