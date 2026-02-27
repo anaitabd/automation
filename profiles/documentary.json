@@ -1,0 +1,66 @@
+{
+  "name": "documentary",
+  "llm": {
+    "script_model": "anthropic.claude-opus-4-0",
+    "hook_model": "gpt-4o",
+    "research_model": "perplexity/sonar-pro",
+    "visual_cue_model": "anthropic.claude-opus-4-0",
+    "script_passes": ["structure", "depth", "hook_polish", "pacing"]
+  },
+  "voice": {
+    "model_id": "eleven_turbo_v2_5",
+    "voice_id": "21m00Tcm4TlvDq8ikWAM",
+    "stability": 0.42,
+    "similarity_boost": 0.80,
+    "style": 0.72,
+    "emotion_mapping": {
+      "tense": {"stability": 0.30, "style": 0.85},
+      "dramatic": {"stability": 0.28, "style": 0.92},
+      "somber": {"stability": 0.55, "style": 0.60}
+    }
+  },
+  "sound_design": {
+    "music_mood": "tension_atmospheric",
+    "music_volume_narration": -22,
+    "music_volume_intro": -14,
+    "voice_warmth_eq": true,
+    "voice_reverb": 0.08,
+    "sfx_map": {
+      "lower_third": "sfx/whoosh_soft.wav",
+      "stat_counter": "sfx/typewriter_impact.wav",
+      "quote_card": "sfx/paper_rustle.wav"
+    }
+  },
+  "visuals": {
+    "source_priority": ["storyblocks", "pexels", "archive_org", "runway_generate"],
+    "archive_org_enabled": true,
+    "clip_score_threshold": 0.70,
+    "avg_clip_duration_sec": 6.5,
+    "color_grade_default": "cinematic_warm",
+    "lut_file": "luts/cinematic_teal_orange.cube",
+    "vignette_strength": 0.35,
+    "film_grain_strength": 0.18
+  },
+  "editing": {
+    "default_transition": "dissolve",
+    "transition_duration_sec": 1.2,
+    "beat_sync_cuts": true,
+    "j_cut_enabled": true,
+    "j_cut_overlap_sec": 0.8,
+    "l_cut_enabled": true,
+    "l_cut_overlap_sec": 1.0,
+    "cuts_per_minute_target": 8
+  },
+  "thumbnail": {
+    "style": "dark_dramatic",
+    "text_color": "#FFFFFF",
+    "accent_color": "#C8A96E",
+    "font": "Cinzel"
+  },
+  "script": {
+    "target_duration_min": 10,
+    "target_duration_max": 16,
+    "tone": "authoritative_compelling",
+    "narrative_style": "third_person_omniscient"
+  }
+}
