@@ -1,8 +1,3 @@
-"""
-Nexus Cloud — AWS CDK Infrastructure Stack
-Deploy with: cdk deploy
-"""
-
 import aws_cdk as cdk
 from aws_cdk import (
     Stack,
@@ -29,9 +24,6 @@ class NexusStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        # ---------------------------------------------------------------
-        # S3 Buckets
-        # ---------------------------------------------------------------
         assets_bucket = s3.Bucket(
             self, "NexusAssets",
             bucket_name="nexus-assets",
@@ -83,9 +75,6 @@ class NexusStack(Stack):
             public_read_access=True,
         )
 
-        # ---------------------------------------------------------------
-        # Lambda Layers
-        # ---------------------------------------------------------------
         ffmpeg_layer = lambda_.LayerVersion(
             self, "FfmpegLayer",
             layer_version_name="nexus-ffmpeg",
@@ -110,9 +99,6 @@ class NexusStack(Stack):
             description="requests, openai, boto3, psycopg2, python-dotenv",
         )
 
-        # ---------------------------------------------------------------
-        # Secrets
-        # ---------------------------------------------------------------
         secret_names = [
             "nexus/openai_api_key",
             "nexus/perplexity_api_key",
@@ -132,9 +118,6 @@ class NexusStack(Stack):
             for name in secret_names
         }
 
-        # ---------------------------------------------------------------
-        # IAM: base Lambda execution role helper
-        # ---------------------------------------------------------------
         def _make_role(fn_name: str, extra_buckets=None, secret_names_allowed=None):
             role = iam.Role(
                 self, f"{fn_name}Role",
@@ -145,13 +128,11 @@ class NexusStack(Stack):
                     )
                 ],
             )
-            # Grant read/write to outputs + config
             outputs_bucket.grant_read_write(role)
             config_bucket.grant_read(role)
             if extra_buckets:
                 for bkt in extra_buckets:
                     bkt.grant_read_write(role)
-            # Secrets access
             for sn in (secret_names_allowed or []):
                 role.add_to_policy(
                     iam.PolicyStatement(
@@ -161,9 +142,6 @@ class NexusStack(Stack):
                 )
             return role
 
-        # ---------------------------------------------------------------
-        # Common Lambda props
-        # ---------------------------------------------------------------
         arm64 = lambda_.Architecture.ARM_64
         py312 = lambda_.Runtime.PYTHON_3_12
 
@@ -182,9 +160,6 @@ class NexusStack(Stack):
                 tracing=lambda_.Tracing.ACTIVE,
             )
 
-        # ---------------------------------------------------------------
-        # nexus-research
-        # ---------------------------------------------------------------
         research_role = _make_role(
             "nexus-research",
             secret_names_allowed=["nexus/perplexity_api_key"],
@@ -200,9 +175,6 @@ class NexusStack(Stack):
             **_lambda_props("nexus-research", 512, 5, research_role, [api_layer]),
         )
 
-        # ---------------------------------------------------------------
-        # nexus-script
-        # ---------------------------------------------------------------
         script_role = _make_role(
             "nexus-script",
             secret_names_allowed=[
@@ -221,9 +193,6 @@ class NexusStack(Stack):
             **_lambda_props("nexus-script", 1024, 10, script_role, [api_layer]),
         )
 
-        # ---------------------------------------------------------------
-        # nexus-audio
-        # ---------------------------------------------------------------
         audio_role = _make_role(
             "nexus-audio",
             extra_buckets=[assets_bucket],
@@ -237,9 +206,6 @@ class NexusStack(Stack):
             **_lambda_props("nexus-audio", 2048, 15, audio_role, [ffmpeg_layer, api_layer]),
         )
 
-        # ---------------------------------------------------------------
-        # nexus-visuals
-        # ---------------------------------------------------------------
         visuals_role = _make_role(
             "nexus-visuals",
             extra_buckets=[assets_bucket],
@@ -255,9 +221,6 @@ class NexusStack(Stack):
                             [ffmpeg_layer, ml_layer, api_layer]),
         )
 
-        # ---------------------------------------------------------------
-        # nexus-editor
-        # ---------------------------------------------------------------
         editor_role = _make_role(
             "nexus-editor",
             extra_buckets=[assets_bucket],
@@ -283,9 +246,6 @@ class NexusStack(Stack):
             ),
         )
 
-        # ---------------------------------------------------------------
-        # nexus-thumbnail
-        # ---------------------------------------------------------------
         thumbnail_role = _make_role(
             "nexus-thumbnail",
             extra_buckets=[assets_bucket],
@@ -305,9 +265,6 @@ class NexusStack(Stack):
                             [ffmpeg_layer, api_layer]),
         )
 
-        # ---------------------------------------------------------------
-        # nexus-upload
-        # ---------------------------------------------------------------
         upload_role = _make_role(
             "nexus-upload",
             secret_names_allowed=["nexus/youtube_credentials"],
@@ -317,9 +274,6 @@ class NexusStack(Stack):
             **_lambda_props("nexus-upload", 512, 10, upload_role, [api_layer]),
         )
 
-        # ---------------------------------------------------------------
-        # nexus-notify
-        # ---------------------------------------------------------------
         notify_role = _make_role(
             "nexus-notify",
             secret_names_allowed=[
@@ -332,7 +286,6 @@ class NexusStack(Stack):
             **_lambda_props("nexus-notify", 256, 1, notify_role, [api_layer]),
         )
 
-        # nexus-notify-error (same code, same handler)
         fn_notify_error = lambda_.Function(
             self, "NexusNotifyError",
             function_name="nexus-notify-error",
@@ -347,13 +300,9 @@ class NexusStack(Stack):
             environment={"NOTIFY_MODE": "error"},
         )
 
-        # ---------------------------------------------------------------
-        # Step Functions State Machine
-        # ---------------------------------------------------------------
         with open("statemachine/nexus_pipeline.asl.json") as f:
             asl = json.load(f)
 
-        # Substitute ARN placeholders
         asl_str = json.dumps(asl)
         asl_str = (
             asl_str
@@ -387,9 +336,6 @@ class NexusStack(Stack):
             ),
         )
 
-        # ---------------------------------------------------------------
-        # API Gateway
-        # ---------------------------------------------------------------
         api = apigw.RestApi(
             self, "NexusApi",
             rest_api_name="nexus-api",
@@ -400,7 +346,6 @@ class NexusStack(Stack):
             ),
         )
 
-        # Lambda for /run and /status and /outputs
         api_role = iam.Role(
             self, "NexusApiLambdaRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
@@ -456,9 +401,6 @@ class NexusStack(Stack):
             apigw.LambdaIntegration(fn_api),
         )
 
-        # ---------------------------------------------------------------
-        # CloudFront for Dashboard
-        # ---------------------------------------------------------------
         distribution = cloudfront.Distribution(
             self, "NexusDashboardCDN",
             default_behavior=cloudfront.BehaviorOptions(
@@ -469,14 +411,11 @@ class NexusStack(Stack):
             default_root_object="index.html",
         )
 
-        # ---------------------------------------------------------------
-        # EventBridge — optional scheduled runs (twice daily)
-        # ---------------------------------------------------------------
         schedule_rule = events.Rule(
             self, "NexusSchedule",
             rule_name="nexus-pipeline-schedule",
             schedule=events.Schedule.cron(hour="9,21", minute="0"),
-            enabled=False,  # Enable in console after configuring niche/profile
+            enabled=False,
         )
         schedule_rule.add_target(
             event_targets.SfnStateMachine(
@@ -493,9 +432,6 @@ class NexusStack(Stack):
             )
         )
 
-        # ---------------------------------------------------------------
-        # CloudWatch Dashboard
-        # ---------------------------------------------------------------
         cw_dashboard = cloudwatch.Dashboard(
             self, "NexusDashboard",
             dashboard_name="nexus-pipeline",
@@ -521,9 +457,6 @@ class NexusStack(Stack):
             ),
         )
 
-        # ---------------------------------------------------------------
-        # Outputs
-        # ---------------------------------------------------------------
         cdk.CfnOutput(self, "StateMachineArn", value=state_machine.attr_arn)
         cdk.CfnOutput(self, "ApiUrl", value=api.url)
         cdk.CfnOutput(self, "DashboardUrl", value=f"https://{distribution.distribution_domain_name}")

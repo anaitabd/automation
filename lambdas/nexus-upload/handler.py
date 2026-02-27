@@ -1,12 +1,3 @@
-"""
-nexus-upload Lambda
-Runtime: Python 3.12 | Memory: 512 MB | Timeout: 10 min
-
-Downloads the final video and primary thumbnail from S3 and uploads
-them to YouTube via the YouTube Data API v3 (OAuth2).
-OAuth credentials are stored in AWS Secrets Manager.
-"""
-
 import json
 import os
 import tempfile
@@ -14,9 +5,6 @@ import urllib.parse
 import urllib.request
 import boto3
 
-# ---------------------------------------------------------------------------
-# Secrets cache
-# ---------------------------------------------------------------------------
 _cache: dict = {}
 
 
@@ -29,20 +17,13 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 S3_OUTPUTS_BUCKET = "nexus-outputs"
 YOUTUBE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 YOUTUBE_THUMBNAIL_URL = "https://www.googleapis.com/youtube/v3/thumbnails/set"
 
 
-# ---------------------------------------------------------------------------
-# OAuth2 token refresh
-# ---------------------------------------------------------------------------
 def _refresh_access_token(credentials: dict) -> str:
-    """Return a fresh access token using the refresh token."""
     data = urllib.parse.urlencode(
         {
             "client_id": credentials["client_id"],
@@ -60,16 +41,11 @@ def _refresh_access_token(credentials: dict) -> str:
     return token_data["access_token"]
 
 
-# ---------------------------------------------------------------------------
-# YouTube resumable upload
-# ---------------------------------------------------------------------------
 def _upload_video(
     video_path: str,
     metadata: dict,
     access_token: str,
 ) -> dict:
-    """Upload video using the YouTube resumable upload protocol."""
-    # Step 1: Initiate resumable upload session
     file_size = os.path.getsize(video_path)
     init_headers = {
         "Authorization": f"Bearer {access_token}",
@@ -85,8 +61,7 @@ def _upload_video(
     with urllib.request.urlopen(req, timeout=30) as resp:
         session_uri = resp.headers["Location"]
 
-    # Step 2: Upload the file
-    chunk_size = 8 * 1024 * 1024  # 8 MB chunks
+    chunk_size = 8 * 1024 * 1024
     uploaded = 0
     response_body = None
 
@@ -108,7 +83,7 @@ def _upload_video(
                     if resp.status == 200:
                         response_body = json.loads(resp.read())
             except urllib.error.HTTPError as e:
-                if e.code == 308:  # Resume Incomplete — continue
+                if e.code == 308:
                     uploaded += len(chunk)
                     continue
                 raise
@@ -117,9 +92,6 @@ def _upload_video(
     return response_body or {}
 
 
-# ---------------------------------------------------------------------------
-# Thumbnail upload
-# ---------------------------------------------------------------------------
 def _upload_thumbnail(video_id: str, thumbnail_path: str, access_token: str) -> None:
     file_size = os.path.getsize(thumbnail_path)
     with open(thumbnail_path, "rb") as f:
@@ -137,9 +109,6 @@ def _upload_thumbnail(video_id: str, thumbnail_path: str, access_token: str) -> 
         pass
 
 
-# ---------------------------------------------------------------------------
-# Error writer
-# ---------------------------------------------------------------------------
 def _write_error(run_id: str, step: str, exc: Exception) -> None:
     try:
         s3 = boto3.client("s3")
@@ -153,9 +122,6 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
@@ -163,14 +129,12 @@ def lambda_handler(event: dict, context) -> dict:
     primary_thumbnail_s3_key: str = event["primary_thumbnail_s3_key"]
     script_s3_key: str = event["script_s3_key"]
     dry_run: bool = event.get("dry_run", False)
-    # Echo through for downstream states
     thumbnail_s3_keys: list = event.get("thumbnail_s3_keys", [primary_thumbnail_s3_key])
     video_duration_sec: float = float(event.get("video_duration_sec", 0))
 
     try:
         s3 = boto3.client("s3")
 
-        # Load script for metadata
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
         script: dict = json.loads(script_obj["Body"].read())
 
@@ -194,7 +158,6 @@ def lambda_handler(event: dict, context) -> dict:
                 "video_duration_sec": video_duration_sec,
             }
 
-        # Load OAuth credentials
         yt_credentials = get_secret("nexus/youtube_credentials")
         access_token = _refresh_access_token(yt_credentials)
 
@@ -203,7 +166,7 @@ def lambda_handler(event: dict, context) -> dict:
                 "title": title[:100],
                 "description": description[:5000],
                 "tags": tags[:500],
-                "categoryId": "22",  # People & Blogs — override in profile if needed
+                "categoryId": "22",
             },
             "status": {
                 "privacyStatus": "private",
@@ -212,21 +175,17 @@ def lambda_handler(event: dict, context) -> dict:
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Download video
             video_local = os.path.join(tmpdir, "final_video.mp4")
             s3.download_file(S3_OUTPUTS_BUCKET, final_video_s3_key, video_local)
 
-            # Download thumbnail
             thumbnail_local = os.path.join(tmpdir, "thumbnail.jpg")
             s3.download_file(S3_OUTPUTS_BUCKET, primary_thumbnail_s3_key, thumbnail_local)
 
-            # Upload video
             upload_result = _upload_video(video_local, video_metadata, access_token)
             video_id = upload_result.get("id", "")
             if not video_id:
                 raise RuntimeError("YouTube upload returned no video ID")
 
-            # Upload thumbnail
             _upload_thumbnail(video_id, thumbnail_local, access_token)
 
         video_url = f"https://www.youtube.com/watch?v={video_id}"
