@@ -1,0 +1,66 @@
+{
+  "name": "finance",
+  "llm": {
+    "script_model": "anthropic.claude-opus-4-0",
+    "hook_model": "gpt-4o",
+    "research_model": "perplexity/sonar-pro",
+    "visual_cue_model": "anthropic.claude-opus-4-0",
+    "script_passes": ["structure", "data_enrichment", "accuracy_check", "hook_polish", "pacing"]
+  },
+  "voice": {
+    "model_id": "eleven_turbo_v2_5",
+    "voice_id": "pNInz6obpgDQGcFmaJgB",
+    "stability": 0.65,
+    "similarity_boost": 0.80,
+    "style": 0.30,
+    "emotion_mapping": {
+      "tense": {"stability": 0.55, "style": 0.45},
+      "confident": {"stability": 0.70, "style": 0.20},
+      "excited": {"stability": 0.50, "style": 0.50}
+    }
+  },
+  "sound_design": {
+    "music_mood": "corporate_upbeat_subtle",
+    "music_volume_narration": -22,
+    "music_volume_intro": -14,
+    "voice_warmth_eq": false,
+    "voice_reverb": 0.0,
+    "sfx_map": {
+      "lower_third": "sfx/whoosh_soft.wav",
+      "stat_counter": "sfx/counter_tick.wav",
+      "quote_card": "sfx/whoosh_soft.wav"
+    }
+  },
+  "visuals": {
+    "source_priority": ["storyblocks", "pexels", "runway_generate"],
+    "archive_org_enabled": false,
+    "clip_score_threshold": 0.65,
+    "avg_clip_duration_sec": 3.5,
+    "color_grade_default": "clean_corporate",
+    "lut_file": "luts/cold_blue_corporate.cube",
+    "vignette_strength": 0.15,
+    "film_grain_strength": 0.05
+  },
+  "editing": {
+    "default_transition": "cut",
+    "transition_duration_sec": 0.0,
+    "beat_sync_cuts": true,
+    "j_cut_enabled": true,
+    "j_cut_overlap_sec": 0.5,
+    "l_cut_enabled": false,
+    "l_cut_overlap_sec": 0.0,
+    "cuts_per_minute_target": 16
+  },
+  "thumbnail": {
+    "style": "clean_bold",
+    "text_color": "#FFFFFF",
+    "accent_color": "#00A86B",
+    "font": "Roboto Bold"
+  },
+  "script": {
+    "target_duration_min": 8,
+    "target_duration_max": 14,
+    "tone": "authoritative_data_driven",
+    "narrative_style": "second_person_direct"
+  }
+}

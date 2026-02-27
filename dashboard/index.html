@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nexus Cloud — Pipeline Dashboard</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    :root {
+      --bg: #0d0d0d;
+      --surface: #161616;
+      --surface2: #1f1f1f;
+      --border: #2a2a2a;
+      --text: #e8e8e8;
+      --muted: #888;
+      --accent-doc: #C8A96E;
+      --accent-fin: #00A86B;
+      --accent-ent: #FF3B30;
+      --accent: var(--accent-doc);
+      --mono: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      min-height: 100vh;
+    }
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .logo { font-size: 22px; font-weight: 700; letter-spacing: 2px; color: var(--accent-doc); }
+    .logo span { color: var(--text); font-weight: 400; }
+    main { max-width: 1200px; margin: 0 auto; padding: 32px 24px; }
+    section { margin-bottom: 40px; }
+    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 3px;
+         color: var(--muted); margin-bottom: 18px; }
+
+    /* ── Input Form ─────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+    }
+    .field { margin-bottom: 16px; }
+    label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 6px;
+            text-transform: uppercase; letter-spacing: 1px; }
+    input[type=text] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 14px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    input[type=text]:focus { border-color: var(--accent-doc); }
+
+    .profile-btns { display: flex; gap: 10px; }
+    .profile-btn {
+      flex: 1; padding: 10px 0; border: 1px solid var(--border);
+      background: var(--bg); color: var(--muted); cursor: pointer;
+      border-radius: 6px; font-family: var(--mono); font-size: 12px;
+      letter-spacing: 1px; text-transform: uppercase; transition: all .2s;
+    }
+    .profile-btn.active-doc { border-color: var(--accent-doc); color: var(--accent-doc); }
+    .profile-btn.active-fin { border-color: var(--accent-fin); color: var(--accent-fin); }
+    .profile-btn.active-ent { border-color: var(--accent-ent); color: var(--accent-ent); }
+
+    .toggle-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+    .toggle {
+      appearance: none; width: 40px; height: 22px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 11px; cursor: pointer;
+      position: relative; transition: background .2s;
+    }
+    .toggle::after {
+      content: ''; position: absolute; top: 3px; left: 3px;
+      width: 14px; height: 14px; background: var(--muted);
+      border-radius: 50%; transition: transform .2s;
+    }
+    .toggle:checked { background: var(--accent-fin); border-color: var(--accent-fin); }
+    .toggle:checked::after { transform: translateX(18px); background: white; }
+
+    .run-btn {
+      width: 100%; padding: 14px; margin-top: 6px;
+      background: var(--accent-doc); color: #000; border: none;
+      border-radius: 6px; font-family: var(--mono); font-size: 14px;
+      font-weight: 700; letter-spacing: 2px; cursor: pointer;
+      text-transform: uppercase; transition: opacity .2s;
+    }
+    .run-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .run-btn.fin { background: var(--accent-fin); }
+    .run-btn.ent { background: var(--accent-ent); color: #fff; }
+
+    /* ── Pipeline Progress ──────────────────────────────────────── */
+    .steps { display: flex; gap: 6px; flex-wrap: wrap; }
+    .step {
+      flex: 1; min-width: 100px; padding: 12px 8px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; text-align: center; font-size: 11px;
+      color: var(--muted); text-transform: uppercase; letter-spacing: 1px;
+      transition: all .3s; position: relative;
+    }
+    .step.active {
+      border-color: var(--accent-doc); color: var(--accent-doc);
+    }
+    .step.active::after {
+      content: '';
+      position: absolute; inset: -1px; border-radius: 6px;
+      border: 1px solid var(--accent-doc);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    .step.done { border-color: var(--accent-fin); color: var(--accent-fin); }
+    .step.error { border-color: var(--accent-ent); color: var(--accent-ent); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .3; }
+    }
+    .step-icon { font-size: 18px; display: block; margin-bottom: 4px; }
+
+    /* ── Outputs ────────────────────────────────────────────────── */
+    .output-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media(max-width:768px) { .output-grid { grid-template-columns: 1fr; } }
+
+    .video-wrapper video {
+      width: 100%; border-radius: 6px; border: 1px solid var(--border);
+    }
+
+    .thumb-row { display: flex; gap: 10px; }
+    .thumb-row img {
+      flex: 1; border-radius: 6px; border: 2px solid var(--border);
+      cursor: pointer; transition: border-color .2s;
+    }
+    .thumb-row img:hover { border-color: var(--accent-doc); }
+    .thumb-row img.selected { border-color: var(--accent-fin); }
+
+    .script-viewer {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 16px; font-size: 12px;
+      max-height: 300px; overflow-y: auto; white-space: pre-wrap;
+      color: var(--text); line-height: 1.7;
+    }
+    .copy-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .copy-btn {
+      padding: 6px 14px; background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); border-radius: 4px; font-family: var(--mono);
+      font-size: 11px; cursor: pointer; letter-spacing: 1px;
+    }
+    .copy-btn:hover { border-color: var(--accent-doc); color: var(--accent-doc); }
+
+    /* ── History ────────────────────────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; color: var(--muted); padding: 8px 12px;
+         border-bottom: 1px solid var(--border); text-transform: uppercase;
+         letter-spacing: 1px; font-size: 11px; }
+    td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    tr:hover td { background: var(--surface); }
+    .status-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px;
+      text-transform: uppercase; letter-spacing: 1px; font-weight: 700;
+    }
+    .badge-RUNNING { background: #1a2a1a; color: var(--accent-fin); }
+    .badge-SUCCEEDED { background: #0a2a1a; color: var(--accent-fin); }
+    .badge-FAILED { background: #2a0a0a; color: var(--accent-ent); }
+    .badge-TIMED_OUT { background: #2a1a0a; color: #ffa500; }
+
+    a { color: var(--accent-doc); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .error-msg { color: var(--accent-ent); font-size: 12px; margin-top: 8px; }
+    .success-msg { color: var(--accent-fin); font-size: 12px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+// ─── Config (set API_BASE to your API Gateway URL) ───────────────────────────
+const API_BASE = window.__NEXUS_API_BASE__ || 'https://your-api-gateway-url.execute-api.us-east-1.amazonaws.com/prod';
+
+const STEPS = [
+  { key: 'Research',  icon: '🔍', label: 'Research'  },
+  { key: 'Script',    icon: '✍️', label: 'Script'    },
+  { key: 'Audio',     icon: '🎙️', label: 'Audio'     },
+  { key: 'Visuals',   icon: '🎬', label: 'Visuals'   },
+  { key: 'Editor',    icon: '🎞️', label: 'Editor'    },
+  { key: 'Thumbnail', icon: '🖼️', label: 'Thumbnail' },
+  { key: 'Upload',    icon: '📤', label: 'Upload'    },
+  { key: 'Notify',    icon: '🔔', label: 'Notify'    },
+];
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+async function apiPost(path, body) {
+  const r = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+async function apiGet(path) {
+  const r = await fetch(`${API_BASE}${path}`);
+  return r.json();
+}
+function copyToClipboard(text) {
+  navigator.clipboard.writeText(text).catch(() => {});
+}
+function fmtDuration(sec) {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}m ${s}s`;
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const [niche, setNiche] = React.useState('');
+  const [profile, setProfile] = React.useState('documentary');
+  const [dryRun, setDryRun] = React.useState(false);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState('');
+  const [success, setSuccess] = React.useState('');
+
+  const [runId, setRunId] = React.useState('');
+  const [status, setStatus] = React.useState(null);   // { status, current_step }
+  const [outputs, setOutputs] = React.useState(null); // { urls }
+  const [script, setScript] = React.useState(null);
+
+  const [history, setHistory] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem('nexus_history') || '[]'); }
+    catch { return []; }
+  });
+
+  const [selectedThumb, setSelectedThumb] = React.useState(0);
+  const pollerRef = React.useRef(null);
+
+  const accentClass = profile === 'finance' ? 'fin' : profile === 'entertainment' ? 'ent' : '';
+
+  // Poll status
+  React.useEffect(() => {
+    if (!runId) return;
+    pollerRef.current = setInterval(async () => {
+      const s = await apiGet(`/status/${runId}`).catch(() => null);
+      if (!s) return;
+      setStatus(s);
+      if (s.status === 'SUCCEEDED') {
+        clearInterval(pollerRef.current);
+        const o = await apiGet(`/outputs/${runId}`).catch(() => null);
+        setOutputs(o);
+        if (o?.urls?.[`${runId}/script.json`]) {
+          fetch(o.urls[`${runId}/script.json`])
+            .then(r => r.json())
+            .then(setScript)
+            .catch(() => {});
+        }
+      } else if (['FAILED', 'TIMED_OUT', 'ABORTED'].includes(s.status)) {
+        clearInterval(pollerRef.current);
+      }
+    }, 5000);
+    return () => clearInterval(pollerRef.current);
+  }, [runId]);
+
+  async function handleRun() {
+    if (!niche.trim()) { setError('Enter a niche keyword'); return; }
+    setError(''); setSuccess('');
+    setLoading(true);
+    setStatus(null); setOutputs(null); setScript(null);
+    try {
+      const res = await apiPost('/run', { niche, profile, dry_run: dryRun });
+      if (res.error) { setError(res.error); return; }
+      setRunId(res.run_id);
+      const newEntry = {
+        run_id: res.run_id, niche, profile, dry_run: dryRun,
+        status: 'RUNNING', title: '', video_url: '', start: new Date().toISOString(),
+      };
+      const updated = [newEntry, ...history].slice(0, 10);
+      setHistory(updated);
+      localStorage.setItem('nexus_history', JSON.stringify(updated));
+      setSuccess(`Pipeline started. Run ID: ${res.run_id}`);
+    } catch(e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Update history entry when status changes
+  React.useEffect(() => {
+    if (!runId || !status) return;
+    setHistory(prev => {
+      const updated = prev.map(h =>
+        h.run_id === runId
+          ? { ...h, status: status.status, title: status.title || h.title }
+          : h
+      );
+      localStorage.setItem('nexus_history', JSON.stringify(updated));
+      return updated;
+    });
+  }, [status]);
+
+  function stepState(stepKey) {
+    if (!status) return '';
+    const current = status.current_step || '';
+    const stepIdx = STEPS.findIndex(s => s.key === stepKey);
+    const currentIdx = STEPS.findIndex(s => s.key === current);
+    if (status.status === 'FAILED' && stepIdx === currentIdx) return 'error';
+    if (stepIdx < currentIdx) return 'done';
+    if (stepIdx === currentIdx) return 'active';
+    return '';
+  }
+
+  const videoUrl = outputs?.urls?.[`${runId}/final_video.mp4`];
+  const thumbUrls = [0, 1, 2].map(i => outputs?.urls?.[`${runId}/thumbnails/thumbnail_${i}.jpg`]).filter(Boolean);
+
+  return (
+    <div>
+      <header>
+        <div className="logo">NEXUS<span> CLOUD</span></div>
+        <div style={{fontSize:11,color:'var(--muted)',marginLeft:'auto'}}>
+          Serverless YouTube Automation Pipeline
+        </div>
+      </header>
+
+      <main>
+        {/* ── Input Form ── */}
+        <section>
+          <h2>New Pipeline Run</h2>
+          <div className="card">
+            <div className="field">
+              <label>Niche Keyword</label>
+              <input
+                type="text"
+                value={niche}
+                onChange={e => setNiche(e.target.value)}
+                placeholder="e.g. obscure history, stock market, true crime..."
+                onKeyDown={e => e.key === 'Enter' && handleRun()}
+              />
+            </div>
+            <div className="field">
+              <label>Channel Profile</label>
+              <div className="profile-btns">
+                {['documentary', 'finance', 'entertainment'].map(p => (
+                  <button
+                    key={p}
+                    className={`profile-btn ${profile === p ? `active-${p.slice(0,3)}` : ''}`}
+                    onClick={() => setProfile(p)}
+                  >{p.charAt(0).toUpperCase() + p.slice(1)}</button>
+                ))}
+              </div>
+            </div>
+            <div className="field">
+              <div className="toggle-row">
+                <input
+                  type="checkbox" className="toggle" id="dry"
+                  checked={dryRun} onChange={e => setDryRun(e.target.checked)}
+                />
+                <label htmlFor="dry" style={{marginBottom:0,textTransform:'none',letterSpacing:0,fontSize:13}}>
+                  Dry Run (no AI calls, no real uploads)
+                </label>
+              </div>
+            </div>
+            <button
+              className={`run-btn ${accentClass}`}
+              onClick={handleRun}
+              disabled={loading}
+            >
+              {loading ? '⏳  Starting...' : '▶  Run Pipeline'}
+            </button>
+            {error && <div className="error-msg">⚠ {error}</div>}
+            {success && <div className="success-msg">✔ {success}</div>}
+          </div>
+        </section>
+
+        {/* ── Pipeline Progress ── */}
+        {runId && (
+          <section>
+            <h2>Pipeline Progress {status && `— ${status.status}`}</h2>
+            <div className="steps">
+              {STEPS.map(s => (
+                <div key={s.key} className={`step ${stepState(s.key)}`}>
+                  <span className="step-icon">{s.icon}</span>
+                  {s.label}
+                </div>
+              ))}
+            </div>
+            {runId && (
+              <p style={{marginTop:10,fontSize:11,color:'var(--muted)'}}>
+                Run ID: <code style={{color:'var(--text)'}}>{runId}</code>
+              </p>
+            )}
+          </section>
+        )}
+
+        {/* ── Outputs ── */}
+        {outputs && (
+          <section>
+            <h2>Outputs</h2>
+            <div className="output-grid">
+              {/* Video */}
+              <div>
+                <h2 style={{marginBottom:10}}>Final Video</h2>
+                {videoUrl
+                  ? <div className="video-wrapper"><video src={videoUrl} controls /></div>
+                  : <div className="card" style={{textAlign:'center',color:'var(--muted)',padding:40}}>
+                      Video not yet available
+                    </div>
+                }
+              </div>
+              {/* Thumbnails */}
+              <div>
+                <h2 style={{marginBottom:10}}>Thumbnails</h2>
+                <div className="thumb-row">
+                  {thumbUrls.length > 0
+                    ? thumbUrls.map((u, i) => (
+                        <img key={i} src={u} alt={`Thumbnail ${i+1}`}
+                          className={selectedThumb === i ? 'selected' : ''}
+                          onClick={() => setSelectedThumb(i)} />
+                      ))
+                    : <div className="card" style={{flex:1,textAlign:'center',color:'var(--muted)',padding:40}}>
+                        No thumbnails yet
+                      </div>
+                  }
+                </div>
+              </div>
+            </div>
+
+            {/* Script viewer */}
+            {script && (
+              <div style={{marginTop:24}}>
+                <h2 style={{marginBottom:10}}>Script</h2>
+                <div className="card">
+                  <div style={{marginBottom:12}}>
+                    <strong>{script.title}</strong>
+                    <div style={{fontSize:11,color:'var(--muted)',marginTop:4}}>
+                      {script.total_duration_estimate ? fmtDuration(script.total_duration_estimate) : ''}
+                      {' '}&bull;{' '}{(script.tags||[]).join(', ')}
+                    </div>
+                  </div>
+                  <div className="script-viewer">
+                    {(script.sections || []).map((s, i) => (
+                      <div key={i} style={{marginBottom:16}}>
+                        <div style={{color:'var(--accent-doc)',marginBottom:4,fontSize:11}}>
+                          ── {s.title} ──
+                        </div>
+                        {s.content}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="copy-row">
+                    <button className="copy-btn" onClick={() => copyToClipboard(script.title)}>
+                      📋 Copy Title
+                    </button>
+                    <button className="copy-btn" onClick={() => copyToClipboard(script.description || '')}>
+                      📋 Copy Description
+                    </button>
+                    <button className="copy-btn" onClick={() => copyToClipboard((script.tags||[]).join(', '))}>
+                      📋 Copy Tags
+                    </button>
+                    <button className="copy-btn" onClick={() => copyToClipboard(JSON.stringify(script, null, 2))}>
+                      📋 Copy Full JSON
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* ── History ── */}
+        {history.length > 0 && (
+          <section>
+            <h2>Run History (last 10)</h2>
+            <div className="card" style={{padding:0,overflow:'hidden'}}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Run ID</th>
+                    <th>Niche</th>
+                    <th>Profile</th>
+                    <th>Status</th>
+                    <th>Started</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map(h => (
+                    <tr key={h.run_id} style={{cursor:'pointer'}}
+                      onClick={() => setRunId(h.run_id)}>
+                      <td>
+                        <code style={{fontSize:10}}>{h.run_id.slice(0,8)}…</code>
+                        {h.dry_run && <span style={{marginLeft:6,fontSize:10,color:'var(--muted)'}}>[dry]</span>}
+                      </td>
+                      <td>{h.niche}</td>
+                      <td>{h.profile}</td>
+                      <td>
+                        <span className={`status-badge badge-${h.status || 'RUNNING'}`}>
+                          {h.status || 'RUNNING'}
+                        </span>
+                      </td>
+                      <td style={{color:'var(--muted)'}}>
+                        {h.start ? new Date(h.start).toLocaleString() : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+      </main>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
