@@ -96,11 +96,10 @@ class NexusStack(Stack):
             layer_version_name="nexus-api",
             code=lambda_.Code.from_asset("layers/api"),
             compatible_runtimes=[lambda_.Runtime.PYTHON_3_12],
-            description="requests, openai, boto3, psycopg2, python-dotenv",
+            description="requests, boto3, psycopg2, python-dotenv",
         )
 
         secret_names = [
-            "nexus/openai_api_key",
             "nexus/perplexity_api_key",
             "nexus/elevenlabs_api_key",
             "nexus/pexels_api_key",
@@ -178,7 +177,6 @@ class NexusStack(Stack):
         script_role = _make_role(
             "nexus-script",
             secret_names_allowed=[
-                "nexus/openai_api_key",
                 "nexus/perplexity_api_key",
             ],
         )
@@ -249,9 +247,6 @@ class NexusStack(Stack):
         thumbnail_role = _make_role(
             "nexus-thumbnail",
             extra_buckets=[assets_bucket],
-            secret_names_allowed=[
-                "nexus/openai_api_key",
-            ],
         )
         thumbnail_role.add_to_policy(
             iam.PolicyStatement(

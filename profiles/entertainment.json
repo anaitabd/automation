@@ -2,7 +2,7 @@
   "name": "entertainment",
   "llm": {
     "script_model": "anthropic.claude-opus-4-0",
-    "hook_model": "gpt-4o",
+    "hook_model": "anthropic.claude-opus-4-0",
     "research_model": "perplexity/sonar-pro",
     "visual_cue_model": "anthropic.claude-opus-4-0",
     "script_passes": ["structure", "virality_boost", "hook_polish", "retention_optimization", "pacing"]
