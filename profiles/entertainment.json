@@ -1,0 +1,68 @@
+{
+  "name": "entertainment",
+  "llm": {
+    "script_model": "anthropic.claude-opus-4-0",
+    "hook_model": "gpt-4o",
+    "research_model": "perplexity/sonar-pro",
+    "visual_cue_model": "anthropic.claude-opus-4-0",
+    "script_passes": ["structure", "virality_boost", "hook_polish", "retention_optimization", "pacing"]
+  },
+  "voice": {
+    "model_id": "eleven_turbo_v2_5",
+    "voice_id": "EXAVITQu4vr4xnSDxMaL",
+    "stability": 0.33,
+    "similarity_boost": 0.80,
+    "style": 0.90,
+    "emotion_mapping": {
+      "excited": {"stability": 0.25, "style": 0.95},
+      "dramatic": {"stability": 0.20, "style": 0.98},
+      "tense": {"stability": 0.30, "style": 0.88}
+    }
+  },
+  "sound_design": {
+    "music_mood": "energetic_hype",
+    "music_volume_narration": -22,
+    "music_volume_intro": -14,
+    "voice_warmth_eq": false,
+    "voice_reverb": 0.0,
+    "sfx_map": {
+      "lower_third": "sfx/whoosh_soft.wav",
+      "stat_counter": "sfx/counter_tick.wav",
+      "quote_card": "sfx/whoosh_soft.wav"
+    }
+  },
+  "visuals": {
+    "source_priority": ["storyblocks", "pexels", "runway_generate"],
+    "archive_org_enabled": false,
+    "clip_score_threshold": 0.60,
+    "avg_clip_duration_sec": 2.0,
+    "color_grade_default": "punchy_vibrant",
+    "lut_file": "luts/punchy_vibrant_warm.cube",
+    "vignette_strength": 0.20,
+    "film_grain_strength": 0.08,
+    "zoom_punches": true,
+    "whip_pans": true
+  },
+  "editing": {
+    "default_transition": "zoom_punch",
+    "transition_duration_sec": 0.3,
+    "beat_sync_cuts": true,
+    "j_cut_enabled": false,
+    "j_cut_overlap_sec": 0.0,
+    "l_cut_enabled": false,
+    "l_cut_overlap_sec": 0.0,
+    "cuts_per_minute_target": 28
+  },
+  "thumbnail": {
+    "style": "punchy_energetic",
+    "text_color": "#FFFFFF",
+    "accent_color": "#FF3B30",
+    "font": "Impact"
+  },
+  "script": {
+    "target_duration_min": 6,
+    "target_duration_max": 12,
+    "tone": "energetic_conversational",
+    "narrative_style": "first_person_casual"
+  }
+}
