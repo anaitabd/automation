@@ -16,11 +16,11 @@ API Gateway → Step Functions → 8 Lambda Functions → YouTube
 | Step | Lambda | Purpose |
 |------|--------|---------|
 | 1 | `nexus-research` | Perplexity sonar-pro + Bedrock claude-opus-4-0 → best topic/angle |
-| 2 | `nexus-script` | 4–5 pass script (Claude + GPT-4o + Perplexity fact-check) |
+| 2 | `nexus-script` | 5-pass script (Bedrock claude-opus-4-0 + Perplexity fact-check) |
 | 3 | `nexus-audio` | ElevenLabs TTS + ffmpeg EQ + Pixabay music + SFX |
 | 4 | `nexus-visuals` | Storyblocks / Pexels / Archive.org / Runway + CLIP scoring |
 | 5 | `nexus-editor` | Beat-sync assembly + AWS MediaConvert + overlays |
-| 6 | `nexus-thumbnail` | GPT-4o Vision frame scoring + Claude concepts + ffmpeg render |
+| 6 | `nexus-thumbnail` | Bedrock Vision frame scoring + Claude concepts + ffmpeg render |
 | 7 | `nexus-upload` | YouTube Data API v3 OAuth2 private upload |
 | 8 | `nexus-notify` | Discord webhook + PostgreSQL run logging |
 
@@ -76,7 +76,6 @@ cached in-memory.
 
 | Secret Name | Key(s) in JSON | Where to get it |
 |-------------|----------------|-----------------|
-| `nexus/openai_api_key` | `api_key` | [OpenAI Platform](https://platform.openai.com) |
 | `nexus/perplexity_api_key` | `api_key` | [Perplexity Labs](https://www.perplexity.ai/settings/api) |
 | `nexus/elevenlabs_api_key` | `api_key` | [ElevenLabs](https://elevenlabs.io) |
 | `nexus/pexels_api_key` | `api_key`, `pixabay_key` | [Pexels](https://www.pexels.com/api/), [Pixabay](https://pixabay.com/api/docs/) |
@@ -90,8 +89,8 @@ cached in-memory.
 
 ```bash
 aws secretsmanager create-secret \
-  --name nexus/openai_api_key \
-  --secret-string '{"api_key":"sk-..."}'
+  --name nexus/perplexity_api_key \
+  --secret-string '{"api_key":"pplx-..."}'
 ```
 
 ---
@@ -115,7 +114,7 @@ pip install sentence-transformers torch torchvision --index-url https://download
 
 # api-layer
 mkdir -p layers/api/python
-pip install requests openai boto3 python-dotenv psycopg2-binary -t layers/api/python
+pip install requests boto3 python-dotenv psycopg2-binary -t layers/api/python
 ```
 
 ### 2. Upload channel profiles to S3
@@ -225,10 +224,10 @@ aws stepfunctions start-execution \
 |------|-------|----------|
 | Research | sonar-pro | Perplexity |
 | Script structure / depth / visual cues / pacing | claude-opus-4-0 | AWS Bedrock |
-| Hook rewrite | gpt-4o | OpenAI |
+| Hook rewrite | claude-opus-4-0 | AWS Bedrock |
 | Finance fact-check | sonar-pro | Perplexity |
 | Thumbnail concepts | claude-opus-4-0 | AWS Bedrock |
-| Thumbnail frame scoring | gpt-4o (Vision) | OpenAI |
+| Thumbnail frame scoring | claude-opus-4-0 (Vision) | AWS Bedrock |
 | Text-to-speech | eleven_turbo_v2_5 | ElevenLabs |
 | AI video generation (fallback) | gen3a_turbo | Runway ML |
 | Video transcoding (>10 min) | MediaConvert | AWS |
@@ -243,14 +242,13 @@ aws stepfunctions start-execution \
 |---------|-------|-----------|
 | Perplexity sonar-pro | ~2K tokens × 2 calls | ~$0.03 |
 | Bedrock claude-opus-4-0 | ~40K tokens | ~$0.60 |
-| OpenAI gpt-4o | ~3K tokens + vision | ~$0.25 |
 | ElevenLabs eleven_turbo_v2_5 | ~15K chars | ~$0.60 |
 | Runway gen3a_turbo (if triggered) | per clip | ~$0.25 |
 | Lambda compute | 8 functions, ~45 min total | ~$0.15 |
 | S3 storage + transfer | ~500 MB per run | ~$0.02 |
 | MediaConvert (if >10 min) | HD transcode | ~$0.05 |
 | Step Functions | 8 state transitions | ~$0.00 |
-| **Total** | | **~$1.50–$2.50** |
+| **Total** | | **~$1.25–$2.00** |
 
 ---
 
