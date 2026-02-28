@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import subprocess
@@ -20,8 +19,9 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-S3_ASSETS_BUCKET = "nexus-assets"
-S3_OUTPUTS_BUCKET = "nexus-outputs"
+S3_ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
+S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
+S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
 FFMPEG_BIN = "/opt/bin/ffmpeg"
 FFPROBE_BIN = "/opt/bin/ffprobe"
 
@@ -126,27 +126,6 @@ def _search_pexels(query: str, api_key: str, per_page: int = 5) -> list[str]:
         return []
 
 
-def _search_storyblocks(query: str, api_key: str, private_key: str, per_page: int = 5) -> list[str]:
-    try:
-        import hmac
-        expires = str(int(time.time()) + 600)
-        hmac_key = private_key + expires
-        sig = hmac.new(hmac_key.encode(), api_key.encode(), hashlib.sha256).hexdigest()
-        encoded = urllib.parse.quote(query)
-        url = (
-            f"https://api.storyblocks.com/api/v2/videos/search?"
-            f"keywords={encoded}&num_results={per_page}&page_num=1"
-            f"&APIKEY={api_key}&EXPIRES={expires}&HMAC={sig}"
-        )
-        data = json.loads(_http_get(url))
-        urls = []
-        for result in data.get("results", []):
-            dl = result.get("preview_urls", {}).get("mp4_preview_url")
-            if dl:
-                urls.append(dl)
-        return urls
-    except Exception:
-        return []
 
 
 def _search_archive_org(query: str, per_page: int = 3) -> list[str]:
@@ -321,10 +300,7 @@ def _source_and_process_section(
     tmpdir: str,
     s3,
     run_id: str,
-    has_storyblocks: bool,
     has_runway: bool,
-    storyblocks_key: str,
-    storyblocks_private: str,
     pexels_key: str,
     runway_key: str,
 ) -> dict | None:
@@ -336,8 +312,6 @@ def _source_and_process_section(
     candidates: list[str] = []
 
     for query in queries[:2]:
-        if has_storyblocks:
-            candidates += _search_storyblocks(query, storyblocks_key, storyblocks_private)
         candidates += _search_pexels(query, pexels_key)
         if "archive_org" in archive_enabled:
             candidates += _search_archive_org(query)
@@ -429,7 +403,7 @@ def lambda_handler(event: dict, context) -> dict:
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
         script: dict = json.loads(script_obj["Body"].read())
 
-        profile_obj = s3.get_object(Bucket="nexus-config", Key=f"{profile_name}.json")
+        profile_obj = s3.get_object(Bucket=S3_CONFIG_BUCKET, Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
 
         sections: list[dict] = script.get("sections", [])
@@ -458,17 +432,6 @@ def lambda_handler(event: dict, context) -> dict:
 
         pexels_key = get_secret("nexus/pexels_api_key")["api_key"]
 
-        storyblocks_key = ""
-        storyblocks_private = ""
-        has_storyblocks = False
-        try:
-            sb_secret = get_secret("nexus/storyblocks_api_key")
-            storyblocks_key = sb_secret.get("api_key", "")
-            storyblocks_private = sb_secret.get("private_key", "")
-            has_storyblocks = bool(storyblocks_key)
-        except Exception:
-            pass
-
         runway_key = ""
         has_runway = False
         try:
@@ -493,10 +456,7 @@ def lambda_handler(event: dict, context) -> dict:
                     tmpdir=tmpdir,
                     s3=s3,
                     run_id=run_id,
-                    has_storyblocks=has_storyblocks,
                     has_runway=has_runway,
-                    storyblocks_key=storyblocks_key,
-                    storyblocks_private=storyblocks_private,
                     pexels_key=pexels_key,
                     runway_key=runway_key,
                 )

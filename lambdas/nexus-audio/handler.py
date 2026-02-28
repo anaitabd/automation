@@ -20,8 +20,9 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-S3_ASSETS_BUCKET = "nexus-assets"
-S3_OUTPUTS_BUCKET = "nexus-outputs"
+S3_ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
+S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
+S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
 ELEVENLABS_MODEL = "eleven_turbo_v2_5"
 
 PACING_MAP = {
@@ -388,7 +389,7 @@ def lambda_handler(event: dict, context) -> dict:
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
         script: dict = json.loads(script_obj["Body"].read())
 
-        profile_obj = s3.get_object(Bucket="nexus-config", Key=f"{profile_name}.json")
+        profile_obj = s3.get_object(Bucket=S3_CONFIG_BUCKET, Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
 
         if dry_run:

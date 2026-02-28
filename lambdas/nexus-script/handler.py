@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import boto3
 import urllib.request
@@ -15,8 +16,9 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-S3_OUTPUTS_BUCKET = "nexus-outputs"
-BEDROCK_MODEL_ID = "anthropic.claude-opus-4-0"
+S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
+S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
+BEDROCK_MODEL_ID = "us.anthropic.claude-3-sonnet-20240229-v1:0"
 
 SCRIPT_JSON_SCHEMA = """{
   "title": "string",
@@ -253,7 +255,7 @@ def lambda_handler(event: dict, context) -> dict:
 
     try:
         s3 = boto3.client("s3")
-        profile_obj = s3.get_object(Bucket="nexus-config", Key=f"{profile_name}.json")
+        profile_obj = s3.get_object(Bucket=S3_CONFIG_BUCKET, Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
 
         if dry_run:

@@ -1,10 +1,10 @@
 {
   "name": "finance",
   "llm": {
-    "script_model": "anthropic.claude-opus-4-0",
-    "hook_model": "anthropic.claude-opus-4-0",
+    "script_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
+    "hook_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
     "research_model": "perplexity/sonar-pro",
-    "visual_cue_model": "anthropic.claude-opus-4-0",
+    "visual_cue_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
     "script_passes": ["structure", "data_enrichment", "accuracy_check", "hook_polish", "pacing"]
   },
   "voice": {
@@ -32,7 +32,7 @@
     }
   },
   "visuals": {
-    "source_priority": ["storyblocks", "pexels", "runway_generate"],
+    "source_priority": ["pexels", "runway_generate"],
     "archive_org_enabled": false,
     "clip_score_threshold": 0.65,
     "avg_clip_duration_sec": 3.5,

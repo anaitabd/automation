@@ -15,13 +15,13 @@ API Gateway → Step Functions → 8 Lambda Functions → YouTube
 
 | Step | Lambda | Purpose |
 |------|--------|---------|
-| 1 | `nexus-research` | Perplexity sonar-pro + Bedrock claude-opus-4-0 → best topic/angle |
-| 2 | `nexus-script` | 5-pass script (Bedrock claude-opus-4-0 + Perplexity fact-check) |
+| 1 | `nexus-research` | Perplexity sonar-pro + Bedrock Claude 3 Sonnet → best topic/angle |
+| 2 | `nexus-script` | 5-pass script (Bedrock Claude 3 Sonnet + Perplexity fact-check) |
 | 3 | `nexus-audio` | ElevenLabs TTS + ffmpeg EQ + Pixabay music + SFX |
-| 4 | `nexus-visuals` | Storyblocks / Pexels / Archive.org / Runway + CLIP scoring |
+| 4 | `nexus-visuals` | Pexels / Archive.org / Runway + CLIP scoring |
 | 5 | `nexus-editor` | Beat-sync assembly + AWS MediaConvert + overlays |
 | 6 | `nexus-thumbnail` | Bedrock Vision frame scoring + Claude concepts + ffmpeg render |
-| 7 | `nexus-upload` | YouTube Data API v3 OAuth2 private upload |
+| 7 | `nexus-upload` | YouTube Data API v3 OAuth2 (manual approval by default) |
 | 8 | `nexus-notify` | Discord webhook + PostgreSQL run logging |
 
 ---
@@ -53,8 +53,11 @@ automation/
 ├── dashboard/
 │   └── index.html                    ← Single-file React dashboard
 └── scripts/
+    ├── setup_aws.py                 ← Bootstrap AWS resources from .env
     ├── setup_luts.py                 ← Generate + upload .cube LUT files
-    └── upload_sfx.py                 ← Download CC0 SFX from Freesound + upload
+    ├── upload_sfx.py                 ← Download CC0 SFX from Freesound + upload
+    ├── test_connections.py           ← Verify all services are connected
+    └── approve_upload.py             ← Manually approve YouTube uploads
 ```
 
 ---
@@ -71,16 +74,24 @@ automation/
 
 ## Local Testing with Docker
 
-Start the full local stack (LocalStack + PostgreSQL + all Lambda containers):
+> **Full guide: [dockeruse.md](dockeruse.md)**
+
+Start the full local stack (PostgreSQL + AWS bootstrap + all Lambda containers):
 
 ```bash
 docker compose up --build
 ```
 
 This starts:
-- **LocalStack** on port 4566 (S3, Secrets Manager, Step Functions)
-- **PostgreSQL** on port 5432 (user: `nexus`, password: `nexus_local`, db: `nexus`)
+- **PostgreSQL** on port 5432 (user: `nexus_user`, password: from `.env`, db: `nexus`)
+- **setup-aws** — auto-creates S3 buckets, IAM MediaConvert role, Secrets Manager secrets
 - **9 Lambda containers** on ports 9001–9009
+
+Run connectivity tests:
+
+```bash
+docker compose --profile test run --rm test-connections
+```
 
 Invoke a Lambda locally:
 
@@ -108,7 +119,6 @@ cached in-memory.
 | `nexus/perplexity_api_key` | `api_key` | [Perplexity Labs](https://www.perplexity.ai/settings/api) |
 | `nexus/elevenlabs_api_key` | `api_key` | [ElevenLabs](https://elevenlabs.io) |
 | `nexus/pexels_api_key` | `api_key`, `pixabay_key` | [Pexels](https://www.pexels.com/api/), [Pixabay](https://pixabay.com/api/docs/) |
-| `nexus/storyblocks_api_key` | `api_key`, `private_key` | [Storyblocks API](https://www.storyblocks.com/api) |
 | `nexus/runwayml_api_key` | `api_key` | [RunwayML](https://app.runwayml.com/settings/developer) |
 | `nexus/youtube_credentials` | `client_id`, `client_secret`, `refresh_token` | Google Cloud Console OAuth2 |
 | `nexus/discord_webhook_url` | `url` | Discord Server → Integrations → Webhooks |
@@ -252,11 +262,11 @@ aws stepfunctions start-execution \
 | Task | Model | Provider |
 |------|-------|----------|
 | Research | sonar-pro | Perplexity |
-| Script structure / depth / visual cues / pacing | claude-opus-4-0 | AWS Bedrock |
-| Hook rewrite | claude-opus-4-0 | AWS Bedrock |
+| Script structure / depth / visual cues / pacing | claude-3-sonnet | AWS Bedrock |
+| Hook rewrite | claude-3-sonnet | AWS Bedrock |
 | Finance fact-check | sonar-pro | Perplexity |
-| Thumbnail concepts | claude-opus-4-0 | AWS Bedrock |
-| Thumbnail frame scoring | claude-opus-4-0 (Vision) | AWS Bedrock |
+| Thumbnail concepts | claude-3-sonnet | AWS Bedrock |
+| Thumbnail frame scoring | claude-3-sonnet (Vision) | AWS Bedrock |
 | Text-to-speech | eleven_turbo_v2_5 | ElevenLabs |
 | AI video generation (fallback) | gen3a_turbo | Runway ML |
 | Video transcoding (>10 min) | MediaConvert | AWS |

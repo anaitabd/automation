@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import urllib.request
 import urllib.error
@@ -17,7 +18,7 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-S3_OUTPUTS_BUCKET = "nexus-outputs"
+S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 
 
 def _send_discord(

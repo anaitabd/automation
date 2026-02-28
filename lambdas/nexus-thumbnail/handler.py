@@ -19,11 +19,12 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-S3_ASSETS_BUCKET = "nexus-assets"
-S3_OUTPUTS_BUCKET = "nexus-outputs"
+S3_ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
+S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
+S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
 FFMPEG_BIN = "/opt/bin/ffmpeg"
 FFPROBE_BIN = "/opt/bin/ffprobe"
-BEDROCK_MODEL_ID = "anthropic.claude-opus-4-0"
+BEDROCK_MODEL_ID = "us.anthropic.claude-3-sonnet-20240229-v1:0"
 
 
 def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
@@ -256,7 +257,7 @@ def lambda_handler(event: dict, context) -> dict:
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
         script: dict = json.loads(script_obj["Body"].read())
 
-        profile_obj = s3.get_object(Bucket="nexus-config", Key=f"{profile_name}.json")
+        profile_obj = s3.get_object(Bucket=S3_CONFIG_BUCKET, Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
 
         title = script.get("title", "") or title_passthrough

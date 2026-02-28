@@ -17,7 +17,7 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-S3_OUTPUTS_BUCKET = "nexus-outputs"
+S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 YOUTUBE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 YOUTUBE_THUMBNAIL_URL = "https://www.googleapis.com/youtube/v3/thumbnails/set"
@@ -156,6 +156,42 @@ def lambda_handler(event: dict, context) -> dict:
                 "thumbnail_s3_keys": thumbnail_s3_keys,
                 "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
                 "video_duration_sec": video_duration_sec,
+            }
+
+        auto_publish = os.environ.get("YOUTUBE_AUTO_PUBLISH", "false").lower() == "true"
+
+        if not auto_publish:
+            # ── Manual approval mode ──
+            # Save upload-ready metadata to S3; user runs approve_upload.py later.
+            pending = {
+                "run_id": run_id,
+                "profile": profile_name,
+                "title": title,
+                "description": description,
+                "tags": tags,
+                "final_video_s3_key": final_video_s3_key,
+                "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
+                "thumbnail_s3_keys": thumbnail_s3_keys,
+                "video_duration_sec": video_duration_sec,
+                "status": "pending_approval",
+            }
+            s3.put_object(
+                Bucket=S3_OUTPUTS_BUCKET,
+                Key=f"{run_id}/pending_upload.json",
+                Body=json.dumps(pending, indent=2).encode("utf-8"),
+                ContentType="application/json",
+            )
+            return {
+                "run_id": run_id,
+                "profile": profile_name,
+                "dry_run": False,
+                "video_id": "PENDING_MANUAL_APPROVAL",
+                "video_url": "pending://manual-approval-required",
+                "title": title,
+                "thumbnail_s3_keys": thumbnail_s3_keys,
+                "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
+                "video_duration_sec": video_duration_sec,
+                "auto_publish": False,
             }
 
         yt_credentials = get_secret("nexus/youtube_credentials")

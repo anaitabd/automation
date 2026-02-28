@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import uuid
 import boto3
@@ -17,8 +18,8 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
-S3_OUTPUTS_BUCKET = "nexus-outputs"
-BEDROCK_MODEL_ID = "anthropic.claude-opus-4-0"
+S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
+BEDROCK_MODEL_ID = "us.anthropic.claude-3-sonnet-20240229-v1:0"
 
 
 def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:

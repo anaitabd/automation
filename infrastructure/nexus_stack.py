@@ -103,7 +103,6 @@ class NexusStack(Stack):
             "nexus/perplexity_api_key",
             "nexus/elevenlabs_api_key",
             "nexus/pexels_api_key",
-            "nexus/storyblocks_api_key",
             "nexus/runwayml_api_key",
             "nexus/youtube_credentials",
             "nexus/discord_webhook_url",
@@ -209,7 +208,6 @@ class NexusStack(Stack):
             extra_buckets=[assets_bucket],
             secret_names_allowed=[
                 "nexus/pexels_api_key",
-                "nexus/storyblocks_api_key",
                 "nexus/runwayml_api_key",
             ],
         )
