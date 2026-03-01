@@ -22,8 +22,22 @@ def get_secret(name: str) -> dict:
 S3_ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
-FFMPEG_BIN = "/opt/bin/ffmpeg"
-FFPROBE_BIN = "/opt/bin/ffprobe"
+
+
+def _find_bin(name: str) -> str:
+    """Locate a binary (ffmpeg / ffprobe) across Lambda-layer and system paths."""
+    for candidate in (f"/opt/bin/{name}", f"/usr/local/bin/{name}", f"/usr/bin/{name}"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    import shutil
+    path = shutil.which(name)
+    if path:
+        return path
+    raise FileNotFoundError(f"{name} not found. Install it or set the {name.upper()}_BIN env var.")
+
+
+FFMPEG_BIN = os.environ.get("FFMPEG_BIN") or _find_bin("ffmpeg")
+FFPROBE_BIN = os.environ.get("FFPROBE_BIN") or _find_bin("ffprobe")
 BEDROCK_MODEL_ID = "us.anthropic.claude-3-sonnet-20240229-v1:0"
 
 
@@ -31,7 +45,9 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     data = json.dumps(body).encode("utf-8")
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            merged = {"User-Agent": "NexusCloud/1.0"}
+            merged.update(headers)
+            req = urllib.request.Request(url, data=data, headers=merged, method="POST")
             with urllib.request.urlopen(req, timeout=60) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception:
@@ -242,6 +258,33 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
+def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
+    """Send a step-level Discord notification. Silently swallows errors."""
+    if dry_run:
+        return
+    try:
+        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
+        if not webhook_url:
+            return
+        embed = {
+            "embeds": [{
+                "title": f"🖼️ Nexus Cloud — {step}",
+                "color": color,
+                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
+                "footer": {"text": "Nexus Cloud Pipeline"},
+            }]
+        }
+        data = json.dumps(embed).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url, data=data, method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except Exception:
+        pass
+
+
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
@@ -305,6 +348,13 @@ def lambda_handler(event: dict, context) -> dict:
                 key = f"{run_id}/thumbnails/thumbnail_{i}.jpg"
                 s3.upload_file(t_path, S3_OUTPUTS_BUCKET, key)
                 thumbnail_s3_keys.append(key)
+
+        _notify_discord("Thumbnails Generated", 0xF1C40F, run_id, [
+            {"name": "Title", "value": title[:100], "inline": False},
+            {"name": "Best Score", "value": f"{max(scores) if scores else 0.0:.2f}", "inline": True},
+            {"name": "Variants", "value": str(len(thumbnail_s3_keys)), "inline": True},
+            {"name": "Profile", "value": profile_name, "inline": True},
+        ], dry_run=dry_run)
 
         return {
             "run_id": run_id,

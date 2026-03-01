@@ -54,7 +54,10 @@ def _send_discord(
     data = json.dumps(embed).encode("utf-8")
     req = urllib.request.Request(
         webhook_url, data=data, method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "NexusCloud/1.0",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=15):
@@ -73,10 +76,13 @@ def _log_to_db(
     video_url: str,
     elapsed_time: float,
 ) -> None:
+    dbname = db_config.get("dbname") or "nexus"
+    if not db_config.get("dbname"):
+        print("[WARN] _log_to_db: dbname missing/empty in db_credentials, falling back to 'nexus'")
     conn = psycopg2.connect(
         host=db_config["host"],
         port=db_config.get("port", 5432),
-        dbname=db_config["dbname"],
+        dbname=dbname,
         user=db_config["user"],
         password=db_config["password"],
         connect_timeout=10,

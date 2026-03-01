@@ -1,10 +1,10 @@
 {
   "name": "finance",
   "llm": {
-    "script_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
-    "hook_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
+    "script_model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "hook_model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
     "research_model": "perplexity/sonar-pro",
-    "visual_cue_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
+    "visual_cue_model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
     "script_passes": ["structure", "data_enrichment", "accuracy_check", "hook_polish", "pacing"]
   },
   "voice": {
@@ -34,22 +34,23 @@
   "visuals": {
     "source_priority": ["pexels", "runway_generate"],
     "archive_org_enabled": false,
-    "clip_score_threshold": 0.65,
-    "avg_clip_duration_sec": 3.5,
+    "clip_score_threshold": 0.60,
+    "avg_clip_duration_sec": 6.0,
+    "clips_per_section": 2,
     "color_grade_default": "clean_corporate",
     "lut_file": "luts/cold_blue_corporate.cube",
     "vignette_strength": 0.15,
     "film_grain_strength": 0.05
   },
   "editing": {
-    "default_transition": "cut",
-    "transition_duration_sec": 0.0,
+    "default_transition": "dissolve",
+    "transition_duration_sec": 0.6,
     "beat_sync_cuts": true,
     "j_cut_enabled": true,
     "j_cut_overlap_sec": 0.5,
     "l_cut_enabled": false,
     "l_cut_overlap_sec": 0.0,
-    "cuts_per_minute_target": 16
+    "cuts_per_minute_target": 18
   },
   "thumbnail": {
     "style": "clean_bold",
@@ -58,8 +59,8 @@
     "font": "Roboto Bold"
   },
   "script": {
-    "target_duration_min": 8,
-    "target_duration_max": 14,
+    "target_duration_min": 12,
+    "target_duration_max": 20,
     "tone": "authoritative_data_driven",
     "narrative_style": "second_person_direct"
   }

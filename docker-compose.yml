@@ -10,7 +10,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-nexus_user}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-nexus_user} -d ${DB_NAME:-nexus}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -50,6 +50,7 @@ services:
     env_file: .env
     environment:
       - AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
+      - AWS_LAMBDA_FUNCTION_TIMEOUT=900
     depends_on:
       setup-aws:
         condition: service_completed_successfully
@@ -64,6 +65,7 @@ services:
     env_file: .env
     environment:
       - AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
+      - AWS_LAMBDA_FUNCTION_TIMEOUT=900
     depends_on:
       setup-aws:
         condition: service_completed_successfully
@@ -78,6 +80,7 @@ services:
     env_file: .env
     environment:
       - AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
+      - AWS_LAMBDA_FUNCTION_TIMEOUT=900
     depends_on:
       setup-aws:
         condition: service_completed_successfully
@@ -93,6 +96,7 @@ services:
     environment:
       - AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
       - MEDIACONVERT_ROLE_ARN=${MEDIACONVERT_ROLE_ARN}
+      - AWS_LAMBDA_FUNCTION_TIMEOUT=900
     depends_on:
       setup-aws:
         condition: service_completed_successfully
@@ -167,6 +171,24 @@ services:
         condition: service_healthy
     profiles:
       - test
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.setup
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      - ORCHESTRATOR_MODE=docker
+      - ORCHESTRATOR_PORT=3000
+      - DASHBOARD_PATH=/app/dashboard/index.html
+    entrypoint: ["python", "/app/scripts/orchestrator.py"]
+    volumes:
+      - ./dashboard:/app/dashboard:ro
+    depends_on:
+      setup-aws:
+        condition: service_completed_successfully
 
 volumes:
   pg_data:

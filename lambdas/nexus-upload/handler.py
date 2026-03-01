@@ -34,7 +34,10 @@ def _refresh_access_token(credentials: dict) -> str:
     ).encode("utf-8")
     req = urllib.request.Request(
         YOUTUBE_TOKEN_URL, data=data, method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "NexusCloud/1.0",
+        },
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         token_data = json.loads(resp.read())
@@ -52,6 +55,7 @@ def _upload_video(
         "Content-Type": "application/json; charset=UTF-8",
         "X-Upload-Content-Length": str(file_size),
         "X-Upload-Content-Type": "video/mp4",
+        "User-Agent": "NexusCloud/1.0",
     }
     body = json.dumps(metadata).encode("utf-8")
     init_url = f"{YOUTUBE_UPLOAD_URL}?uploadType=resumable&part=snippet,status"
@@ -74,6 +78,7 @@ def _upload_video(
                 "Content-Type": "video/mp4",
                 "Content-Range": f"bytes {uploaded}-{end_byte}/{file_size}",
                 "Content-Length": str(len(chunk)),
+                "User-Agent": "NexusCloud/1.0",
             }
             chunk_req = urllib.request.Request(
                 session_uri, data=chunk, headers=chunk_headers, method="PUT"
@@ -103,6 +108,7 @@ def _upload_thumbnail(video_id: str, thumbnail_path: str, access_token: str) -> 
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "image/jpeg",
             "Content-Length": str(file_size),
+            "User-Agent": "NexusCloud/1.0",
         },
     )
     with urllib.request.urlopen(req, timeout=60):
@@ -118,6 +124,33 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
             Body=json.dumps({"step": step, "error": str(exc)}).encode("utf-8"),
             ContentType="application/json",
         )
+    except Exception:
+        pass
+
+
+def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
+    """Send a step-level Discord notification. Silently swallows errors."""
+    if dry_run:
+        return
+    try:
+        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
+        if not webhook_url:
+            return
+        embed = {
+            "embeds": [{
+                "title": f"🚀 Nexus Cloud — {step}",
+                "color": color,
+                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
+                "footer": {"text": "Nexus Cloud Pipeline"},
+            }]
+        }
+        data = json.dumps(embed).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url, data=data, method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            pass
     except Exception:
         pass
 
@@ -181,6 +214,13 @@ def lambda_handler(event: dict, context) -> dict:
                 Body=json.dumps(pending, indent=2).encode("utf-8"),
                 ContentType="application/json",
             )
+
+            _notify_discord("Upload Pending Approval", 0xF39C12, run_id, [
+                {"name": "Title", "value": title[:100], "inline": False},
+                {"name": "Status", "value": "pending approval", "inline": True},
+                {"name": "Profile", "value": profile_name, "inline": True},
+            ], dry_run=dry_run)
+
             return {
                 "run_id": run_id,
                 "profile": profile_name,
@@ -225,6 +265,12 @@ def lambda_handler(event: dict, context) -> dict:
             _upload_thumbnail(video_id, thumbnail_local, access_token)
 
         video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        _notify_discord("Video Uploaded", 0x2ECC71, run_id, [
+            {"name": "Title", "value": title[:100], "inline": False},
+            {"name": "YouTube URL", "value": video_url, "inline": False},
+            {"name": "Profile", "value": profile_name, "inline": True},
+        ], dry_run=dry_run)
 
         return {
             "run_id": run_id,

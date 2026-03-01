@@ -295,7 +295,7 @@ def create_secrets() -> None:
     _upsert_secret("nexus/db_credentials", {
         "host": _env("DB_HOST", "postgres"),
         "port": _env("DB_PORT", "5432"),
-        "dbname": _env("DB_NAME", "nexus"),
+        "dbname": _env("DB_NAME") or "nexus",
         "user": _env("DB_USER", "nexus_user"),
         "password": _env("DB_PASSWORD"),
     })

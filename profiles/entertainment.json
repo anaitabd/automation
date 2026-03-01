@@ -1,10 +1,10 @@
 {
   "name": "entertainment",
   "llm": {
-    "script_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
-    "hook_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
+    "script_model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "hook_model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
     "research_model": "perplexity/sonar-pro",
-    "visual_cue_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
+    "visual_cue_model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
     "script_passes": ["structure", "virality_boost", "hook_polish", "retention_optimization", "pacing"]
   },
   "voice": {
@@ -34,8 +34,9 @@
   "visuals": {
     "source_priority": ["pexels", "runway_generate"],
     "archive_org_enabled": false,
-    "clip_score_threshold": 0.60,
-    "avg_clip_duration_sec": 2.0,
+    "clip_score_threshold": 0.55,
+    "avg_clip_duration_sec": 5.0,
+    "clips_per_section": 3,
     "color_grade_default": "punchy_vibrant",
     "lut_file": "luts/punchy_vibrant_warm.cube",
     "vignette_strength": 0.20,
@@ -45,13 +46,13 @@
   },
   "editing": {
     "default_transition": "zoom_punch",
-    "transition_duration_sec": 0.3,
+    "transition_duration_sec": 0.4,
     "beat_sync_cuts": true,
-    "j_cut_enabled": false,
-    "j_cut_overlap_sec": 0.0,
+    "j_cut_enabled": true,
+    "j_cut_overlap_sec": 0.3,
     "l_cut_enabled": false,
     "l_cut_overlap_sec": 0.0,
-    "cuts_per_minute_target": 28
+    "cuts_per_minute_target": 30
   },
   "thumbnail": {
     "style": "punchy_energetic",
@@ -60,8 +61,8 @@
     "font": "Impact"
   },
   "script": {
-    "target_duration_min": 6,
-    "target_duration_max": 12,
+    "target_duration_min": 10,
+    "target_duration_max": 18,
     "tone": "energetic_conversational",
     "narrative_style": "first_person_casual"
   }

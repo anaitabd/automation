@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -6,6 +7,9 @@ import time
 import urllib.parse
 import urllib.request
 import boto3
+
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+log = logging.getLogger("nexus-visuals")
 
 _cache: dict = {}
 
@@ -22,8 +26,22 @@ def get_secret(name: str) -> dict:
 S3_ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
-FFMPEG_BIN = "/opt/bin/ffmpeg"
-FFPROBE_BIN = "/opt/bin/ffprobe"
+
+
+def _find_bin(name: str) -> str:
+    """Locate a binary (ffmpeg / ffprobe) across Lambda-layer and system paths."""
+    for candidate in (f"/opt/bin/{name}", f"/usr/local/bin/{name}", f"/usr/bin/{name}"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    import shutil
+    path = shutil.which(name)
+    if path:
+        return path
+    raise FileNotFoundError(f"{name} not found. Install it or set the {name.upper()}_BIN env var.")
+
+
+FFMPEG_BIN = os.environ.get("FFMPEG_BIN") or _find_bin("ffmpeg")
+FFPROBE_BIN = os.environ.get("FFPROBE_BIN") or _find_bin("ffprobe")
 
 LUT_MAP = {
     "cinematic_warm": "luts/cinematic_teal_orange.cube",
@@ -48,7 +66,10 @@ GRAIN_DEFAULTS = {
 
 
 def _http_get(url: str, headers: dict | None = None, retries: int = 3) -> bytes:
-    req = urllib.request.Request(url, headers=headers or {})
+    merged = {"User-Agent": "NexusCloud/1.0"}
+    if headers:
+        merged.update(headers)
+    req = urllib.request.Request(url, headers=merged)
     for attempt in range(retries):
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
@@ -64,7 +85,9 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     data = json.dumps(body).encode("utf-8")
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            merged = {"User-Agent": "NexusCloud/1.0"}
+            merged.update(headers)
+            req = urllib.request.Request(url, data=data, headers=merged, method="POST")
             with urllib.request.urlopen(req, timeout=90) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception:
@@ -109,26 +132,38 @@ def _score_clip(local_path: str, query: str) -> float:
         return 0.5
 
 
-def _search_pexels(query: str, api_key: str, per_page: int = 5) -> list[str]:
+def _search_pexels(query: str, api_key: str, per_page: int = 8) -> list[str]:
+    log.info("Pexels search: query=%r per_page=%d", query, per_page)
     encoded = urllib.parse.quote(query)
-    url = f"https://api.pexels.com/videos/search?query={encoded}&per_page={per_page}&orientation=landscape"
+    url = f"https://api.pexels.com/videos/search?query={encoded}&per_page={per_page}&orientation=landscape&size=large"
     headers = {"Authorization": api_key}
     try:
         data = json.loads(_http_get(url, headers=headers))
         urls = []
         for video in data.get("videos", []):
+            # Prefer HD files with width >= 1920 first, then fall back to 1280+
+            best_file = None
             for vf in video.get("video_files", []):
-                if vf.get("quality") in ("hd", "sd") and vf.get("width", 0) >= 1280:
-                    urls.append(vf["link"])
+                w = vf.get("width", 0)
+                q = vf.get("quality", "")
+                if q == "hd" and w >= 1920:
+                    best_file = vf["link"]
                     break
+                elif q in ("hd", "sd") and w >= 1280 and not best_file:
+                    best_file = vf["link"]
+            if best_file:
+                urls.append(best_file)
+        log.info("Pexels returned %d usable videos", len(urls))
         return urls
-    except Exception:
+    except Exception as exc:
+        log.warning("Pexels search failed: %s", exc)
         return []
 
 
 
 
-def _search_archive_org(query: str, per_page: int = 3) -> list[str]:
+def _search_archive_org(query: str, per_page: int = 5) -> list[str]:
+    log.info("Archive.org search: query=%r", query)
     encoded = urllib.parse.quote(query)
     url = (
         f"https://archive.org/advancedsearch.php?q={encoded}+mediatype:movies"
@@ -141,12 +176,15 @@ def _search_archive_org(query: str, per_page: int = 3) -> list[str]:
             ident = doc.get("identifier")
             if ident:
                 urls.append(f"https://archive.org/download/{ident}/{ident}.mp4")
+        log.info("Archive.org returned %d candidates", len(urls))
         return urls
-    except Exception:
+    except Exception as exc:
+        log.warning("Archive.org search failed: %s", exc)
         return []
 
 
 def _generate_runway(prompt: str, api_key: str, tmpdir: str) -> str | None:
+    log.info("Runway gen4_turbo: prompt=%r", prompt[:80])
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -154,27 +192,32 @@ def _generate_runway(prompt: str, api_key: str, tmpdir: str) -> str | None:
     }
     try:
         body = {
-            "model": "gen3a_turbo",
+            "model": "gen4_turbo",
             "promptText": prompt,
-            "duration": 5,
-            "ratio": "1280:768",
+            "duration": 10,
+            "ratio": "1920:1080",
         }
         response = _http_post("https://api.dev.runwayml.com/v1/image_to_video", headers=headers, body=body)
         task_id = response.get("id")
         if not task_id:
+            log.warning("Runway returned no task_id")
             return None
 
-        deadline = time.time() + 90
+        log.info("Runway task %s — polling (up to 180s)…", task_id)
+        deadline = time.time() + 180
         while time.time() < deadline:
             time.sleep(5)
             poll_url = f"https://api.dev.runwayml.com/v1/tasks/{task_id}"
-            req = urllib.request.Request(poll_url, headers=headers)
+            poll_headers = {"User-Agent": "NexusCloud/1.0"}
+            poll_headers.update(headers)
+            req = urllib.request.Request(poll_url, headers=poll_headers)
             with urllib.request.urlopen(req, timeout=30) as resp:
                 task = json.loads(resp.read())
             status = task.get("status")
             if status == "SUCCEEDED":
                 video_url = task.get("output", [None])[0]
                 if video_url:
+                    log.info("Runway task %s SUCCEEDED — downloading", task_id)
                     video_bytes = _http_get(video_url)
                     out_path = os.path.join(tmpdir, f"runway_{task_id}.mp4")
                     with open(out_path, "wb") as f:
@@ -182,21 +225,27 @@ def _generate_runway(prompt: str, api_key: str, tmpdir: str) -> str | None:
                     return out_path
                 break
             elif status in ("FAILED", "CANCELLED"):
+                log.warning("Runway task %s ended with status=%s", task_id, status)
                 break
 
+        log.warning("Runway task %s timed out or had no output", task_id)
         return None
-    except Exception:
+    except Exception as exc:
+        log.warning("Runway generation failed: %s", exc)
         return None
 
 
-def _download_video(url: str, tmpdir: str, idx: int) -> str | None:
+def _download_video(url: str, tmpdir: str, idx: int | str) -> str | None:
     try:
+        log.info("Downloading video %s …", idx)
         video_bytes = _http_get(url)
         path = os.path.join(tmpdir, f"raw_{idx}.mp4")
         with open(path, "wb") as f:
             f.write(video_bytes)
+        log.info("Downloaded video %s (%.1f MB)", idx, len(video_bytes) / 1_048_576)
         return path
-    except Exception:
+    except Exception as exc:
+        log.warning("Download failed for video %s: %s", idx, exc)
         return None
 
 
@@ -223,23 +272,35 @@ def _get_duration(path: str) -> float:
 def _build_camera_motion_filter(style: str) -> str:
     if style == "ken_burns_in":
         return (
-            "zoompan=z='min(zoom+0.0008,1.04)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            ":d=125:s=1920x1080:fps=25"
+            "zoompan=z='min(zoom+0.0005,1.06)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+            ":d=150:s=1920x1080:fps=30"
         )
     elif style == "ken_burns_out":
         return (
-            "zoompan=z='if(lte(zoom,1.0),1.04,max(1.001,zoom-0.0008))'"
-            ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=125:s=1920x1080:fps=25"
+            "zoompan=z='if(lte(zoom,1.0),1.06,max(1.001,zoom-0.0005))'"
+            ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=150:s=1920x1080:fps=30"
         )
     elif style == "pan_left":
         return (
-            "zoompan=z='1.08':x='iw/2-(iw/zoom/2)+t*3':y='ih/2-(ih/zoom/2)'"
-            ":d=125:s=1920x1080:fps=25"
+            "zoompan=z='1.06':x='iw/2-(iw/zoom/2)+t*2':y='ih/2-(ih/zoom/2)'"
+            ":d=150:s=1920x1080:fps=30"
         )
     elif style == "pan_right":
         return (
-            "zoompan=z='1.08':x='iw/2-(iw/zoom/2)-t*3':y='ih/2-(ih/zoom/2)'"
-            ":d=125:s=1920x1080:fps=25"
+            "zoompan=z='1.06':x='iw/2-(iw/zoom/2)-t*2':y='ih/2-(ih/zoom/2)'"
+            ":d=150:s=1920x1080:fps=30"
+        )
+    elif style == "slow_drift":
+        # Subtle diagonal drift — very cinematic
+        return (
+            "zoompan=z='1.04':x='iw/2-(iw/zoom/2)+t*1.5':y='ih/2-(ih/zoom/2)+t*0.8'"
+            ":d=150:s=1920x1080:fps=30"
+        )
+    elif style == "dolly_in":
+        # Faster zoom simulating a dolly push-in
+        return (
+            "zoompan=z='min(zoom+0.001,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+            ":d=150:s=1920x1080:fps=30"
         )
     else:
         return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
@@ -252,10 +313,16 @@ def _process_clip(
     profile_name: str,
     lut_local_path: str | None,
     output_path: str,
+    target_duration: float | None = None,
 ) -> bool:
     try:
-        target_dur = profile.get("visuals", {}).get("avg_clip_duration_sec", 5.0)
-        clip_dur = min(_get_duration(raw_path), target_dur)
+        raw_dur = _get_duration(raw_path)
+        # Use target_duration if specified, otherwise use profile default
+        max_dur = target_duration or profile.get("visuals", {}).get("avg_clip_duration_sec", 8.0)
+        clip_dur = min(raw_dur, max_dur)
+        log.info("Processing clip %s → %s (%.1fs, camera=%s)",
+                 os.path.basename(raw_path), os.path.basename(output_path),
+                 clip_dur, section.get("visual_cue", {}).get("camera_style", "static"))
         camera_style = section.get("visual_cue", {}).get("camera_style", "static")
         vignette_angle = VIGNETTE_DEFAULTS.get(profile_name, "PI/4")
         grain_strength = GRAIN_DEFAULTS.get(profile_name, 2)
@@ -271,7 +338,11 @@ def _process_clip(
 
         filters.append(f"noise=alls={grain_strength}:allf=t+u")
 
-        filters.append("unsharp=5:5:1.0:5:5:0.0")
+        # Sharpening — slightly stronger for cinematic crispness
+        filters.append("unsharp=5:5:1.2:5:5:0.0")
+
+        # Subtle fade-in / fade-out on each clip for smoother assembly
+        filters.append(f"fade=t=in:st=0:d=0.3,fade=t=out:st={max(0.0, clip_dur - 0.3)}:d=0.3")
 
         vf = ",".join(filters)
 
@@ -281,13 +352,16 @@ def _process_clip(
             "-i", raw_path,
             "-t", str(clip_dur),
             "-vf", vf,
-            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+            "-pix_fmt", "yuv420p",
             "-an",
             output_path,
         ]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        log.info("FFmpeg done: %s", os.path.basename(output_path))
         return True
-    except Exception:
+    except Exception as exc:
+        log.warning("FFmpeg failed for %s: %s", os.path.basename(output_path), exc)
         return False
 
 
@@ -308,58 +382,100 @@ def _source_and_process_section(
     queries = visual_cue.get("search_queries", [section.get("title", "nature landscape")])
     threshold = profile.get("visuals", {}).get("clip_score_threshold", 0.65)
     archive_enabled = profile.get("visuals", {}).get("source_priority", [])
+    clips_needed = max(1, int(visual_cue.get("clips_needed", 2)))
+    section_duration = float(section.get("duration_estimate_sec", 30))
+    per_clip_dur = max(3.0, section_duration / clips_needed)
 
+    log.info("── Section %d: %d clips needed, %.0fs duration, queries=%s",
+             section_idx, clips_needed, section_duration, queries[:2])
+
+    # ── Gather candidates from all queries (use up to 4 queries, 8 results each) ──
     candidates: list[str] = []
-
-    for query in queries[:2]:
-        candidates += _search_pexels(query, pexels_key)
+    for query in queries[:4]:
+        candidates += _search_pexels(query, pexels_key, per_page=8)
         if "archive_org" in archive_enabled:
-            candidates += _search_archive_org(query)
+            candidates += _search_archive_org(query, per_page=4)
 
-    best_path: str | None = None
-    best_score: float = 0.0
+    # Deduplicate URLs
+    seen_urls: set[str] = set()
+    unique_candidates: list[str] = []
+    for url in candidates:
+        if url not in seen_urls:
+            seen_urls.add(url)
+            unique_candidates.append(url)
+    candidates = unique_candidates
 
-    for idx, url in enumerate(candidates[:8]):
+    log.info("Section %d: %d unique candidates to score (max 15)", section_idx, len(candidates))
+
+    # ── Score and rank all candidates ──
+    scored: list[tuple[float, str]] = []
+    query_text = " ".join(queries)
+    for idx, url in enumerate(candidates[:15]):
         raw_path = _download_video(url, tmpdir, f"{section_idx}_{idx}")
         if raw_path is None:
             continue
-        score = _score_clip(raw_path, " ".join(queries))
-        if score > best_score:
-            best_score = score
-            best_path = raw_path
-        if score >= threshold:
-            break
+        score = _score_clip(raw_path, query_text)
+        scored.append((score, raw_path))
 
-    if (best_score < threshold or best_path is None) and has_runway:
-        runway_path = _generate_runway(" ".join(queries[:1]), runway_key, tmpdir)
-        if runway_path:
-            runway_score = _score_clip(runway_path, " ".join(queries))
-            if runway_score > best_score:
-                best_score = runway_score
-                best_path = runway_path
+    # Sort descending by score
+    scored.sort(key=lambda x: x[0], reverse=True)
+    log.info("Section %d: %d clips scored, best=%.2f, threshold=%.2f",
+             section_idx, len(scored), scored[0][0] if scored else 0, threshold)
 
-    if best_path is None:
+    # ── Fill with Runway-generated clips if not enough good candidates ──
+    good_clips = [(s, p) for s, p in scored if s >= threshold]
+    if len(good_clips) < clips_needed and has_runway:
+        for rw_idx, query in enumerate(queries[:2]):
+            if len(good_clips) >= clips_needed:
+                break
+            runway_path = _generate_runway(query, runway_key, tmpdir)
+            if runway_path:
+                runway_score = _score_clip(runway_path, query_text)
+                good_clips.append((runway_score, runway_path))
+                scored.append((runway_score, runway_path))
+                scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Take the top N clips
+    selected = scored[:clips_needed] if scored else []
+
+    if not selected:
         return None
 
-    out_filename = f"section_{section_idx:03d}.mp4"
-    out_path = os.path.join(tmpdir, out_filename)
-    success = _process_clip(best_path, section, profile, profile_name, lut_local_path, out_path)
-    if not success:
+    # ── Process and upload each clip ──
+    clip_s3_keys: list[str] = []
+    best_score = 0.0
+    for clip_idx, (score, raw_path) in enumerate(selected):
+        best_score = max(best_score, score)
+        out_filename = f"section_{section_idx:03d}_{clip_idx:02d}.mp4"
+        out_path = os.path.join(tmpdir, out_filename)
+        success = _process_clip(
+            raw_path, section, profile, profile_name,
+            lut_local_path, out_path,
+            target_duration=per_clip_dur,
+        )
+        if not success:
+            continue
+        s3_key = f"{run_id}/clips/{out_filename}"
+        s3.upload_file(out_path, S3_ASSETS_BUCKET, s3_key)
+        clip_s3_keys.append(s3_key)
+
+    if not clip_s3_keys:
+        log.warning("Section %d: no clips produced!", section_idx)
         return None
 
-    s3_key = f"{run_id}/clips/{out_filename}"
-    s3.upload_file(out_path, S3_ASSETS_BUCKET, s3_key)
-
+    log.info("Section %d: uploaded %d clips to S3", section_idx, len(clip_s3_keys))
     return {
         "section_idx": section_idx,
-        "clip_s3_key": s3_key,
+        "clip_s3_key": clip_s3_keys[0],            # backward compat
+        "clip_s3_keys": clip_s3_keys,               # multi-clip support
         "score": best_score,
+        "clips_sourced": len(clip_s3_keys),
         "camera_style": visual_cue.get("camera_style", "static"),
         "transition_in": visual_cue.get("transition_in", "dissolve"),
         "overlay_type": visual_cue.get("overlay_type", "none"),
         "overlay_text": visual_cue.get("overlay_text", ""),
         "color_grade": visual_cue.get("color_grade", "cinematic_warm"),
-        "duration_estimate_sec": section.get("duration_estimate_sec", 5),
+        "duration_estimate_sec": section.get("duration_estimate_sec", 30),
         "emotion": section.get("emotion", "neutral"),
     }
 
@@ -389,6 +505,33 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
+def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
+    """Send a step-level Discord notification. Silently swallows errors."""
+    if dry_run:
+        return
+    try:
+        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
+        if not webhook_url:
+            return
+        embed = {
+            "embeds": [{
+                "title": f"🎬 Nexus Cloud — {step}",
+                "color": color,
+                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
+                "footer": {"text": "Nexus Cloud Pipeline"},
+            }]
+        }
+        data = json.dumps(embed).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url, data=data, method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except Exception:
+        pass
+
+
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
@@ -400,6 +543,7 @@ def lambda_handler(event: dict, context) -> dict:
     try:
         s3 = boto3.client("s3")
 
+        log.info("Loading script from s3://%s/%s", S3_OUTPUTS_BUCKET, script_s3_key)
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
         script: dict = json.loads(script_obj["Body"].read())
 
@@ -407,6 +551,8 @@ def lambda_handler(event: dict, context) -> dict:
         profile: dict = json.loads(profile_obj["Body"].read())
 
         sections: list[dict] = script.get("sections", [])
+        log.info("Visuals pipeline starting — %d sections, profile=%s, dry_run=%s",
+                 len(sections), profile_name, dry_run)
 
         if dry_run:
             return {
@@ -447,6 +593,8 @@ def lambda_handler(event: dict, context) -> dict:
 
             processed_sections = []
             for idx, section in enumerate(sections):
+                log.info("━━ Processing section %d/%d ━━", idx + 1, len(sections))
+                section_start = time.time()
                 result = _source_and_process_section(
                     section=section,
                     section_idx=idx,
@@ -462,6 +610,16 @@ def lambda_handler(event: dict, context) -> dict:
                 )
                 if result:
                     processed_sections.append(result)
+                log.info("Section %d/%d done in %.1fs (success=%s)",
+                         idx + 1, len(sections), time.time() - section_start, result is not None)
+
+        log.info("Visuals complete — %d/%d sections produced clips", len(processed_sections), len(sections))
+
+        _notify_discord("Visuals Sourced", 0x1ABC9C, run_id, [
+            {"name": "Clips Processed", "value": str(len(processed_sections)), "inline": True},
+            {"name": "Total Sections", "value": str(len(sections)), "inline": True},
+            {"name": "Profile", "value": profile_name, "inline": True},
+        ], dry_run=dry_run)
 
         return {
             "run_id": run_id,
@@ -476,5 +634,6 @@ def lambda_handler(event: dict, context) -> dict:
         }
 
     except Exception as exc:
+        log.error("Visuals failed: %s", exc, exc_info=True)
         _write_error(run_id, "visuals", exc)
         raise

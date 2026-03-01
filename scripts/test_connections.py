@@ -143,6 +143,7 @@ def test_perplexity() -> None:
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
+                "User-Agent": "NexusCloud/1.0",
             },
             method="POST",
         )
@@ -165,7 +166,10 @@ def test_elevenlabs() -> None:
     try:
         req = urllib.request.Request(
             "https://api.elevenlabs.io/v1/user",
-            headers={"xi-api-key": api_key},
+            headers={
+                "xi-api-key": api_key,
+                "User-Agent": "NexusCloud/1.0",
+            },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
@@ -179,14 +183,17 @@ def test_elevenlabs() -> None:
 # 7. Pexels API
 # ─────────────────────────────────────────────────
 def test_pexels() -> None:
-    api_key = _env("PEXELS_API_KEY")
+    api_key = _env("PEXELS_API_KEY").strip()
     if not api_key:
         _record("Pexels API", False, "PEXELS_API_KEY not set")
         return
     try:
         req = urllib.request.Request(
-            "https://api.pexels.com/videos/search?query=nature&per_page=1",
-            headers={"Authorization": api_key},
+            "https://api.pexels.com/v1/search?query=nature&per_page=1",
+            headers={
+                "Authorization": api_key,
+                "User-Agent": "NexusCloud/1.0",
+            },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
@@ -200,7 +207,7 @@ def test_pexels() -> None:
 # 8. Discord Webhook
 # ─────────────────────────────────────────────────
 def test_discord() -> None:
-    url = _env("DISCORD_WEBHOOK_URL")
+    url = _env("DISCORD_WEBHOOK_URL").strip()
     if not url:
         _record("Discord Webhook", False, "DISCORD_WEBHOOK_URL not set")
         return
@@ -218,7 +225,10 @@ def test_discord() -> None:
         data = json.dumps(embed).encode()
         req = urllib.request.Request(
             url, data=data, method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "NexusCloud/1.0",
+            },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             status = resp.status
@@ -233,10 +243,13 @@ def test_discord() -> None:
 def test_postgres() -> None:
     try:
         import psycopg2
+        db_name = _env("DB_NAME") or "nexus"
+        if not _env("DB_NAME"):
+            print("  ⚠️  DB_NAME is empty/unset, falling back to 'nexus'", flush=True)
         conn = psycopg2.connect(
             host=_env("DB_HOST", "postgres"),
             port=int(_env("DB_PORT", "5432")),
-            dbname=_env("DB_NAME", "nexus"),
+            dbname=db_name,
             user=_env("DB_USER", "nexus_user"),
             password=_env("DB_PASSWORD"),
             connect_timeout=5,

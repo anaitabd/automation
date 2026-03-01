@@ -37,11 +37,35 @@ MUSIC_MOOD_KEYWORDS = {
     "energetic_hype": "energetic upbeat",
 }
 
-FFMPEG_BIN = "/opt/bin/ffmpeg"
+def _find_ffmpeg() -> str:
+    """Locate the ffmpeg binary.
+
+    Search order:
+      1. /opt/bin/ffmpeg  – AWS Lambda layer path
+      2. 'ffmpeg' on $PATH – Docker / local dev
+    Raises FileNotFoundError if ffmpeg cannot be found anywhere.
+    """
+    for candidate in ("/opt/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    # Fall back to bare name (relies on $PATH)
+    import shutil
+    path = shutil.which("ffmpeg")
+    if path:
+        return path
+    raise FileNotFoundError(
+        "ffmpeg not found. Install ffmpeg or set the FFMPEG_BIN env var."
+    )
+
+
+FFMPEG_BIN = os.environ.get("FFMPEG_BIN") or _find_ffmpeg()
 
 
 def _http_get(url: str, headers: dict | None = None, retries: int = 3) -> bytes:
-    req = urllib.request.Request(url, headers=headers or {})
+    merged = {"User-Agent": "NexusCloud/1.0"}
+    if headers:
+        merged.update(headers)
+    req = urllib.request.Request(url, headers=merged)
     for attempt in range(retries):
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
@@ -57,7 +81,9 @@ def _http_post_bytes(url: str, headers: dict, body: dict, retries: int = 3) -> b
     data = json.dumps(body).encode("utf-8")
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            merged = {"User-Agent": "NexusCloud/1.0"}
+            merged.update(headers)
+            req = urllib.request.Request(url, data=data, headers=merged, method="POST")
             with urllib.request.urlopen(req, timeout=120) as resp:
                 return resp.read()
         except Exception:
@@ -349,7 +375,7 @@ def _inject_sfx(
     )
 
     subprocess.run(
-        inputs + ["-filter_complex", ";".join(filter_parts), "-map", "[out]", sfx_out],
+        [FFMPEG_BIN, "-y"] + inputs + ["-filter_complex", ";".join(filter_parts), "-map", "[out]", sfx_out],
         check=True,
         capture_output=True,
     )
@@ -371,6 +397,33 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
             Body=json.dumps({"step": step, "error": str(exc)}).encode("utf-8"),
             ContentType="application/json",
         )
+    except Exception:
+        pass
+
+
+def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
+    """Send a step-level Discord notification. Silently swallows errors."""
+    if dry_run:
+        return
+    try:
+        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
+        if not webhook_url:
+            return
+        embed = {
+            "embeds": [{
+                "title": f"🎙️ Nexus Cloud — {step}",
+                "color": color,
+                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
+                "footer": {"text": "Nexus Cloud Pipeline"},
+            }]
+        }
+        data = json.dumps(embed).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url, data=data, method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            pass
     except Exception:
         pass
 
@@ -426,6 +479,12 @@ def lambda_handler(event: dict, context) -> dict:
                 s3, voiceover_processed, run_id, "voiceover.wav"
             )
             mixed_key = _upload_to_s3(s3, final_audio_path, run_id, "mixed_audio.wav")
+
+        _notify_discord("Audio Generated", 0xE67E22, run_id, [
+            {"name": "Title", "value": title[:100], "inline": False},
+            {"name": "Voiceover", "value": voiceover_key.split("/")[-1], "inline": True},
+            {"name": "Profile", "value": profile_name, "inline": True},
+        ], dry_run=dry_run)
 
         return {
             "run_id": run_id,

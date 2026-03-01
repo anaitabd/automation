@@ -26,7 +26,9 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     data = json.dumps(body).encode("utf-8")
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            merged = {"User-Agent": "NexusCloud/1.0"}
+            merged.update(headers)
+            req = urllib.request.Request(url, data=data, headers=merged, method="POST")
             with urllib.request.urlopen(req, timeout=60) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
@@ -144,6 +146,13 @@ def lambda_handler(event: dict, context) -> dict:
 
         s3_key = _save_to_s3(run_id, research_result)
 
+        _notify_discord("Research Complete", 0x3498DB, run_id, [
+            {"name": "Topic", "value": research_result["selected_topic"][:100], "inline": False},
+            {"name": "Angle", "value": research_result["angle"][:100], "inline": False},
+            {"name": "Search Volume", "value": research_result.get("search_volume_estimate", "N/A"), "inline": True},
+            {"name": "Profile", "value": profile, "inline": True},
+        ], dry_run=dry_run)
+
         return {
             "run_id": run_id,
             "profile": profile,
@@ -171,3 +180,32 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         )
     except Exception:
         pass
+
+
+def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
+    """Send a step-level Discord notification. Silently swallows errors."""
+    if dry_run:
+        return
+    try:
+        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
+        if not webhook_url:
+            return
+        embed = {
+            "embeds": [{
+                "title": f"🔍 Nexus Cloud — {step}",
+                "color": color,
+                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
+                "footer": {"text": "Nexus Cloud Pipeline"},
+            }]
+        }
+        data = json.dumps(embed).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url, data=data, method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except Exception:
+        pass
+
+

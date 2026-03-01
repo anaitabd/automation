@@ -1,10 +1,268 @@
 import json
 import os
+import re
 import time
 import boto3
 import urllib.request
 
+try:
+    from json_repair import repair_json
+except ImportError:
+    repair_json = None
+
 _cache: dict = {}
+
+
+def _repair_truncated_json(text: str) -> dict:
+    """Attempt to repair JSON that was truncated mid-stream by the LLM.
+
+    Handles truncation at any point: mid-string, mid-key, mid-number,
+    after a colon, after a comma, etc.  Closes unclosed strings, strips
+    dangling structural tokens, then closes brackets/braces in stack order.
+    """
+    start = text.find("{")
+    if start == -1:
+        raise json.JSONDecodeError("No opening brace found", text, 0)
+
+    fragment = text[start:]
+
+    # ── Phase 1: close an unclosed string literal ──
+    in_string = False
+    escape = False
+    for ch in fragment:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+    if in_string:
+        # Escape any trailing backslash that would eat our closing quote
+        if fragment.endswith("\\"):
+            fragment += '\\"'
+        else:
+            fragment += '"'
+
+    # ── Phase 2: iteratively strip dangling structural tokens ──
+    # After closing the string we may have fragments like:
+    #   ..."value"           (ok — value is complete)
+    #   ..."key":            (dangling key with no value)
+    #   ..."key": "val",     (trailing comma)
+    #   ..."key": 123        (ok, but number may be truncated — keep it)
+    #   ..."key": tru        (truncated literal)
+    # Loop until stable.
+    _dangling_patterns = [
+        # trailing comma (possibly with whitespace)
+        re.compile(r",\s*$"),
+        # key with colon but no value:  , "key" :   or  "key" :
+        re.compile(r',?\s*"(?:[^"\\]|\\.)*"\s*:\s*$'),
+        # key + colon + truncated literal (tru, fals, nul, etc.)
+        re.compile(r',?\s*"(?:[^"\\]|\\.)*"\s*:\s*(?:t(?:r(?:ue?)?)?|f(?:a(?:l(?:se?)?)?)?|n(?:u(?:ll?)?)?)$'),
+        # key + colon + truncated number (trailing dot with no decimals)
+        re.compile(r',?\s*"(?:[^"\\]|\\.)*"\s*:\s*-?\d+\.\s*$'),
+        # orphaned bare string after comma:  , "key"  (no colon — left behind after prior strip)
+        re.compile(r',\s*"(?:[^"\\]|\\.)*"\s*$'),
+    ]
+    for _ in range(6):
+        stripped = fragment.rstrip()
+        changed = False
+        for pat in _dangling_patterns:
+            m = pat.search(stripped)
+            if m and m.end() == len(stripped):
+                stripped = stripped[: m.start()]
+                changed = True
+        if not changed:
+            break
+        fragment = stripped
+
+    fragment = fragment.rstrip()
+
+    # ── Phase 3: count unclosed braces/brackets and close them ──
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    for ch in fragment:
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch in ("{", "["):
+            stack.append(ch)
+        elif ch == "}":
+            if stack and stack[-1] == "{":
+                stack.pop()
+        elif ch == "]":
+            if stack and stack[-1] == "[":
+                stack.pop()
+
+    # Final trailing-comma strip before closing
+    fragment = re.sub(r",\s*$", "", fragment.rstrip())
+
+    for opener in reversed(stack):
+        fragment += "]" if opener == "[" else "}"
+
+    # ── Phase 4: try to parse; if it fails, do progressively aggressive scrubs ──
+    try:
+        return json.loads(fragment)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy A: remove the last incomplete object from any array.
+    # This handles the common case where truncation hit mid-object inside
+    # the "sections" array:  [..., {complete}, {partial  →  [..., {complete}]
+    scrub_a = fragment
+    for _ in range(3):
+        # Find the last  , { ... (no matching close) before a ] or end
+        m = re.search(
+            r',\s*\{[^{}]*$',
+            scrub_a,
+        )
+        if m:
+            scrub_a = scrub_a[: m.start()]
+            # Re-close brackets
+            _stack: list[str] = []
+            _in = False
+            _esc = False
+            for c in scrub_a:
+                if _esc:
+                    _esc = False
+                    continue
+                if c == "\\":
+                    _esc = True
+                    continue
+                if c == '"':
+                    _in = not _in
+                    continue
+                if _in:
+                    continue
+                if c in ("{", "["):
+                    _stack.append(c)
+                elif c == "}" and _stack and _stack[-1] == "{":
+                    _stack.pop()
+                elif c == "]" and _stack and _stack[-1] == "[":
+                    _stack.pop()
+            scrub_a = re.sub(r",\s*$", "", scrub_a.rstrip())
+            for opener in reversed(_stack):
+                scrub_a += "]" if opener == "[" else "}"
+            try:
+                return json.loads(scrub_a)
+            except json.JSONDecodeError:
+                continue
+        else:
+            break
+
+    # Strategy B: remove the last key-value pair entirely (original approach,
+    # but now using DOTALL and greedy inner match for nested values).
+    scrubbed = re.sub(
+        r',\s*"(?:[^"\\]|\\.)*"\s*:\s*(?:"(?:[^"\\]|\\.)*"|[\d.eE+\-]+|\[[^]]*]|\{[^}]*}|true|false|null)\s*(?=[}\]])',
+        "",
+        fragment,
+        count=1,
+        flags=re.DOTALL,
+    )
+    if scrubbed != fragment:
+        try:
+            return json.loads(scrubbed)
+        except json.JSONDecodeError:
+            pass
+
+    # Last resort — raise so the caller knows repair failed
+    return json.loads(fragment)  # will raise JSONDecodeError with details
+
+
+def _extract_json(raw: str) -> dict:
+    """Robustly extract a JSON object from an LLM response.
+
+    Handles markdown fences, preamble text, trailing garbage, and
+    truncated output (unclosed strings/braces from token limit).
+    Raises json.JSONDecodeError only after all strategies are exhausted.
+    """
+    if not raw or not raw.strip():
+        raise json.JSONDecodeError("Empty response from LLM", raw or "", 0)
+
+    text = raw.strip()
+
+    # 1) Strip markdown fences (```json ... ``` or ``` ... ```)
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    # 2) Try direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # 3) Find the first { … } balanced block
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if esc:
+                esc = False
+                continue
+            if ch == "\\":
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
+
+    # 4) Attempt to repair truncated JSON (LLM hit token limit)
+    try:
+        result = _repair_truncated_json(text)
+        print("[INFO] _extract_json: repaired truncated JSON successfully")
+        return result
+    except (json.JSONDecodeError, Exception) as repair_exc:
+        print(f"[WARN] _extract_json: repair also failed: {repair_exc}")
+        pass
+
+    # 5) Fallback: use json_repair library (handles many more edge cases)
+    if repair_json is not None:
+        try:
+            repaired = repair_json(text, return_objects=True)
+            if isinstance(repaired, dict):
+                print("[INFO] _extract_json: json_repair library recovered JSON successfully")
+                return repaired
+            # If it returned a list or string, try to find a dict inside
+            if isinstance(repaired, list):
+                for item in repaired:
+                    if isinstance(item, dict):
+                        print("[INFO] _extract_json: json_repair library recovered JSON (from list)")
+                        return item
+            print(f"[WARN] _extract_json: json_repair returned non-dict type: {type(repaired).__name__}")
+        except Exception as lib_exc:
+            print(f"[WARN] _extract_json: json_repair library also failed: {lib_exc}")
+
+    # 6) Nothing worked — raise with a helpful snippet
+    raise json.JSONDecodeError(
+        f"Could not extract JSON from LLM response (first 200 chars): {text[:200]}",
+        text,
+        0,
+    )
 
 
 def get_secret(name: str) -> dict:
@@ -28,21 +286,24 @@ SCRIPT_JSON_SCHEMA = """{
   "hook_emotion": "tense|excited|curious|dramatic",
   "sections": [{
     "title": "string",
-    "content": "string with [PAUSE]/[BEAT]/[BREATH] markers",
+    "content": "string with [PAUSE]/[BEAT]/[BREATH] markers. Use [NEEDS SOURCE] for unverifiable claims and [UNVERIFIED: claim] for uncertain facts. 6-10 substantial sentences per section.",
     "emotion": "neutral|tense|dramatic|somber|excited|confident",
     "duration_estimate_sec": 0,
+    "source_notes": "brief note on factual basis for this section (e.g. 'well-documented historical event' or 'common knowledge' or 'requires verification')",
     "visual_cue": {
-      "search_queries": ["3 specific stock footage terms"],
+      "search_queries": ["5 specific, diverse stock footage search terms for rich B-roll"],
       "camera_style": "ken_burns_in|ken_burns_out|pan_left|pan_right|static",
       "color_grade": "cinematic_warm|cold_blue|vintage_sepia|high_contrast|clean_corporate|punchy_vibrant",
-      "transition_in": "crossfade|cut|zoom_punch|whip|dissolve",
+      "transition_in": "crossfade|cut|zoom_punch|whip|dissolve|fade_black|wipeleft",
       "overlay_type": "none|lower_third|stat_counter|quote_card",
-      "overlay_text": "max 45 chars"
+      "overlay_text": "max 60 chars",
+      "clips_needed": 2
     }
   }],
   "cta": "string",
   "total_duration_estimate": 0,
-  "mood": "string"
+  "mood": "string",
+  "factual_confidence": "high|medium|low — overall assessment of factual reliability"
 }"""
 
 
@@ -50,7 +311,9 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     data = json.dumps(body).encode("utf-8")
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            merged = {"User-Agent": "NexusCloud/1.0"}
+            merged.update(headers)
+            req = urllib.request.Request(url, data=data, headers=merged, method="POST")
             with urllib.request.urlopen(req, timeout=90) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
@@ -77,7 +340,16 @@ def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3) -> str:
                 contentType="application/json",
                 accept="application/json",
             )
-            return json.loads(response["body"].read())["content"][0]["text"]
+            result = json.loads(response["body"].read())
+            stop_reason = result.get("stop_reason", "")
+            text = result["content"][0]["text"]
+            if stop_reason == "max_tokens":
+                print(
+                    f"[WARN] _bedrock_call: output truncated (stop_reason=max_tokens, "
+                    f"max_tokens={max_tokens}, output_len={len(text)}). "
+                    f"Last 80 chars: ...{text[-80:]!r}"
+                )
+            return text
         except Exception as exc:
             if attempt == retries - 1:
                 raise
@@ -85,46 +357,180 @@ def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3) -> str:
     raise RuntimeError("Unreachable")
 
 
-def _pass1_structure(topic: str, angle: str, context: str, profile: dict) -> dict:
+def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_attempts: int = 3) -> dict:
     target_min = profile.get("script", {}).get("target_duration_min", 10)
     target_max = profile.get("script", {}).get("target_duration_max", 16)
     tone = profile.get("script", {}).get("tone", "authoritative_compelling")
     narrative = profile.get("script", {}).get("narrative_style", "third_person_omniscient")
 
     prompt = (
-        f"You are a professional YouTube scriptwriter. Create a complete script structure for:\n"
-        f"Topic: {topic}\nAngle: {angle}\nContext: {context}\n\n"
-        f"Requirements:\n"
-        f"- Target duration: {target_min}-{target_max} minutes\n"
+        f"You are an elite YouTube scriptwriter and documentary filmmaker known for deeply researched, "
+        f"factually rigorous, cinematic content that keeps viewers watching till the end.\n\n"
+        f"═══ ASSIGNMENT ═══\n"
+        f"Topic: {topic}\n"
+        f"Angle: {angle}\n"
+        f"Research context: {context}\n\n"
+
+        f"═══ FORMAT & STYLE ═══\n"
+        f"- Target duration: {target_min}-{target_max} minutes of narrated content\n"
         f"- Tone: {tone}\n"
         f"- Narrative style: {narrative}\n"
-        f"- Include [PAUSE], [BEAT], [BREATH] markers where appropriate\n"
-        f"- Return ONLY valid JSON matching this schema (no markdown):\n{SCRIPT_JSON_SCHEMA}"
+        f"- STRUCTURE: Create 8-14 richly detailed sections (NOT fewer)\n"
+        f"- Each section MUST contain 6-10 substantial sentences (NOT bullet points)\n"
+        f"- Include [PAUSE], [BEAT], [BREATH] markers for natural pacing\n"
+        f"- Use vivid but ACCURATE descriptions — paint scenes the viewer can see\n"
+        f"- Build narrative tension across sections — each should flow into the next\n"
+        f"- Include specific details that demonstrate depth (names, places, mechanisms)\n"
+        f"- Write content that sounds authoritative and cinematic when read aloud by a narrator\n"
+        f"- Each section's duration_estimate_sec should be realistic (typically 40-120 seconds each)\n"
+        f"- The sum of all section durations should equal total_duration_estimate\n\n"
+
+        f"═══ CINEMATIC QUALITY GUIDELINES ═══\n"
+        f"- Open with a cold open / dramatic hook — drop the viewer into the most compelling moment\n"
+        f"- Use 'chapter-style' section titles that tease what's coming\n"
+        f"- Build rising action across the first 2/3 of the script, then resolve\n"
+        f"- Each section should have its own mini arc: setup → tension → revelation\n"
+        f"- Use sensory language: what does the scene look, sound, feel like?\n"
+        f"- Include moments of silence/breathing room for emotional impact ([BEAT] [PAUSE])\n"
+        f"- The final section should deliver a powerful conclusion that reframes everything\n"
+        f"- Write MULTIPLE visual_cue search_queries per section (5 specific queries) for rich B-roll\n"
+        f"- Consider visual variety: wide establishing shots, close-ups, archival, motion graphics\n\n"
+
+        f"═══ FACTUAL INTEGRITY — ABSOLUTE RULES ═══\n"
+        f"NEVER invent, assume, or embellish facts. Before writing ANY claim, ask yourself:\n"
+        f"\"Do I know this for certain?\"\n\n"
+        f"STRICT RULES:\n"
+        f"1. Only include events, dates, names, statistics that are real and well-documented\n"
+        f"2. NEVER fill gaps with \"likely\", \"probably\", or assumed details presented as fact\n"
+        f"3. If a story sounds interesting but you are not 100% certain it is real — OMIT it entirely\n"
+        f"4. Do NOT exaggerate or dramatize facts beyond what is documented\n"
+        f"5. Dates, names, and numbers MUST be accurate — if unsure, leave them out\n"
+        f"6. Do NOT present speculation as established fact\n"
+        f"7. Do NOT conflate separate events or attribute actions to the wrong people\n\n"
+
+        f"WHEN YOU ARE UNCERTAIN:\n"
+        f"- If you cannot verify a specific date, number, or name: use [NEEDS SOURCE] as a placeholder\n"
+        f"- If a claim is plausible but you are not fully confident: use [UNVERIFIED: \"the claim\"]\n"
+        f"- This lets the human editor know to fact-check before publishing\n\n"
+
+        f"QUALITY SELF-CHECK (do this before finalizing):\n"
+        f"1. Is every fact in this script something I know with HIGH confidence?\n"
+        f"2. Are there any details I \"filled in\" or assumed that I should not have?\n"
+        f"3. Would this script hold up to basic fact-checking by a journalist?\n"
+        f"4. Did I attribute any quotes, actions, or events to the wrong person/time?\n"
+        f"If the answer to #3 is NO — rewrite those sections before responding.\n\n"
+
+        f"═══ CONTENT DEPTH GUIDELINES ═══\n"
+        f"- Open with a hook that grabs attention using a REAL, verifiable fact or question\n"
+        f"- Each section should teach the viewer something specific and substantive\n"
+        f"- Use concrete examples instead of vague generalizations\n"
+        f"- Include cause-and-effect reasoning: explain WHY things happened, not just WHAT\n"
+        f"- Add context that helps viewers understand significance\n"
+        f"- End with a thought-provoking conclusion that ties back to the hook\n"
+        f"- Populate \"source_notes\" for each section to indicate factual basis\n"
+        f"- Set \"factual_confidence\" to honestly reflect your certainty level\n\n"
+
+        f"═══ OUTPUT FORMAT ═══\n"
+        f"Return ONLY valid JSON matching this schema (no markdown, no extra text):\n{SCRIPT_JSON_SCHEMA}\n\n"
+        f"IMPORTANT: visual_cue.search_queries should contain 5 specific, diverse stock footage search terms.\n"
+        f"CRITICAL: You MUST output complete, valid JSON with all brackets and braces properly closed. "
+        f"If the script is getting long, reduce the number of sections rather than leaving JSON incomplete. "
+        f"Always close every {{ with }} and every [ with ]. Double-check your JSON is valid before finishing."
     )
-    raw = _bedrock_call(prompt, max_tokens=8192)
-    raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-    return json.loads(raw)
+    last_err = None
+    for attempt in range(max_attempts):
+        raw = _bedrock_call(prompt, max_tokens=32768)
+        try:
+            return _extract_json(raw)
+        except json.JSONDecodeError as exc:
+            last_err = exc
+            print(
+                f"[WARN] _pass1_structure JSON parse failed (attempt {attempt + 1}/{max_attempts}): {exc}\n"
+                f"[DEBUG] raw response length={len(raw)}, last 500 chars: ...{raw[-500:]!r}"
+            )
+            time.sleep(2 ** attempt)
+    raise last_err
 
 
 def _pass2_hook_rewrite(script: dict) -> dict:
     prompt = (
-        "You are an expert at writing viral YouTube hooks. "
-        "Rewrite the given hook to be punchy, emotionally gripping, and impossible to click away from. "
+        "You are an expert at writing viral YouTube hooks that are BOTH compelling AND factually honest.\n\n"
+        "Rewrite the given hook to be punchy, emotionally gripping, and impossible to click away from.\n\n"
+        "RULES:\n"
+        "- The hook MUST be grounded in real, verifiable facts from the script\n"
+        "- Do NOT invent statistics, quotes, or claims that aren't in the original content\n"
+        "- Do NOT use misleading framing that implies something the video doesn't deliver\n"
+        "- You CAN use rhetorical questions, dramatic pacing, and emotional language\n"
+        "- You CAN highlight the most surprising REAL fact from the script\n"
+        "- The hook should make a promise the video actually keeps\n\n"
         "Return ONLY a JSON object (no markdown) with keys 'hook' (string) and 'hook_emotion' "
         "(tense|excited|curious|dramatic).\n\n"
         f"Original hook: {script['hook']}\n"
         f"Video topic: {script['title']}\n"
-        f"Mood: {script.get('mood', 'neutral')}"
+        f"Mood: {script.get('mood', 'neutral')}\n"
+        f"Script summary: {script.get('description', '')}"
     )
     raw = _bedrock_call(prompt, max_tokens=512)
-    raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
-        rewrite = json.loads(raw)
+        rewrite = _extract_json(raw)
         script["hook"] = rewrite.get("hook", script["hook"])
         script["hook_emotion"] = rewrite.get("hook_emotion", script.get("hook_emotion", "curious"))
     except json.JSONDecodeError:
         pass
     return script
+
+
+def _pass_fact_integrity(script: dict) -> dict:
+    """Self-audit pass: review the script for factual integrity.
+
+    Uses Bedrock to re-examine every claim in the script and flag or remove
+    anything that cannot be verified. Runs for ALL profiles.
+    """
+    prompt = (
+        "You are a rigorous fact-checker and editorial auditor. Your job is to review "
+        "the following YouTube script and ensure EVERY factual claim is accurate.\n\n"
+
+        "═══ YOUR TASK ═══\n"
+        "Go through each section's content line by line and:\n"
+        "1. REMOVE any fact, statistic, date, name, or event you are not 100% certain is accurate\n"
+        "2. Replace removed claims with [NEEDS SOURCE] if the section needs that info to make sense\n"
+        "3. Flag uncertain claims as [UNVERIFIED: \"the claim\"] — do NOT delete them silently\n"
+        "4. Fix any dates, numbers, or names you KNOW are wrong\n"
+        "5. Remove any embellishment or dramatization that goes beyond documented facts\n"
+        "6. Check that no quotes are misattributed\n"
+        "7. Ensure cause-and-effect claims are accurate, not just plausible\n\n"
+
+        "═══ WHAT TO LOOK FOR ═══\n"
+        "- Specific statistics without clear origin (e.g. \"73% of people...\")\n"
+        "- Precise dates/years that might be off by a year or more\n"
+        "- Named individuals doing things they might not have actually done\n"
+        "- Events described with details that sound dramatized\n"
+        "- \"Likely\" or \"probably\" presented as established fact\n"
+        "- Conflation of separate events into one narrative\n\n"
+
+        "═══ RULES ═══\n"
+        "- Do NOT add new content or expand the script\n"
+        "- Do NOT change the tone, style, or structure\n"
+        "- Do NOT modify visual_cue fields\n"
+        "- ONLY modify \"content\", \"source_notes\", and \"factual_confidence\" fields\n"
+        "- Update \"source_notes\" for each section to reflect your assessment\n"
+        "- Set the top-level \"factual_confidence\" to \"high\", \"medium\", or \"low\"\n"
+        "- Keep [PAUSE], [BEAT], [BREATH] markers exactly where they are\n"
+        "- Return the COMPLETE script as valid JSON, same schema\n\n"
+
+        "CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
+        f"{json.dumps(script, indent=2)}"
+    )
+    raw = _bedrock_call(prompt, max_tokens=32768)
+    try:
+        audited = _extract_json(raw)
+        # Preserve structural fields the LLM should not have touched
+        audited.setdefault("factual_confidence", "medium")
+        return audited
+    except json.JSONDecodeError:
+        # If parsing fails, return original script with a warning note
+        script.setdefault("factual_confidence", "unaudited")
+        return script
 
 
 def _pass3_visual_cues(script: dict, profile: dict) -> dict:
@@ -135,24 +541,29 @@ def _pass3_visual_cues(script: dict, profile: dict) -> dict:
         prompt = (
             f"Generate precise visual cue metadata for this YouTube script section.\n"
             f"Section title: {section['title']}\n"
-            f"Content excerpt: {section['content'][:300]}\n"
+            f"Content excerpt: {section['content'][:500]}\n"
             f"Emotion: {section.get('emotion', 'neutral')}\n"
+            f"Section duration: {section.get('duration_estimate_sec', 60)}s\n"
             f"Default color grade: {color_grade}\n"
             f"Default transition: {transition}\n\n"
+            "Think about visual VARIETY: wide establishing shots, close-ups, archival footage, "
+            "abstract textures, time-lapses, aerial views. Each search query should find a DIFFERENT "
+            "type of footage to create visual richness.\n\n"
             "Return ONLY valid JSON (no markdown) with this structure:\n"
             "{\n"
-            '  "search_queries": ["term1", "term2", "term3"],\n'
-            '  "camera_style": "ken_burns_in|ken_burns_out|pan_left|pan_right|static",\n'
+            '  "search_queries": ["term1", "term2", "term3", "term4", "term5"],\n'
+            '  "camera_style": "ken_burns_in|ken_burns_out|pan_left|pan_right|static|slow_drift|dolly_in",\n'
             f'  "color_grade": "{color_grade}",\n'
-            '  "transition_in": "crossfade|cut|zoom_punch|whip|dissolve",\n'
+            '  "transition_in": "crossfade|cut|zoom_punch|whip|dissolve|fade_black|wipeleft",\n'
             '  "overlay_type": "none|lower_third|stat_counter|quote_card",\n'
-            '  "overlay_text": "max 45 chars"\n'
-            "}"
+            '  "overlay_text": "max 60 chars",\n'
+            '  "clips_needed": 2\n'
+            "}\n"
+            "clips_needed should be 2-4 depending on section length (1 per ~15-20s of content)."
         )
         raw = _bedrock_call(prompt, max_tokens=512)
-        raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         try:
-            cue = json.loads(raw)
+            cue = _extract_json(raw)
         except json.JSONDecodeError:
             cue = {
                 "search_queries": [section["title"]],
@@ -161,6 +572,7 @@ def _pass3_visual_cues(script: dict, profile: dict) -> dict:
                 "transition_in": transition,
                 "overlay_type": "none",
                 "overlay_text": "",
+                "clips_needed": 2,
             }
         script["sections"][i]["visual_cue"] = cue
     return script
@@ -172,13 +584,18 @@ def _pass4_pacing(script: dict, profile: dict) -> dict:
         f"Polish the pacing of this YouTube script for {cpm} cuts per minute. "
         "Adjust [PAUSE], [BEAT], [BREATH] markers, tighten sentences, and update "
         "duration_estimate_sec for each section. Return the full script JSON "
-        "(same schema, no markdown changes, only values updated):\n\n"
+        "(same schema, no markdown changes, only values updated).\n\n"
+        "RULES:\n"
+        "- Do NOT add new factual claims, statistics, or details that weren't in the original\n"
+        "- Do NOT remove [NEEDS SOURCE] or [UNVERIFIED] markers\n"
+        "- Do NOT change the meaning of any sentence — only tighten the wording\n"
+        "- Preserve source_notes and factual_confidence fields unchanged\n"
+        "- CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
         f"{json.dumps(script, indent=2)}"
     )
-    raw = _bedrock_call(prompt, max_tokens=8192)
-    raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    raw = _bedrock_call(prompt, max_tokens=32768)
     try:
-        return json.loads(raw)
+        return _extract_json(raw)
     except json.JSONDecodeError:
         return script
 
@@ -194,16 +611,26 @@ def _pass5_fact_check(script: dict, perplexity_key: str) -> dict:
             {
                 "role": "system",
                 "content": (
-                    "You are a rigorous financial fact-checker. "
-                    "Identify any factual claims that need citation or correction, "
-                    "and return an updated script with accurate data inserted inline. "
-                    "Return ONLY the updated script as valid JSON, same schema."
+                    "You are a rigorous fact-checker with access to live web search. "
+                    "Your job is to verify every factual claim in this script against real sources.\n\n"
+                    "FOR EACH CLAIM:\n"
+                    "- If VERIFIED: keep it and update source_notes with your source\n"
+                    "- If INCORRECT: fix it with the correct data and note the correction in source_notes\n"
+                    "- If UNVERIFIABLE: mark it as [UNVERIFIED: \"the claim\"] in the content\n"
+                    "- If FABRICATED (no evidence it ever happened): REMOVE it entirely and replace with [NEEDS SOURCE]\n\n"
+                    "RULES:\n"
+                    "- Do NOT add new fabricated facts to replace removed ones\n"
+                    "- Do NOT invent sources or citations\n"
+                    "- Do NOT present your corrections with false confidence if you cannot verify them either\n"
+                    "- Update factual_confidence to reflect your overall assessment\n"
+                    "- Return ONLY the updated script as valid JSON, same schema."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"Fact-check and enrich this finance script:\n{json.dumps(script, indent=2)}"
+                    f"Fact-check and verify this script. Search the web for each major claim:\n"
+                    f"{json.dumps(script, indent=2)}"
                 ),
             },
         ],
@@ -213,9 +640,8 @@ def _pass5_fact_check(script: dict, perplexity_key: str) -> dict:
         "https://api.perplexity.ai/chat/completions", headers=headers, body=body
     )
     raw = result["choices"][0]["message"]["content"].strip()
-    raw = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
-        return json.loads(raw)
+        return _extract_json(raw)
     except json.JSONDecodeError:
         return script
 
@@ -241,6 +667,33 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
             Body=json.dumps({"step": step, "error": str(exc)}).encode("utf-8"),
             ContentType="application/json",
         )
+    except Exception:
+        pass
+
+
+def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
+    """Send a step-level Discord notification. Silently swallows errors."""
+    if dry_run:
+        return
+    try:
+        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
+        if not webhook_url:
+            return
+        embed = {
+            "embeds": [{
+                "title": f"📝 Nexus Cloud — {step}",
+                "color": color,
+                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
+                "footer": {"text": "Nexus Cloud Pipeline"},
+            }]
+        }
+        data = json.dumps(embed).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url, data=data, method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            pass
     except Exception:
         pass
 
@@ -288,15 +741,37 @@ def lambda_handler(event: dict, context) -> dict:
         else:
             perplexity_key = get_secret("nexus/perplexity_api_key")["api_key"]
 
+            print(f"[INFO] Pass 1/6: Generating script structure for '{topic}'")
             script = _pass1_structure(topic, angle, trending_context, profile)
+
+            print(f"[INFO] Pass 2/6: Fact integrity self-audit")
+            script = _pass_fact_integrity(script)
+
+            print(f"[INFO] Pass 3/6: Hook rewrite")
             script = _pass2_hook_rewrite(script)
+
+            print(f"[INFO] Pass 4/6: Visual cues")
             script = _pass3_visual_cues(script, profile)
+
+            print(f"[INFO] Pass 5/6: Pacing polish")
             script = _pass4_pacing(script, profile)
-            if profile_name == "finance":
-                script = _pass5_fact_check(script, perplexity_key)
+
+            print(f"[INFO] Pass 6/6: Perplexity fact-check (web-verified)")
+            script = _pass5_fact_check(script, perplexity_key)
+
+            confidence = script.get("factual_confidence", "unknown")
+            print(f"[INFO] Script complete — factual_confidence={confidence}")
 
         script["run_id"] = run_id
         s3_key = _save_to_s3(run_id, script)
+
+        _notify_discord("Script Generated", 0x9B59B6, run_id, [
+            {"name": "Title", "value": script["title"][:100], "inline": False},
+            {"name": "Sections", "value": str(len(script.get("sections", []))), "inline": True},
+            {"name": "Est. Duration", "value": f"{script.get('total_duration_estimate', 0)}s", "inline": True},
+            {"name": "Profile", "value": profile_name, "inline": True},
+            {"name": "Fact Confidence", "value": script.get("factual_confidence", "N/A"), "inline": True},
+        ], dry_run=dry_run)
 
         return {
             "run_id": run_id,
@@ -308,6 +783,7 @@ def lambda_handler(event: dict, context) -> dict:
             "tags": script.get("tags", []),
             "total_duration_estimate": script.get("total_duration_estimate", 0),
             "section_count": len(script.get("sections", [])),
+            "factual_confidence": script.get("factual_confidence", "unknown"),
         }
 
     except Exception as exc:

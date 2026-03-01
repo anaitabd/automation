@@ -1,6 +1,11 @@
 FROM public.ecr.aws/lambda/python:3.12
 
-RUN dnf install -y tar gzip xz && \
+# Install font libraries (freetype, fontconfig) required by ffmpeg drawtext filter,
+# plus DejaVu fonts as a reliable default font family
+RUN dnf install -y tar gzip xz \
+        freetype fontconfig fontconfig-devel \
+        dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts && \
+    fc-cache -fv && \
     ARCH=$(uname -m) && \
     if [ "$ARCH" = "aarch64" ]; then \
       curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz \
@@ -9,7 +14,9 @@ RUN dnf install -y tar gzip xz && \
       curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
       | tar -xJ --strip-components=1 -C /usr/local/bin/ --wildcards '*/ffmpeg' '*/ffprobe'; \
     fi && \
-    ffmpeg -version
+    ffmpeg -version && \
+    echo "--- Verifying drawtext support ---" && \
+    (ffmpeg -filters 2>&1 | grep -i drawtext || echo "WARN: drawtext filter not found in listing (may still work)")
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt

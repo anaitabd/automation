@@ -1,11 +1,11 @@
 {
   "name": "documentary",
   "llm": {
-    "script_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
-    "hook_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
+    "script_model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "hook_model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
     "research_model": "perplexity/sonar-pro",
-    "visual_cue_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
-    "script_passes": ["structure", "depth", "hook_polish", "pacing"]
+    "visual_cue_model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "script_passes": ["structure", "depth", "hook_polish", "fact_integrity", "pacing"]
   },
   "voice": {
     "model_id": "eleven_turbo_v2_5",
@@ -34,8 +34,9 @@
   "visuals": {
     "source_priority": ["pexels", "archive_org", "runway_generate"],
     "archive_org_enabled": true,
-    "clip_score_threshold": 0.70,
-    "avg_clip_duration_sec": 6.5,
+    "clip_score_threshold": 0.65,
+    "avg_clip_duration_sec": 10.0,
+    "clips_per_section": 3,
     "color_grade_default": "cinematic_warm",
     "lut_file": "luts/cinematic_teal_orange.cube",
     "vignette_strength": 0.35,
@@ -49,7 +50,7 @@
     "j_cut_overlap_sec": 0.8,
     "l_cut_enabled": true,
     "l_cut_overlap_sec": 1.0,
-    "cuts_per_minute_target": 8
+    "cuts_per_minute_target": 10
   },
   "thumbnail": {
     "style": "dark_dramatic",
@@ -58,8 +59,8 @@
     "font": "Cinzel"
   },
   "script": {
-    "target_duration_min": 10,
-    "target_duration_max": 16,
+    "target_duration_min": 15,
+    "target_duration_max": 25,
     "tone": "authoritative_compelling",
     "narrative_style": "third_person_omniscient"
   }
