@@ -179,6 +179,88 @@
 
     .error-msg { color: var(--accent-ent); font-size: 12px; margin-top: 8px; }
     .success-msg { color: var(--accent-fin); font-size: 12px; margin-top: 8px; }
+
+    /* ── Overall Progress Bar ──────────────────────────────────── */
+    .progress-bar-container {
+      width: 100%; height: 8px; background: var(--surface2);
+      border-radius: 4px; margin: 16px 0 8px; overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .progress-bar-fill {
+      height: 100%; border-radius: 4px;
+      background: linear-gradient(90deg, var(--accent-fin), var(--accent-doc));
+      transition: width 0.5s ease;
+    }
+    .progress-stats {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 11px; color: var(--muted); margin-bottom: 12px;
+    }
+    .progress-stats .highlight {
+      color: var(--accent-doc); font-weight: 700; font-size: 13px;
+    }
+    .progress-stats .eta {
+      color: var(--accent-fin); font-weight: 700;
+    }
+
+    /* ── Step Detail Cards ─────────────────────────────────────── */
+    .step-detail {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 11px; padding: 4px 0;
+    }
+    .step .step-time {
+      display: block; margin-top: 4px; font-size: 10px;
+      color: var(--muted); font-weight: 400;
+    }
+    .step.active .step-time { color: var(--accent-doc); }
+    .step.done .step-time { color: var(--accent-fin); }
+    .step.error .step-time { color: var(--accent-ent); }
+    .step .step-progress-mini {
+      width: 100%; height: 3px; background: var(--surface2);
+      border-radius: 2px; margin-top: 4px; overflow: hidden;
+    }
+    .step .step-progress-mini .fill {
+      height: 100%; border-radius: 2px; transition: width 0.3s;
+    }
+    .step.active .step-progress-mini .fill {
+      background: var(--accent-doc);
+      animation: indeterminate 1.5s ease-in-out infinite;
+    }
+    .step.done .step-progress-mini .fill { background: var(--accent-fin); width: 100% !important; }
+    .step.error .step-progress-mini .fill { background: var(--accent-ent); }
+    @keyframes indeterminate {
+      0% { margin-left: 0; width: 30%; }
+      50% { margin-left: 40%; width: 50%; }
+      100% { margin-left: 100%; width: 0%; }
+    }
+
+    /* ── Elapsed Timer ─────────────────────────────────────────── */
+    .timer-display {
+      display: flex; align-items: center; gap: 16px; margin-top: 12px;
+      padding: 12px 16px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; font-size: 12px;
+    }
+    .timer-display .timer-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+    .timer-display .timer-value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .timer-display .timer-elapsed { color: var(--text); }
+    .timer-display .timer-eta { color: var(--accent-fin); }
+    .timer-display .timer-separator { color: var(--border); font-size: 24px; }
+
+    /* ── Log Entries with step indicator ────────────────────────── */
+    .log-entry {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 2px 0; line-height: 1.6;
+    }
+    .log-entry .log-time {
+      color: var(--muted); white-space: nowrap; min-width: 75px;
+    }
+    .log-entry .log-step-badge {
+      padding: 1px 6px; border-radius: 3px; font-size: 9px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+      white-space: nowrap; background: var(--surface2);
+      color: var(--muted); border: 1px solid var(--border);
+      min-width: 70px; text-align: center;
+    }
+    .log-entry .log-msg { flex: 1; }
   </style>
 </head>
 <body>
@@ -186,7 +268,9 @@
 
 <script type="text/babel">
 // ─── Config (set API_BASE to your API Gateway URL) ───────────────────────────
-const API_BASE = window.__NEXUS_API_BASE__ || 'https://your-api-gateway-url.execute-api.us-east-1.amazonaws.com/prod';
+const API_BASE = '%%NEXUS_API_BASE%%' !== '%%NEXUS_API' + '_BASE%%'
+  ? '%%NEXUS_API_BASE%%'
+  : 'https://your-api-gateway-url.execute-api.us-east-1.amazonaws.com/prod';
 const IS_LOCAL = API_BASE.includes('localhost');
 
 const STEPS = [
@@ -217,9 +301,18 @@ function copyToClipboard(text) {
   navigator.clipboard.writeText(text).catch(() => {});
 }
 function fmtDuration(sec) {
+  if (sec == null || sec < 0) return '—';
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
-  return `${m}m ${s}s`;
+  return `${m}m ${String(s).padStart(2, '0')}s`;
+}
+function fmtTimer(sec) {
+  if (sec == null || sec < 0) return '00:00';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
@@ -236,6 +329,11 @@ function App() {
   const [outputs, setOutputs] = React.useState(null); // { urls }
   const [script, setScript] = React.useState(null);
   const [logs, setLogs] = React.useState([]);          // live log entries
+  const [progressPct, setProgressPct] = React.useState(0);
+  const [etaRemaining, setEtaRemaining] = React.useState(null);
+  const [pipelineElapsed, setPipelineElapsed] = React.useState(0);
+  const [stepTimers, setStepTimers] = React.useState({}); // stepName -> {elapsed, estimated}
+  const [pipelineStartTime, setPipelineStartTime] = React.useState(null);
 
   const [history, setHistory] = React.useState(() => {
     try { return JSON.parse(localStorage.getItem('nexus_history') || '[]'); }
@@ -254,10 +352,26 @@ function App() {
     if (logEndRef.current) logEndRef.current.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
+  // Live elapsed timer (ticks every second while running)
+  const [tick, setTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!pipelineStartTime || (status && ['SUCCEEDED','FAILED','TIMED_OUT','ABORTED'].includes(status.status))) return;
+    const interval = setInterval(() => {
+      setPipelineElapsed(Math.floor((Date.now() - pipelineStartTime) / 1000));
+      setTick(t => t + 1); // force re-render for active step timer
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [pipelineStartTime, status]);
+
   // Poll or SSE based on mode
   React.useEffect(() => {
     if (!runId) return;
     setLogs([]);
+    setProgressPct(0);
+    setEtaRemaining(null);
+    setPipelineElapsed(0);
+    setStepTimers({});
+    setPipelineStartTime(Date.now());
 
     // ── SSE mode (local orchestrator) ──
     if (IS_LOCAL) {
@@ -268,39 +382,73 @@ function App() {
       es.addEventListener('snapshot', (e) => {
         const data = JSON.parse(e.data);
         setStatus(data);
+        if (data.elapsed_sec) setPipelineElapsed(data.elapsed_sec);
+        if (data.eta_remaining_sec != null) setEtaRemaining(data.eta_remaining_sec);
+        // Recover progress from snapshot
+        if (data.steps) {
+          const done = data.steps.filter(s => s.status === 'done').length;
+          setProgressPct(Math.round((done / data.steps.length) * 100));
+          const timers = {};
+          data.steps.forEach(s => {
+            timers[s.name] = { elapsed: s.elapsed_sec, estimated: s.estimated_duration_sec };
+          });
+          setStepTimers(timers);
+        }
       });
 
       es.addEventListener('step_start', (e) => {
         const data = JSON.parse(e.data);
-        setStatus(prev => prev ? { ...prev, current_step: data.step } : prev);
-        setLogs(prev => [...prev, { time: data.timestamp, icon: '▶', msg: data.message }]);
+        setStatus(prev => prev ? { ...prev, current_step: data.step, current_step_index: data.index } : prev);
+        setLogs(prev => [...prev, { time: data.timestamp, icon: '▶', msg: data.message, step: data.step }]);
+        if (data.progress_pct != null) setProgressPct(data.progress_pct);
+        if (data.eta_remaining_sec != null) setEtaRemaining(data.eta_remaining_sec);
+        if (data.pipeline_elapsed_sec != null) setPipelineElapsed(data.pipeline_elapsed_sec);
+        setStepTimers(prev => ({
+          ...prev,
+          [data.step]: { elapsed: null, estimated: data.estimated_duration_sec, startedAt: Date.now() }
+        }));
       });
 
       es.addEventListener('step_done', (e) => {
         const data = JSON.parse(e.data);
-        setLogs(prev => [...prev, { time: data.timestamp, icon: '✅', msg: data.message }]);
+        setLogs(prev => [...prev, { time: data.timestamp, icon: '✅', msg: data.message, step: data.step }]);
+        if (data.progress_pct != null) setProgressPct(data.progress_pct);
+        if (data.eta_remaining_sec != null) setEtaRemaining(data.eta_remaining_sec);
+        if (data.pipeline_elapsed_sec != null) setPipelineElapsed(data.pipeline_elapsed_sec);
+        setStepTimers(prev => ({
+          ...prev,
+          [data.step]: { ...prev[data.step], elapsed: data.elapsed_sec }
+        }));
         // Refresh full status
         apiGet(`/status/${runId}`).then(s => { if (s) setStatus(s); }).catch(() => {});
       });
 
       es.addEventListener('step_error', (e) => {
         const data = JSON.parse(e.data);
-        setLogs(prev => [...prev, { time: data.timestamp, icon: '❌', msg: data.message }]);
+        setLogs(prev => [...prev, { time: data.timestamp, icon: '❌', msg: data.message, step: data.step }]);
+        if (data.progress_pct != null) setProgressPct(data.progress_pct);
+        if (data.pipeline_elapsed_sec != null) setPipelineElapsed(data.pipeline_elapsed_sec);
+        setEtaRemaining(0);
         apiGet(`/status/${runId}`).then(s => { if (s) setStatus(s); }).catch(() => {});
       });
 
       es.addEventListener('log', (e) => {
         const data = JSON.parse(e.data);
-        setLogs(prev => [...prev, { time: data.timestamp, icon: '📋', msg: data.message }]);
+        setLogs(prev => [...prev, { time: data.timestamp, icon: '📋', msg: data.message, step: data.step }]);
       });
 
       es.addEventListener('pipeline_done', (e) => {
         const data = JSON.parse(e.data);
+        const totalStr = data.total_elapsed_sec ? ` in ${fmtDuration(data.total_elapsed_sec)}` : '';
         setLogs(prev => [...prev, {
           time: data.timestamp || new Date().toISOString(),
           icon: data.status === 'SUCCEEDED' ? '🎉' : '💥',
-          msg: `Pipeline ${data.status}` + (data.title ? ` — ${data.title}` : ''),
+          msg: `Pipeline ${data.status}${totalStr}` + (data.title ? ` — ${data.title}` : ''),
+          step: 'Pipeline',
         }]);
+        if (data.total_elapsed_sec) setPipelineElapsed(data.total_elapsed_sec);
+        setProgressPct(data.status === 'SUCCEEDED' ? 100 : progressPct);
+        setEtaRemaining(0);
         apiGet(`/status/${runId}`).then(s => { if (s) setStatus(s); }).catch(() => {});
         es.close();
       });
@@ -318,20 +466,60 @@ function App() {
       const s = await apiGet(`/status/${runId}`).catch(() => null);
       if (!s) return;
       setStatus(s);
-      if (s.status === 'SUCCEEDED') {
-        clearInterval(pollerRef.current);
-        const o = await apiGet(`/outputs/${runId}`).catch(() => null);
-        setOutputs(o);
-        if (o?.urls?.[`${runId}/script.json`]) {
-          fetch(o.urls[`${runId}/script.json`])
-            .then(r => r.json())
-            .then(setScript)
-            .catch(() => {});
-        }
-      } else if (['FAILED', 'TIMED_OUT', 'ABORTED'].includes(s.status)) {
-        clearInterval(pollerRef.current);
+
+      // Populate step timers from API response
+      if (s.steps) {
+        const done = s.steps.filter(x => x.status === 'done').length;
+        const errored = s.steps.filter(x => x.status === 'error').length;
+        setProgressPct(s.progress_pct ?? Math.round(((done + errored) / s.steps.length) * 100));
+        const timers = {};
+        s.steps.forEach(st => {
+          timers[st.name] = {
+            elapsed: st.duration_sec,
+            estimated: null,
+            startedAt: st.status === 'running' && st.entered_at ? new Date(st.entered_at).getTime() : null,
+          };
+        });
+        setStepTimers(timers);
       }
-    }, 5000);
+
+      // Build log entries from timeline
+      if (s.timeline && s.timeline.length > 0) {
+        const newLogs = s.timeline.map(t => ({
+          time: t.time,
+          step: t.step,
+          icon: t.event === 'completed' ? '✅' : t.event === 'failed' ? '❌' : '▶',
+          msg: t.message,
+        }));
+        setLogs(newLogs);
+      }
+
+      if (s.elapsed_sec) setPipelineElapsed(s.elapsed_sec);
+
+      if (s.status === 'SUCCEEDED' || s.status === 'FAILED') {
+        clearInterval(pollerRef.current);
+        setEtaRemaining(0);
+        if (s.status === 'SUCCEEDED') setProgressPct(100);
+        // Add final log entry
+        setLogs(prev => [...prev, {
+          time: s.stop_date || new Date().toISOString(),
+          step: 'Pipeline',
+          icon: s.status === 'SUCCEEDED' ? '🎉' : '💥',
+          msg: `Pipeline ${s.status}` + (s.elapsed_sec ? ` in ${fmtDuration(s.elapsed_sec)}` : ''),
+        }]);
+        // Fetch outputs (for both success and failure - to get error logs)
+        const o = await apiGet(`/outputs/${runId}`).catch(() => null);
+        if (o) {
+          setOutputs(o);
+          if (o.urls?.[`${runId}/script.json`]) {
+            fetch(o.urls[`${runId}/script.json`])
+              .then(r => r.json())
+              .then(setScript)
+              .catch(() => {});
+          }
+        }
+      }
+    }, 4000);
     return () => clearInterval(pollerRef.current);
   }, [runId]);
 
@@ -340,6 +528,8 @@ function App() {
     setError(''); setSuccess('');
     setLoading(true);
     setStatus(null); setOutputs(null); setScript(null); setLogs([]);
+    setProgressPct(0); setEtaRemaining(null); setPipelineElapsed(0);
+    setStepTimers({}); setPipelineStartTime(null);
     try {
       const res = await apiPost('/run', { niche, profile, dry_run: dryRun });
       if (res.error) { setError(res.error); return; }
@@ -375,7 +565,7 @@ function App() {
 
   function stepState(stepKey) {
     if (!status) return '';
-    // Local mode: use steps[] array
+    // Use steps[] array (works for both local and cloud mode)
     if (status.steps) {
       const s = status.steps.find(x => x.name === stepKey);
       if (!s) return '';
@@ -384,7 +574,7 @@ function App() {
       if (s.status === 'error') return 'error';
       return '';
     }
-    // Cloud mode: infer from current_step position
+    // Fallback: infer from current_step position
     const current = status.current_step || '';
     const stepIdx = STEPS.findIndex(s => s.key === stepKey);
     const currentIdx = STEPS.findIndex(s => s.key === current);
@@ -466,13 +656,72 @@ function App() {
         {runId && (
           <section>
             <h2>Pipeline Progress {status && `— ${status.status}`}</h2>
-            <div className="steps">
-              {STEPS.map(s => (
-                <div key={s.key} className={`step ${stepState(s.key)}`}>
-                  <span className="step-icon">{s.icon}</span>
-                  {s.label}
+
+            {/* Overall progress bar */}
+            <div className="progress-bar-container">
+              <div className="progress-bar-fill" style={{width: `${progressPct}%`}} />
+            </div>
+            <div className="progress-stats">
+              <span><span className="highlight">{progressPct}%</span> complete</span>
+              <span>
+                {status && status.current_step_index != null && status.total_steps
+                  ? `Step ${Math.min(status.current_step_index + 1, status.total_steps)} of ${status.total_steps}`
+                  : ''}
+              </span>
+              <span>ETA: <span className="eta">{etaRemaining != null && etaRemaining > 0 ? fmtDuration(etaRemaining) : etaRemaining === 0 ? 'Done' : '—'}</span></span>
+            </div>
+
+            {/* Timer display */}
+            <div className="timer-display">
+              <div>
+                <div className="timer-label">Elapsed</div>
+                <div className="timer-value timer-elapsed">{fmtTimer(pipelineElapsed)}</div>
+              </div>
+              <div className="timer-separator">│</div>
+              <div>
+                <div className="timer-label">Remaining</div>
+                <div className="timer-value timer-eta">
+                  {etaRemaining != null && etaRemaining > 0 ? fmtTimer(etaRemaining) : etaRemaining === 0 ? '00:00' : '--:--'}
                 </div>
-              ))}
+              </div>
+              <div className="timer-separator">│</div>
+              <div>
+                <div className="timer-label">Current Step</div>
+                <div className="timer-value" style={{fontSize:14,color:'var(--accent-doc)'}}>
+                  {status?.current_step || '—'}
+                </div>
+              </div>
+            </div>
+
+            {/* Steps with mini progress & timing */}
+            <div className="steps" style={{marginTop: 16}}>
+              {STEPS.map(s => {
+                const st = stepState(s.key);
+                const timer = stepTimers[s.key];
+                let timeLabel = '';
+                if (st === 'done' && timer?.elapsed != null) {
+                  timeLabel = fmtDuration(timer.elapsed);
+                } else if (st === 'active' && timer?.startedAt) {
+                  // Live counting
+                  const live = Math.floor((Date.now() - timer.startedAt) / 1000);
+                  timeLabel = `${fmtTimer(live)}`;
+                  if (timer?.estimated) timeLabel += ` / ~${fmtDuration(timer.estimated)}`;
+                } else if (timer?.estimated) {
+                  timeLabel = `~${fmtDuration(timer.estimated)}`;
+                }
+                return (
+                  <div key={s.key} className={`step ${st}`}>
+                    <span className="step-icon">{s.icon}</span>
+                    {s.label}
+                    <span className="step-time">{timeLabel}</span>
+                    <div className="step-progress-mini">
+                      <div className="fill" style={{
+                        width: st === 'done' ? '100%' : st === 'active' ? '50%' : '0%'
+                      }} />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
             {runId && (
               <p style={{marginTop:10,fontSize:11,color:'var(--muted)'}}>
@@ -480,22 +729,108 @@ function App() {
               </p>
             )}
 
-            {/* ── Live Logs (local mode) ── */}
-            {IS_LOCAL && logs.length > 0 && (
+            {/* ── Live Logs (both local and cloud mode) ── */}
+            {logs.length > 0 && (
               <div style={{
                 marginTop:16, background:'var(--bg)', border:'1px solid var(--border)',
-                borderRadius:6, padding:'12px 16px', maxHeight:220, overflowY:'auto',
+                borderRadius:6, padding:'12px 16px', maxHeight:300, overflowY:'auto',
                 fontSize:12, lineHeight:1.8, fontFamily:'var(--mono)',
               }}>
                 {logs.map((l, i) => (
-                  <div key={i} style={{color: l.icon === '❌' ? 'var(--accent-ent)' : l.icon === '✅' ? 'var(--accent-fin)' : 'var(--text)'}}>
-                    <span style={{color:'var(--muted)',marginRight:8}}>
+                  <div key={i} className="log-entry" style={{
+                    color: l.icon === '❌' || l.icon === '💥' ? 'var(--accent-ent)'
+                         : l.icon === '✅' || l.icon === '🎉' ? 'var(--accent-fin)'
+                         : 'var(--text)'
+                  }}>
+                    <span className="log-time">
                       {new Date(l.time).toLocaleTimeString()}
                     </span>
-                    {l.icon} {l.msg}
+                    {l.step && <span className="log-step-badge">{l.step}</span>}
+                    <span className="log-msg">{l.icon} {l.msg}</span>
                   </div>
                 ))}
                 <div ref={logEndRef} />
+              </div>
+            )}
+
+            {/* ── Error Detail Panel ── */}
+            {status && status.error && status.status === 'FAILED' && (
+              <div style={{
+                marginTop:16, background:'#1a0a0a', border:'1px solid var(--accent-ent)',
+                borderRadius:6, padding:'16px 20px',
+              }}>
+                <div style={{
+                  fontSize:13, fontWeight:700, color:'var(--accent-ent)',
+                  marginBottom:10, display:'flex', alignItems:'center', gap:8,
+                }}>
+                  <span style={{fontSize:18}}>⚠️</span>
+                  Pipeline Failed
+                  {status.error.step && (
+                    <span style={{
+                      fontSize:10, background:'var(--accent-ent)', color:'#fff',
+                      padding:'2px 8px', borderRadius:3, marginLeft:6,
+                    }}>at {status.error.step}</span>
+                  )}
+                </div>
+                {status.error.step_error && (
+                  <div style={{marginBottom:10}}>
+                    <div style={{fontSize:11, color:'var(--muted)', marginBottom:4}}>ERROR TYPE</div>
+                    <code style={{
+                      color:'var(--accent-ent)', fontSize:12,
+                      background:'var(--surface2)', padding:'4px 8px', borderRadius:4,
+                    }}>{status.error.step_error.type}</code>
+                  </div>
+                )}
+                {status.error.step_error?.message && (
+                  <div style={{marginBottom:10}}>
+                    <div style={{fontSize:11, color:'var(--muted)', marginBottom:4}}>MESSAGE</div>
+                    <div style={{
+                      fontSize:12, color:'var(--text)', lineHeight:1.6,
+                      background:'var(--surface)', padding:'10px 12px', borderRadius:4,
+                      maxHeight:120, overflowY:'auto', wordBreak:'break-word',
+                    }}>{status.error.step_error.message}</div>
+                  </div>
+                )}
+                {status.error.step_error?.stack_trace && (
+                  <div>
+                    <div style={{fontSize:11, color:'var(--muted)', marginBottom:4}}>STACK TRACE</div>
+                    <pre style={{
+                      fontSize:11, color:'#ccc', lineHeight:1.5,
+                      background:'var(--bg)', padding:'10px 12px', borderRadius:4,
+                      maxHeight:200, overflowY:'auto', whiteSpace:'pre-wrap', wordBreak:'break-all',
+                      border:'1px solid var(--border)',
+                    }}>{status.error.step_error.stack_trace}</pre>
+                  </div>
+                )}
+                {status.error.cause && !status.error.step_error && (
+                  <div style={{
+                    fontSize:12, color:'var(--text)', lineHeight:1.6,
+                    background:'var(--surface)', padding:'10px 12px', borderRadius:4,
+                    maxHeight:120, overflowY:'auto', wordBreak:'break-word',
+                  }}>{status.error.cause}</div>
+                )}
+              </div>
+            )}
+
+            {/* ── Error Logs from S3 ── */}
+            {outputs?.error_logs && Object.keys(outputs.error_logs).length > 0 && (
+              <div style={{marginTop:16}}>
+                <div style={{fontSize:11,color:'var(--muted)',marginBottom:8,textTransform:'uppercase',letterSpacing:2}}>
+                  Error Logs from S3
+                </div>
+                {Object.entries(outputs.error_logs).map(([step, data]) => (
+                  <div key={step} style={{
+                    background:'var(--surface)', border:'1px solid var(--border)',
+                    borderRadius:6, padding:'10px 14px', marginBottom:8, fontSize:12,
+                  }}>
+                    <span style={{color:'var(--accent-ent)', fontWeight:700}}>
+                      {step}:
+                    </span>{' '}
+                    <span style={{color:'var(--text)'}}>
+                      {typeof data === 'object' ? (data.error || JSON.stringify(data)) : String(data)}
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
           </section>

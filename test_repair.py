@@ -5,11 +5,10 @@ Run with:  python -m pytest test_repair.py -v
 import json
 import sys
 import os
-
-# Make the handler importable without boto3 / AWS deps by stubbing them
 import types
 
-# Stub boto3 so the handler module loads without AWS credentials
+# ── Temporarily stub boto3 so the handler module loads without AWS credentials ──
+_real_boto3 = sys.modules.get("boto3")
 _fake_boto3 = types.ModuleType("boto3")
 _fake_boto3.client = lambda *a, **kw: None  # type: ignore
 sys.modules["boto3"] = _fake_boto3
@@ -17,6 +16,12 @@ sys.modules["boto3"] = _fake_boto3
 # Now import the functions under test
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lambdas", "nexus-script"))
 from handler import _repair_truncated_json, _extract_json
+
+# ── Restore the real boto3 so other test modules (test_connections) work ──
+if _real_boto3 is not None:
+    sys.modules["boto3"] = _real_boto3
+else:
+    del sys.modules["boto3"]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

@@ -1,7 +1,6 @@
 FROM public.ecr.aws/lambda/python:3.12
 
-# Install font libraries (freetype, fontconfig) required by ffmpeg drawtext filter,
-# plus DejaVu fonts as a reliable default font family
+# Install font libraries required by ffmpeg drawtext filter
 RUN dnf install -y tar gzip xz \
         freetype fontconfig fontconfig-devel \
         dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts && \
@@ -15,14 +14,16 @@ RUN dnf install -y tar gzip xz \
       | tar -xJ --strip-components=1 -C /usr/local/bin/ --wildcards '*/ffmpeg' '*/ffprobe'; \
     fi && \
     ffmpeg -version && \
-    echo "--- Verifying drawtext support ---" && \
-    (ffmpeg -filters 2>&1 | grep -i drawtext || echo "WARN: drawtext filter not found in listing (may still work)")
+    dnf clean all
 
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    requests boto3 psycopg2-binary python-dotenv json-repair \
+    librosa numpy scipy scikit-learn \
+    --extra-index-url https://pypi.org/simple/
 
-ARG LAMBDA_DIR=lambdas/nexus-research
-COPY lambdas/nexus_pipeline_utils.py ${LAMBDA_TASK_ROOT}/nexus_pipeline_utils.py
-COPY ${LAMBDA_DIR}/handler.py ${LAMBDA_TASK_ROOT}/handler.py
+COPY nexus_pipeline_utils.py ${LAMBDA_TASK_ROOT}/nexus_pipeline_utils.py
+COPY handler.py ${LAMBDA_TASK_ROOT}/handler.py
 
 CMD ["handler.lambda_handler"]
+

@@ -3,10 +3,12 @@ import os
 import subprocess
 import tempfile
 import time
-import uuid
 import boto3
 import urllib.request
 import urllib.parse
+from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
+
+log = get_logger("nexus-audio")
 
 _cache: dict = {}
 
@@ -182,7 +184,7 @@ def _generate_voiceover(script: dict, profile: dict, api_key: str, tmpdir: str) 
         capture_output=True,
     )
 
-    sentences: list[str] = []
+    sentences: list[tuple[str, str]] = []
     for section in script.get("sections", []):
         content = section.get("content", "")
         default_emotion = section.get("emotion", "neutral")
@@ -256,20 +258,31 @@ def _apply_audio_processing(
 
 
 def _fetch_pixabay_music(mood_keyword: str, api_key: str, tmpdir: str) -> str | None:
+    if not api_key:
+        log.warning("No Pixabay API key — skipping background music")
+        return None
     query = urllib.parse.quote(MUSIC_MOOD_KEYWORDS.get(mood_keyword, mood_keyword))
-    url = f"https://pixabay.com/api/videos/music/?key={api_key}&q={query}&per_page=5&category=music"
+    # Pixabay Music API — /api/ is the correct endpoint (not /api/videos/music/)
+    url = f"https://pixabay.com/api/?key={api_key}&q={query}&per_page=5&category=music"
     try:
         data = json.loads(_http_get(url))
         hits = data.get("hits", [])
         if not hits:
+            log.info("Pixabay returned 0 music results for query=%r", query)
             return None
-        music_url = hits[0]["audio"]["url"]
+        # Pixabay audio results include a previewURL for audio
+        music_url = hits[0].get("previewURL") or hits[0].get("webformatURL", "")
+        if not music_url:
+            log.warning("Pixabay hit has no usable audio URL")
+            return None
         music_bytes = _http_get(music_url)
         music_path = os.path.join(tmpdir, "background_music.mp3")
         with open(music_path, "wb") as f:
             f.write(music_bytes)
+        log.info("Downloaded background music (%.1f KB)", len(music_bytes) / 1024)
         return music_path
-    except Exception:
+    except Exception as exc:
+        log.warning("Pixabay music fetch failed: %s", exc)
         return None
 
 
@@ -401,33 +414,6 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
-    """Send a step-level Discord notification. Silently swallows errors."""
-    if dry_run:
-        return
-    try:
-        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
-        if not webhook_url:
-            return
-        embed = {
-            "embeds": [{
-                "title": f"🎙️ Nexus Cloud — {step}",
-                "color": color,
-                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
-                "footer": {"text": "Nexus Cloud Pipeline"},
-            }]
-        }
-        data = json.dumps(embed).encode("utf-8")
-        req = urllib.request.Request(
-            webhook_url, data=data, method="POST",
-            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass
-
-
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
@@ -436,16 +422,21 @@ def lambda_handler(event: dict, context) -> dict:
     title: str = event.get("title", "")
     total_duration_estimate: float = float(event.get("total_duration_estimate", 0))
 
+    step_start = notify_step_start("audio", run_id, niche=event.get("niche", ""), profile=profile_name, dry_run=dry_run)
+
     try:
         s3 = boto3.client("s3")
 
+        log.info("Loading script from S3: %s", script_s3_key)
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
         script: dict = json.loads(script_obj["Body"].read())
 
+        log.info("Loading profile: %s", profile_name)
         profile_obj = s3.get_object(Bucket=S3_CONFIG_BUCKET, Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
 
         if dry_run:
+            log.info("DRY RUN mode — returning stub audio keys")
             return {
                 "run_id": run_id,
                 "profile": profile_name,
@@ -457,34 +448,42 @@ def lambda_handler(event: dict, context) -> dict:
                 "mixed_audio_s3_key": f"{run_id}/audio/mixed_audio_dry_run.wav",
             }
 
+        log.info("Fetching ElevenLabs API key")
         el_secret = get_secret("nexus/elevenlabs_api_key")
         el_api_key = el_secret["api_key"]
         pixabay_api_key = get_secret("nexus/pexels_api_key").get("pixabay_key", "")
         music_mood = profile.get("sound_design", {}).get("music_mood", "tension_atmospheric")
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            log.info("Generating voiceover via ElevenLabs (%d sections)", len(script.get("sections", [])))
             voiceover_raw = _generate_voiceover(script, profile, el_api_key, tmpdir)
 
+            log.info("Applying audio processing")
             voiceover_processed = _apply_audio_processing(
                 voiceover_raw, profile_name, tmpdir
             )
 
+            log.info("Fetching background music (mood=%s)", music_mood)
             music_path = _fetch_pixabay_music(music_mood, pixabay_api_key, tmpdir)
 
+            log.info("Mixing audio tracks")
             mixed_path = _mix_audio(voiceover_processed, music_path, profile, tmpdir, run_id)
 
+            log.info("Injecting SFX")
             final_audio_path = _inject_sfx(mixed_path, script, profile, tmpdir, s3)
 
+            log.info("Uploading audio files to S3")
             voiceover_key = _upload_to_s3(
                 s3, voiceover_processed, run_id, "voiceover.wav"
             )
             mixed_key = _upload_to_s3(s3, final_audio_path, run_id, "mixed_audio.wav")
 
-        _notify_discord("Audio Generated", 0xE67E22, run_id, [
+        elapsed = time.time() - step_start
+        notify_step_complete("audio", run_id, [
             {"name": "Title", "value": title[:100], "inline": False},
             {"name": "Voiceover", "value": voiceover_key.split("/")[-1], "inline": True},
             {"name": "Profile", "value": profile_name, "inline": True},
-        ], dry_run=dry_run)
+        ], elapsed_sec=elapsed, dry_run=dry_run, color=0xE67E22)
 
         return {
             "run_id": run_id,
@@ -498,5 +497,6 @@ def lambda_handler(event: dict, context) -> dict:
         }
 
     except Exception as exc:
+        log.error("Audio step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "audio", exc)
         raise

@@ -5,7 +5,7 @@ services:
       - "5432:5432"
     environment:
       POSTGRES_USER: ${DB_USER:-nexus_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-Agnano5920!}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       POSTGRES_DB: ${DB_NAME:-nexus}
     volumes:
       - pg_data:/var/lib/postgresql/data
@@ -73,14 +73,14 @@ services:
   nexus-visuals:
     build:
       context: .
-      args:
-        LAMBDA_DIR: lambdas/nexus-visuals
+      dockerfile: lambdas/nexus-visuals/Dockerfile
     ports:
       - "9004:8080"
     env_file: .env
     environment:
       - AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
       - AWS_LAMBDA_FUNCTION_TIMEOUT=900
+      - VISUALS_PARALLELISM=4
     depends_on:
       setup-aws:
         condition: service_completed_successfully
@@ -88,8 +88,7 @@ services:
   nexus-editor:
     build:
       context: .
-      args:
-        LAMBDA_DIR: lambdas/nexus-editor
+      dockerfile: lambdas/nexus-editor/Dockerfile
     ports:
       - "9005:8080"
     env_file: .env

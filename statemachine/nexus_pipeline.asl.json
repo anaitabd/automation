@@ -138,6 +138,7 @@
     "Visuals": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 960,
       "Parameters": {
         "FunctionName": "${NexusVisualsArn}",
         "Payload": {
@@ -146,6 +147,7 @@
           "dry_run.$": "$.dry_run",
           "niche.$": "$.niche",
           "script_s3_key.$": "$.script_s3_key",
+          "title.$": "$.title",
           "mixed_audio_s3_key.$": "$.mixed_audio_s3_key",
           "total_duration_estimate.$": "$.total_duration_estimate"
         }
@@ -183,12 +185,14 @@
     "Editor": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 960,
       "Parameters": {
         "FunctionName": "${NexusEditorArn}",
         "Payload": {
           "run_id.$": "$.run_id",
           "profile.$": "$.profile",
           "dry_run.$": "$.dry_run",
+          "niche.$": "$.niche",
           "script_s3_key.$": "$.script_s3_key",
           "sections.$": "$.sections",
           "mixed_audio_s3_key.$": "$.mixed_audio_s3_key",
@@ -234,6 +238,7 @@
           "run_id.$": "$.run_id",
           "profile.$": "$.profile",
           "dry_run.$": "$.dry_run",
+          "niche.$": "$.niche",
           "script_s3_key.$": "$.script_s3_key",
           "final_video_s3_key.$": "$.final_video_s3_key",
           "title.$": "$.title",
@@ -280,6 +285,7 @@
           "run_id.$": "$.run_id",
           "profile.$": "$.profile",
           "dry_run.$": "$.dry_run",
+          "niche.$": "$.niche",
           "script_s3_key.$": "$.script_s3_key",
           "final_video_s3_key.$": "$.final_video_s3_key",
           "primary_thumbnail_s3_key.$": "$.primary_thumbnail_s3_key",
@@ -362,10 +368,11 @@
       "Parameters": {
         "FunctionName": "${NexusNotifyErrorArn}",
         "Payload": {
-          "run_id.$": "$.run_id",
+          "run_id.$": "$$.Execution.Input.run_id",
           "error.$": "$.error",
           "niche.$": "$$.Execution.Input.niche",
-          "profile.$": "$$.Execution.Input.profile"
+          "profile.$": "$$.Execution.Input.profile",
+          "dry_run.$": "$$.Execution.Input.dry_run"
         }
       },
       "Next": "PipelineFailed",

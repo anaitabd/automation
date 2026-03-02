@@ -8,11 +8,18 @@ build/
 *.egg
 .env
 .env.local
+.env.bak
 .venv/
 venv/
 node_modules/
 cdk.out/
+cdk-outputs.json
 layers/
 luts_generated/
 .pytest_cache/
 .mypy_cache/
+.DS_Store
+.idea/
+
+# Pipeline utils copies (deploy.sh copies the source into each lambda dir)
+lambdas/nexus-*/nexus_pipeline_utils.py

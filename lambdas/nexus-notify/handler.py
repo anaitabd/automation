@@ -18,6 +18,75 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
+def _send_discord_error(
+    webhook_url: str,
+    run_id: str,
+    profile: str,
+    niche: str,
+    error_info: dict,
+) -> None:
+    """Send a detailed error notification to Discord."""
+    error_obj = error_info.get("Error", "Unknown")
+    cause_raw = error_info.get("Cause", "")
+
+    # Try to parse structured error from cause
+    error_type = error_obj
+    error_msg = cause_raw[:500]
+    failed_step = "Unknown"
+    stack_trace = ""
+    try:
+        cause_json = json.loads(cause_raw)
+        error_type = cause_json.get("errorType", error_obj)
+        error_msg = cause_json.get("errorMessage", cause_raw)[:500]
+        traces = cause_json.get("stackTrace", [])
+        if traces:
+            stack_trace = "\n".join(traces)[:800]
+            # Try to extract step name from stack trace
+            for trace_line in traces:
+                if "/var/task/handler.py" in trace_line and "lambda_handler" in trace_line:
+                    failed_step = "Lambda Handler"
+                    break
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        pass
+
+    fields = [
+        {"name": "Niche", "value": niche or "—", "inline": True},
+        {"name": "Profile", "value": profile or "—", "inline": True},
+        {"name": "Error Type", "value": f"`{error_type}`", "inline": True},
+        {"name": "Run ID", "value": f"`{run_id}`", "inline": False},
+        {"name": "Error Message", "value": f"```\n{error_msg[:400]}\n```", "inline": False},
+    ]
+    if stack_trace:
+        fields.append(
+            {"name": "Stack Trace", "value": f"```python\n{stack_trace[:600]}\n```", "inline": False}
+        )
+
+    embed = {
+        "embeds": [
+            {
+                "title": "❌ Nexus Cloud — Pipeline Failed",
+                "description": f"Pipeline run `{run_id[:8]}…` failed.",
+                "color": 0xFF3B30,
+                "fields": fields,
+                "footer": {"text": "Nexus Cloud Pipeline • Error Notification"},
+            }
+        ]
+    }
+    data = json.dumps(embed).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url, data=data, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "NexusCloud/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15):
+            pass
+    except Exception:
+        pass
+
+
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 
 
@@ -134,8 +203,32 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
 
 
 def lambda_handler(event: dict, context) -> dict:
-    run_id: str = event["run_id"]
+    run_id: str = event.get("run_id", "unknown")
     profile_name: str = event.get("profile", "documentary")
+    niche: str = event.get("niche", "")
+    dry_run: bool = event.get("dry_run", False)
+
+    # ── Error mode: invoked by NotifyError state ──
+    error_info = event.get("error")
+    if error_info and isinstance(error_info, dict):
+        try:
+            if not dry_run:
+                discord_webhook = get_secret("nexus/discord_webhook_url").get("url", "")
+                if discord_webhook:
+                    _send_discord_error(discord_webhook, run_id, profile_name, niche, error_info)
+                # Write error to S3
+                _write_error(run_id, "pipeline", Exception(json.dumps(error_info)[:500]))
+        except Exception:
+            pass
+        return {
+            "run_id": run_id,
+            "status": "completed",
+            "video_url": "",
+            "elapsed_sec": 0,
+            "dry_run": dry_run,
+        }
+
+    # ── Success mode: invoked by Notify state ──
     video_url: str = event.get("video_url", "")
     video_id: str = event.get("video_id", "")
     title: str = event.get("title", "")
@@ -143,7 +236,16 @@ def lambda_handler(event: dict, context) -> dict:
     thumbnail_s3_keys: list = event.get("thumbnail_s3_keys", [])
     primary_thumbnail_s3_key: str = event.get("primary_thumbnail_s3_key", "")
     video_duration_sec: float = float(event.get("video_duration_sec", 0))
-    execution_start: float = float(event.get("execution_start_time", time.time()))
+    execution_start_raw = event.get("execution_start_time", time.time())
+    if isinstance(execution_start_raw, str):
+        from datetime import datetime, timezone
+        try:
+            dt = datetime.fromisoformat(execution_start_raw.replace("Z", "+00:00"))
+            execution_start = dt.timestamp()
+        except (ValueError, TypeError):
+            execution_start = time.time()
+    else:
+        execution_start = float(execution_start_raw)
     dry_run: bool = event.get("dry_run", False)
 
     elapsed = time.time() - execution_start
@@ -179,8 +281,9 @@ def lambda_handler(event: dict, context) -> dict:
                     db_config, run_id, niche, profile_name, title,
                     video_duration_sec, video_url, elapsed,
                 )
-            except Exception:
-                pass
+            except Exception as db_exc:
+                # Log but don't fail the pipeline over a DB write failure
+                print(f"[WARN] _log_to_db failed: {db_exc}")
 
         return {
             "run_id": run_id,

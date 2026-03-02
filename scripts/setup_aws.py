@@ -224,7 +224,7 @@ def _update_mediaconvert_policy(assets_bucket: str, outputs_bucket: str) -> None
         _print(f"Warning: could not update MediaConvert policy: {e}")
 
 
-def ensure_mediaconvert_role(account_id: str) -> str:
+def ensure_mediaconvert_role(account_id: str, assets_bucket: str = "nexus-assets", outputs_bucket: str = "nexus-outputs") -> str:
     iam = boto3.client("iam", region_name=REGION)
     try:
         resp = iam.get_role(RoleName=MEDIACONVERT_ROLE_NAME)
@@ -242,10 +242,26 @@ def ensure_mediaconvert_role(account_id: str) -> str:
     role_arn = resp["Role"]["Arn"]
     _print(f"Created IAM role: {role_arn}")
 
+    # Use dynamic bucket names from the start
+    initial_policy = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
+                "Resource": [
+                    f"arn:aws:s3:::{assets_bucket}",
+                    f"arn:aws:s3:::{assets_bucket}/*",
+                    f"arn:aws:s3:::{outputs_bucket}",
+                    f"arn:aws:s3:::{outputs_bucket}/*",
+                ],
+            }
+        ],
+    }
     iam.put_role_policy(
         RoleName=MEDIACONVERT_ROLE_NAME,
         PolicyName="nexus-mediaconvert-s3-access",
-        PolicyDocument=json.dumps(MEDIACONVERT_S3_POLICY),
+        PolicyDocument=json.dumps(initial_policy),
     )
     _print("Attached initial S3 access policy to MediaConvert role")
 
@@ -280,9 +296,6 @@ def create_secrets() -> None:
     _upsert_secret("nexus/pexels_api_key", {
         "api_key": _env("PEXELS_API_KEY"),
         "pixabay_key": _env("PIXABAY_API_KEY"),
-    })
-    _upsert_secret("nexus/runwayml_api_key", {
-        "api_key": _env("RUNWAYML_API_KEY"),
     })
     _upsert_secret("nexus/youtube_credentials", {
         "client_id": _env("YOUTUBE_CLIENT_ID"),
@@ -324,7 +337,7 @@ def main() -> None:
     upload_profiles(actual_config)
 
     # MediaConvert role
-    mc_role_arn = ensure_mediaconvert_role(account_id)
+    mc_role_arn = ensure_mediaconvert_role(account_id, actual_assets, actual_outputs)
 
     # Update MediaConvert S3 policy with actual bucket names
     _update_mediaconvert_policy(actual_assets, actual_outputs)

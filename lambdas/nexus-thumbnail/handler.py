@@ -6,6 +6,9 @@ import tempfile
 import time
 import urllib.request
 import boto3
+from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
+
+log = get_logger("nexus-thumbnail")
 
 _cache: dict = {}
 
@@ -38,7 +41,10 @@ def _find_bin(name: str) -> str:
 
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN") or _find_bin("ffmpeg")
 FFPROBE_BIN = os.environ.get("FFPROBE_BIN") or _find_bin("ffprobe")
-BEDROCK_MODEL_ID = "us.anthropic.claude-3-sonnet-20240229-v1:0"
+BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+# Set dynamically per-invocation from the loaded profile
+_active_model_id: str = BEDROCK_MODEL_ID_DEFAULT
 
 
 def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
@@ -133,7 +139,7 @@ def _score_frame_bedrock(frame_path: str) -> float:
     )
     try:
         response = client.invoke_model(
-            modelId=BEDROCK_MODEL_ID,
+            modelId=_active_model_id,
             body=body,
             contentType="application/json",
             accept="application/json",
@@ -171,7 +177,7 @@ def _generate_thumbnail_concepts(
     for attempt in range(retries):
         try:
             response = client.invoke_model(
-                modelId=BEDROCK_MODEL_ID,
+                modelId=_active_model_id,
                 body=body,
                 contentType="application/json",
                 accept="application/json",
@@ -191,6 +197,48 @@ def _generate_thumbnail_concepts(
     return []
 
 
+def _hex_to_0x(color: str) -> str:
+    """Convert '#RRGGBB' to '0xRRGGBB' so ffmpeg doesn't treat # as comment."""
+    if color.startswith("#"):
+        return "0x" + color[1:]
+    return color
+
+
+def _find_font(name: str) -> str:
+    """Search common font directories for a font file."""
+    candidates = [
+        f"/usr/share/fonts/dejavu-sans-fonts/{name}",
+        f"/usr/share/fonts/dejavu/{name}",
+        f"/usr/share/fonts/truetype/dejavu/{name}",
+        f"/usr/share/fonts/{name}",
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return ""
+
+
+THUMBNAIL_FONT = _find_font("DejaVuSans-Bold.ttf")
+
+
+def _escape_thumbnail_text(text: str) -> str:
+    """Escape text for ffmpeg drawtext inline text='…' values."""
+    text = text.replace("\\", "\\\\")
+    text = text.replace(":", "\\:")
+    text = text.replace("'", "\u2019")
+    text = text.replace('"', "\u201C")
+    text = text.replace("%", "%%")
+    text = text.replace(";", "\\;")
+    text = text.replace("[", "\\[")
+    text = text.replace("]", "\\]")
+    text = text.replace("=", "\\=")
+    text = text.replace("{", "\\{")
+    text = text.replace("}", "\\}")
+    text = text.replace("#", "\\#")
+    text = text.replace("\n", " ")
+    return text
+
+
 def _render_thumbnail(
     frame_path: str,
     concept: dict,
@@ -199,11 +247,13 @@ def _render_thumbnail(
     idx: int,
 ) -> str:
     out_path = os.path.join(tmpdir, f"thumbnail_{idx}.jpg")
-    accent_color = profile.get("thumbnail", {}).get("accent_color", "#C8A96E")
-    channel_name = profile.get("name", "Nexus").upper()
+    accent_color = _hex_to_0x(profile.get("thumbnail", {}).get("accent_color", "#C8A96E"))
+    channel_name = _escape_thumbnail_text(profile.get("name", "Nexus").upper())
 
-    top_text = concept.get("top_text", "")[:45].replace("'", "\\'").replace(":", "\\:")
-    sub_text = concept.get("sub_text", "")[:45].replace("'", "\\'").replace(":", "\\:")
+    top_text = _escape_thumbnail_text(concept.get("top_text", "")[:45])
+    sub_text = _escape_thumbnail_text(concept.get("sub_text", "")[:45])
+
+    font_arg = f":fontfile={THUMBNAIL_FONT}" if os.path.isfile(THUMBNAIL_FONT) else ""
 
     vf_parts = [
         "eq=contrast=1.15:saturation=1.25:brightness=0.02",
@@ -213,14 +263,16 @@ def _render_thumbnail(
         ),
         (
             f"drawtext=text='{top_text}'"
-            ":fontcolor=white:fontsize=88"
+            f"{font_arg}"
+            f":fontcolor=white:fontsize=88"
             ":x=(w-text_w)/2:y=40"
             ":shadowcolor=black@0.9:shadowx=3:shadowy=3"
             ":bordercolor=black:borderw=2"
         ),
         (
             f"drawtext=text='{sub_text}'"
-            ":fontcolor=#DDDDDD:fontsize=52"
+            f"{font_arg}"
+            f":fontcolor=0xDDDDDD:fontsize=52"
             ":x=(w-text_w)/2:y=ih*0.60"
             ":shadowcolor=black@0.9:shadowx=2:shadowy=2"
         ),
@@ -228,6 +280,7 @@ def _render_thumbnail(
             f"drawbox=x=iw-280:y=10:width=270:height=60"
             f":color={accent_color}@0.9:t=fill,"
             f"drawtext=text='{channel_name}'"
+            f"{font_arg}"
             ":fontcolor=white:fontsize=24"
             ":x=iw-270:y=28"
         ),
@@ -258,33 +311,6 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
-    """Send a step-level Discord notification. Silently swallows errors."""
-    if dry_run:
-        return
-    try:
-        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
-        if not webhook_url:
-            return
-        embed = {
-            "embeds": [{
-                "title": f"🖼️ Nexus Cloud — {step}",
-                "color": color,
-                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
-                "footer": {"text": "Nexus Cloud Pipeline"},
-            }]
-        }
-        data = json.dumps(embed).encode("utf-8")
-        req = urllib.request.Request(
-            webhook_url, data=data, method="POST",
-            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass
-
-
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
@@ -294,20 +320,29 @@ def lambda_handler(event: dict, context) -> dict:
     title_passthrough: str = event.get("title", "")
     video_duration_sec: float = float(event.get("video_duration_sec", 0))
 
+    step_start = notify_step_start("thumbnail", run_id, niche=event.get("niche", ""), profile=profile_name, dry_run=dry_run)
+
     try:
         s3 = boto3.client("s3")
 
+        log.info("Loading script from S3: %s", script_s3_key)
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
         script: dict = json.loads(script_obj["Body"].read())
 
+        log.info("Loading profile: %s", profile_name)
         profile_obj = s3.get_object(Bucket=S3_CONFIG_BUCKET, Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
+
+        # Use the model configured in the profile
+        global _active_model_id
+        _active_model_id = profile.get("llm", {}).get("script_model", BEDROCK_MODEL_ID_DEFAULT)
 
         title = script.get("title", "") or title_passthrough
         mood = script.get("mood", "neutral")
         accent_color = profile.get("thumbnail", {}).get("accent_color", "#C8A96E")
 
         if dry_run:
+            log.info("DRY RUN mode — returning stub thumbnail keys")
             return {
                 "run_id": run_id,
                 "profile": profile_name,
@@ -325,36 +360,44 @@ def lambda_handler(event: dict, context) -> dict:
             }
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            log.info("Downloading video for keyframe extraction: %s", final_video_s3_key)
             video_local = os.path.join(tmpdir, "final_video.mp4")
             s3.download_file(S3_OUTPUTS_BUCKET, final_video_s3_key, video_local)
 
+            log.info("Extracting keyframes")
             frames = _extract_keyframes(video_local, tmpdir, n=6)
 
+            log.info("Scoring %d frames via Bedrock", len(frames))
             scores = [_score_frame_bedrock(f) for f in frames]
             best_frame_idx = scores.index(max(scores))
             best_frame = frames[best_frame_idx]
+            log.info("Best frame: index=%d score=%.2f", best_frame_idx, max(scores))
 
+            log.info("Generating thumbnail concepts")
             concepts = _generate_thumbnail_concepts(title, mood, accent_color)
             if len(concepts) < 3:
                 concepts += [concepts[0]] * (3 - len(concepts))
 
+            log.info("Rendering %d thumbnail variants", len(concepts[:3]))
             thumbnail_local_paths = []
             for i, concept in enumerate(concepts[:3]):
                 t_path = _render_thumbnail(best_frame, concept, profile, tmpdir, i)
                 thumbnail_local_paths.append(t_path)
 
+            log.info("Uploading thumbnails to S3")
             thumbnail_s3_keys = []
             for i, t_path in enumerate(thumbnail_local_paths):
                 key = f"{run_id}/thumbnails/thumbnail_{i}.jpg"
                 s3.upload_file(t_path, S3_OUTPUTS_BUCKET, key)
                 thumbnail_s3_keys.append(key)
 
-        _notify_discord("Thumbnails Generated", 0xF1C40F, run_id, [
+        elapsed = time.time() - step_start
+        notify_step_complete("thumbnail", run_id, [
             {"name": "Title", "value": title[:100], "inline": False},
             {"name": "Best Score", "value": f"{max(scores) if scores else 0.0:.2f}", "inline": True},
             {"name": "Variants", "value": str(len(thumbnail_s3_keys)), "inline": True},
             {"name": "Profile", "value": profile_name, "inline": True},
-        ], dry_run=dry_run)
+        ], elapsed_sec=elapsed, dry_run=dry_run, color=0xF1C40F)
 
         return {
             "run_id": run_id,
@@ -371,5 +414,6 @@ def lambda_handler(event: dict, context) -> dict:
         }
 
     except Exception as exc:
+        log.error("Thumbnail step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "thumbnail", exc)
         raise

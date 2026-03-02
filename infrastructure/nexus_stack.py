@@ -8,13 +8,13 @@ from aws_cdk import (
     aws_iam as iam,
     aws_secretsmanager as secretsmanager,
     aws_stepfunctions as sfn,
-    aws_stepfunctions_tasks as tasks,
     aws_apigateway as apigw,
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
     aws_events as events,
     aws_events_targets as event_targets,
     aws_cloudwatch as cloudwatch,
+    aws_logs as logs,
 )
 from constructs import Construct
 import json
@@ -24,47 +24,29 @@ class NexusStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        assets_bucket = s3.Bucket(
-            self, "NexusAssets",
-            bucket_name="nexus-assets",
-            removal_policy=RemovalPolicy.RETAIN,
-            lifecycle_rules=[
-                s3.LifecycleRule(
-                    id="expire-clips",
-                    prefix="*/clips/",
-                    expiration=Duration.days(30),
-                ),
-                s3.LifecycleRule(
-                    id="expire-audio",
-                    prefix="*/audio/",
-                    expiration=Duration.days(30),
-                ),
-            ],
+        # S3 buckets — import existing ones created by setup_aws.py
+        # setup_aws.py may add account-id suffix if the base name is taken globally
+        assets_bucket_name = self.node.try_get_context("assets_bucket") or f"nexus-assets-{self.account}"
+        outputs_bucket_name = self.node.try_get_context("outputs_bucket") or f"nexus-outputs-{self.account}"
+        config_bucket_name = self.node.try_get_context("config_bucket") or f"nexus-config-{self.account}"
+
+        assets_bucket = s3.Bucket.from_bucket_name(
+            self, "NexusAssets", assets_bucket_name,
         )
 
-        outputs_bucket = s3.Bucket(
-            self, "NexusOutputs",
-            bucket_name="nexus-outputs",
-            removal_policy=RemovalPolicy.RETAIN,
-            cors=[
-                s3.CorsRule(
-                    allowed_methods=[s3.HttpMethods.GET],
-                    allowed_origins=["*"],
-                    allowed_headers=["*"],
-                )
-            ],
+        outputs_bucket = s3.Bucket.from_bucket_name(
+            self, "NexusOutputs", outputs_bucket_name,
         )
 
-        config_bucket = s3.Bucket(
-            self, "NexusConfig",
-            bucket_name="nexus-config",
-            removal_policy=RemovalPolicy.RETAIN,
+        config_bucket = s3.Bucket.from_bucket_name(
+            self, "NexusConfig", config_bucket_name,
         )
 
         dashboard_bucket = s3.Bucket(
             self, "NexusDashboard",
             bucket_name=f"nexus-dashboard-{self.account}",
             removal_policy=RemovalPolicy.DESTROY,
+            auto_delete_objects=True,
             website_index_document="index.html",
             block_public_access=s3.BlockPublicAccess(
                 block_public_acls=False,
@@ -83,13 +65,6 @@ class NexusStack(Stack):
             description="Static ffmpeg/ffprobe binaries for AL2023 arm64",
         )
 
-        ml_layer = lambda_.LayerVersion(
-            self, "MlLayer",
-            layer_version_name="nexus-ml",
-            code=lambda_.Code.from_asset("layers/ml"),
-            compatible_runtimes=[lambda_.Runtime.PYTHON_3_12],
-            description="sentence-transformers, torch (CPU), librosa, numpy, scipy",
-        )
 
         api_layer = lambda_.LayerVersion(
             self, "ApiLayer",
@@ -103,7 +78,6 @@ class NexusStack(Stack):
             "nexus/perplexity_api_key",
             "nexus/elevenlabs_api_key",
             "nexus/pexels_api_key",
-            "nexus/runwayml_api_key",
             "nexus/youtube_credentials",
             "nexus/discord_webhook_url",
             "nexus/db_credentials",
@@ -143,7 +117,15 @@ class NexusStack(Stack):
         arm64 = lambda_.Architecture.ARM_64
         py312 = lambda_.Runtime.PYTHON_3_12
 
+        # Common env vars for all Lambdas — bucket names must match what setup_aws.py created
+        common_env = {
+            "ASSETS_BUCKET": assets_bucket.bucket_name,
+            "OUTPUTS_BUCKET": outputs_bucket.bucket_name,
+            "CONFIG_BUCKET": config_bucket.bucket_name,
+        }
+
         def _lambda_props(fn_name, memory, timeout_min, role, layers=None, env=None):
+            merged_env = {**common_env, **(env or {})}
             return dict(
                 function_name=fn_name,
                 runtime=py312,
@@ -154,13 +136,13 @@ class NexusStack(Stack):
                 timeout=Duration.minutes(timeout_min),
                 role=role,
                 layers=layers or [],
-                environment=env or {},
+                environment=merged_env,
                 tracing=lambda_.Tracing.ACTIVE,
             )
 
         research_role = _make_role(
             "nexus-research",
-            secret_names_allowed=["nexus/perplexity_api_key"],
+            secret_names_allowed=["nexus/perplexity_api_key", "nexus/discord_webhook_url"],
         )
         research_role.add_to_policy(
             iam.PolicyStatement(
@@ -177,6 +159,7 @@ class NexusStack(Stack):
             "nexus-script",
             secret_names_allowed=[
                 "nexus/perplexity_api_key",
+                "nexus/discord_webhook_url",
             ],
         )
         script_role.add_to_policy(
@@ -187,7 +170,7 @@ class NexusStack(Stack):
         )
         fn_script = lambda_.Function(
             self, "NexusScript",
-            **_lambda_props("nexus-script", 1024, 10, script_role, [api_layer]),
+            **_lambda_props("nexus-script", 1024, 15, script_role, [api_layer]),
         )
 
         audio_role = _make_role(
@@ -196,6 +179,7 @@ class NexusStack(Stack):
             secret_names_allowed=[
                 "nexus/elevenlabs_api_key",
                 "nexus/pexels_api_key",
+                "nexus/discord_webhook_url",
             ],
         )
         fn_audio = lambda_.Function(
@@ -208,18 +192,26 @@ class NexusStack(Stack):
             extra_buckets=[assets_bucket],
             secret_names_allowed=[
                 "nexus/pexels_api_key",
-                "nexus/runwayml_api_key",
+                "nexus/discord_webhook_url",
             ],
         )
-        fn_visuals = lambda_.Function(
+        fn_visuals = lambda_.DockerImageFunction(
             self, "NexusVisuals",
-            **_lambda_props("nexus-visuals", 3072, 15, visuals_role,
-                            [ffmpeg_layer, ml_layer, api_layer]),
+            function_name="nexus-visuals",
+            code=lambda_.DockerImageCode.from_image_asset("lambdas/nexus-visuals"),
+            architecture=arm64,
+            memory_size=3008,
+            timeout=Duration.minutes(15),
+            ephemeral_storage_size=cdk.Size.gibibytes(10),
+            role=visuals_role,
+            environment=common_env,
+            tracing=lambda_.Tracing.ACTIVE,
         )
 
         editor_role = _make_role(
             "nexus-editor",
             extra_buckets=[assets_bucket],
+            secret_names_allowed=["nexus/discord_webhook_url"],
         )
         mediaconvert_role = iam.Role(
             self, "MediaConvertRole",
@@ -233,18 +225,23 @@ class NexusStack(Stack):
                 resources=["*"],
             )
         )
-        fn_editor = lambda_.Function(
+        fn_editor = lambda_.DockerImageFunction(
             self, "NexusEditor",
-            **_lambda_props(
-                "nexus-editor", 3072, 30, editor_role,
-                [ffmpeg_layer, ml_layer, api_layer],
-                env={"MEDIACONVERT_ROLE_ARN": mediaconvert_role.role_arn},
-            ),
+            function_name="nexus-editor",
+            code=lambda_.DockerImageCode.from_image_asset("lambdas/nexus-editor"),
+            architecture=arm64,
+            memory_size=3008,
+            timeout=Duration.minutes(15),
+            ephemeral_storage_size=cdk.Size.gibibytes(10),
+            role=editor_role,
+            environment={**common_env, "MEDIACONVERT_ROLE_ARN": mediaconvert_role.role_arn},
+            tracing=lambda_.Tracing.ACTIVE,
         )
 
         thumbnail_role = _make_role(
             "nexus-thumbnail",
             extra_buckets=[assets_bucket],
+            secret_names_allowed=["nexus/discord_webhook_url"],
         )
         thumbnail_role.add_to_policy(
             iam.PolicyStatement(
@@ -290,7 +287,7 @@ class NexusStack(Stack):
             timeout=Duration.minutes(1),
             role=notify_role,
             layers=[api_layer],
-            environment={"NOTIFY_MODE": "error"},
+            environment={**common_env, "NOTIFY_MODE": "error"},
         )
 
         with open("statemachine/nexus_pipeline.asl.json") as f:
@@ -318,6 +315,32 @@ class NexusStack(Stack):
                    fn_editor, fn_thumbnail, fn_upload, fn_notify, fn_notify_error]:
             fn.grant_invoke(sfn_role)
 
+        sfn_log_group = logs.LogGroup(
+            self, "NexusPipelineLogGroup",
+            log_group_name="/aws/vendedlogs/states/nexus-pipeline",
+            removal_policy=RemovalPolicy.DESTROY,
+            retention=logs.RetentionDays.ONE_MONTH,
+        )
+
+        # Grant SFN role permission to write to the log group
+        sfn_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "logs:CreateLogDelivery",
+                    "logs:GetLogDelivery",
+                    "logs:UpdateLogDelivery",
+                    "logs:DeleteLogDelivery",
+                    "logs:ListLogDeliveries",
+                    "logs:PutResourcePolicy",
+                    "logs:DescribeResourcePolicies",
+                    "logs:DescribeLogGroups",
+                    "logs:PutLogEvents",
+                    "logs:CreateLogStream",
+                ],
+                resources=["*"],
+            )
+        )
+
         state_machine = sfn.CfnStateMachine(
             self, "NexusPipeline",
             state_machine_name="nexus-pipeline",
@@ -326,6 +349,13 @@ class NexusStack(Stack):
             logging_configuration=sfn.CfnStateMachine.LoggingConfigurationProperty(
                 level="ERROR",
                 include_execution_data=True,
+                destinations=[
+                    sfn.CfnStateMachine.LogDestinationProperty(
+                        cloud_watch_logs_log_group=sfn.CfnStateMachine.CloudWatchLogsLogGroupProperty(
+                            log_group_arn=sfn_log_group.log_group_arn,
+                        )
+                    )
+                ],
             ),
         )
 
@@ -354,6 +384,7 @@ class NexusStack(Stack):
                     "states:StartExecution",
                     "states:DescribeExecution",
                     "states:ListExecutions",
+                    "states:GetExecutionHistory",
                 ],
                 resources=["*"],
             )
@@ -426,7 +457,7 @@ class NexusStack(Stack):
         )
 
         cw_dashboard = cloudwatch.Dashboard(
-            self, "NexusDashboard",
+            self, "NexusCWDashboard",
             dashboard_name="nexus-pipeline",
         )
         cw_dashboard.add_widgets(

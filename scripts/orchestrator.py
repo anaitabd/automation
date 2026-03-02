@@ -64,7 +64,13 @@ else:
     }
 
 INVOKE_PATH = "/2015-03-31/functions/function/invocations"
-INVOKE_TIMEOUT = 900  # 15 min per step
+INVOKE_TIMEOUT = 900  # 15 min — matches AWS Lambda max timeout
+
+# Steps that need the full timeout (seconds)
+_STEP_TIMEOUTS: dict[str, int] = {
+    "Visuals": 900,   # full 15 min — heavy (downloads + CLIP + FFmpeg), parallelised
+    "Editor":  900,    # full 15 min — MediaConvert can be slow
+}
 
 # ── Pipeline Step Definitions ─────────────────────────────────────────────────
 # Each step: (name, which keys to send, which keys to extract from response)
@@ -115,7 +121,7 @@ PIPELINE = [
     {
         "name": "Editor",
         "input_keys": [
-            "run_id", "profile", "dry_run",
+            "run_id", "profile", "dry_run", "niche",
             "script_s3_key", "sections", "mixed_audio_s3_key",
             "title", "total_duration_estimate",
         ],
@@ -128,7 +134,7 @@ PIPELINE = [
     {
         "name": "Thumbnail",
         "input_keys": [
-            "run_id", "profile", "dry_run",
+            "run_id", "profile", "dry_run", "niche",
             "script_s3_key", "final_video_s3_key",
             "title", "video_duration_sec",
         ],
@@ -142,7 +148,7 @@ PIPELINE = [
     {
         "name": "Upload",
         "input_keys": [
-            "run_id", "profile", "dry_run",
+            "run_id", "profile", "dry_run", "niche",
             "script_s3_key", "final_video_s3_key",
             "primary_thumbnail_s3_key", "title",
             "video_duration_sec", "thumbnail_s3_keys",
@@ -171,9 +177,35 @@ _runs: dict[str, dict[str, Any]] = {}
 _events: dict[str, list[queue.Queue]] = {}  # run_id -> list of SSE subscriber queues
 _lock = threading.Lock()
 
+# Historical step durations for ETA estimation (step_name -> list of durations in seconds)
+_step_durations: dict[str, list[float]] = {s["name"]: [] for s in PIPELINE}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _estimate_step_duration(step_name: str) -> float | None:
+    """Return average duration for a step based on history, or a default estimate."""
+    # Default estimates (seconds) for first-run when no history exists
+    _DEFAULT_ESTIMATES = {
+        "Research": 60, "Script": 120, "Audio": 180, "Visuals": 480,
+        "Editor": 300, "Thumbnail": 90, "Upload": 60, "Notify": 15,
+    }
+    history = _step_durations.get(step_name, [])
+    if history:
+        return sum(history) / len(history)
+    return _DEFAULT_ESTIMATES.get(step_name)
+
+
+def _record_step_duration(step_name: str, duration: float) -> None:
+    """Record how long a step took for future ETA estimation."""
+    with _lock:
+        durations = _step_durations.setdefault(step_name, [])
+        durations.append(duration)
+        # Keep only last 10 runs for rolling average
+        if len(durations) > 10:
+            _step_durations[step_name] = durations[-10:]
 
 
 def _create_run(run_id: str, niche: str, profile: str, dry_run: bool) -> dict:
@@ -184,30 +216,60 @@ def _create_run(run_id: str, niche: str, profile: str, dry_run: bool) -> dict:
         "dry_run": dry_run,
         "status": "RUNNING",
         "current_step": "",
+        "current_step_index": 0,
+        "total_steps": len(PIPELINE),
         "started_at": _now(),
         "finished_at": None,
+        "elapsed_sec": 0,
+        "eta_remaining_sec": None,
         "title": "",
         "steps": [],
         "error": None,
     }
     for step in PIPELINE:
+        est = _estimate_step_duration(step["name"])
         run["steps"].append({
             "name": step["name"],
             "status": "pending",
             "started_at": None,
             "finished_at": None,
+            "elapsed_sec": None,
+            "estimated_duration_sec": est,
             "error": None,
             "output_summary": None,
         })
+    # Calculate total estimated duration
+    total_est = sum(s["estimated_duration_sec"] or 0 for s in run["steps"])
+    run["eta_remaining_sec"] = total_est if total_est > 0 else None
     with _lock:
         _runs[run_id] = run
         _events[run_id] = []
     return run
 
 
+def _console_log(event_type: str, data: dict) -> None:
+    """Print a coloured one-liner to the terminal for real-time visibility."""
+    _COLORS = {
+        "step_start":    "\033[1;36m",   # bold cyan
+        "step_done":     "\033[1;32m",   # bold green
+        "step_error":    "\033[1;31m",   # bold red
+        "log":           "\033[0;37m",   # white
+        "pipeline_done": "\033[1;35m",   # bold magenta
+    }
+    RESET = "\033[0m"
+    color = _COLORS.get(event_type, "")
+    msg = data.get("message", "")
+    if not msg:
+        status = data.get("status", "")
+        msg = f"Pipeline finished — {status}" if status else json.dumps(data, default=str)
+    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    print(f"{color}[{ts}] {msg}{RESET}", flush=True)
+
+
 def _publish(run_id: str, event_type: str, data: dict) -> None:
-    """Push an SSE event to all subscribers of a run."""
+    """Push an SSE event to all subscribers of a run + print to console."""
     msg = {"type": event_type, "timestamp": _now(), **data}
+    _console_log(event_type, data)
     with _lock:
         subscribers = _events.get(run_id, [])
         for q in subscribers:
@@ -234,7 +296,11 @@ def _unsubscribe(run_id: str, q: queue.Queue) -> None:
 # ── Pipeline Execution ────────────────────────────────────────────────────────
 def _invoke_lambda(step_name: str, payload: dict) -> dict:
     url = _ENDPOINTS[step_name] + INVOKE_PATH
-    resp = requests.post(url, json=payload, timeout=INVOKE_TIMEOUT)
+    timeout = _STEP_TIMEOUTS.get(step_name, INVOKE_TIMEOUT)
+    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    print(f"\033[0;90m[{ts}] → POST {url}  (timeout={timeout}s)\033[0m", flush=True)
+    resp = requests.post(url, json=payload, timeout=timeout)
+    print(f"\033[0;90m[{ts}] ← {resp.status_code} from {step_name} ({len(resp.content)} bytes)\033[0m", flush=True)
     resp.raise_for_status()
     return resp.json()
 
@@ -249,19 +315,54 @@ def _run_pipeline(run_id: str, niche: str, profile: str, dry_run: bool) -> None:
     }
 
     run = _runs[run_id]
+    pipeline_start = time.time()
+    total_steps = len(PIPELINE)
+
+    # Compute initial total ETA
+    total_estimated = sum(
+        (_estimate_step_duration(s["name"]) or 0) for s in PIPELINE
+    )
+
+    _publish(run_id, "log", {
+        "step": "Pipeline",
+        "message": f"🚀 Pipeline started with {total_steps} steps. "
+                   f"Estimated total: {int(total_estimated // 60)}m {int(total_estimated % 60)}s",
+    })
 
     for i, step_def in enumerate(PIPELINE):
         step_name = step_def["name"]
         step_info = run["steps"][i]
+        step_start_time = time.time()
+
+        # Calculate remaining ETA (sum of estimates for remaining steps)
+        remaining_estimated = sum(
+            (_estimate_step_duration(PIPELINE[j]["name"]) or 0)
+            for j in range(i, total_steps)
+        )
+
+        # Update run-level progress
+        run["current_step"] = step_name
+        run["current_step_index"] = i
+        pipeline_elapsed = time.time() - pipeline_start
+        run["elapsed_sec"] = round(pipeline_elapsed, 1)
+        run["eta_remaining_sec"] = round(remaining_estimated, 1)
 
         # Mark step as active
-        run["current_step"] = step_name
         step_info["status"] = "running"
         step_info["started_at"] = _now()
+
+        est_duration = _estimate_step_duration(step_name)
+        est_str = f" (estimated: {int(est_duration // 60)}m {int(est_duration % 60)}s)" if est_duration else ""
+
         _publish(run_id, "step_start", {
             "step": step_name,
             "index": i,
-            "message": f"Starting {step_name}...",
+            "total_steps": total_steps,
+            "message": f"▶ [{i + 1}/{total_steps}] Starting {step_name}...{est_str}",
+            "estimated_duration_sec": est_duration,
+            "eta_remaining_sec": round(remaining_estimated, 1),
+            "pipeline_elapsed_sec": round(pipeline_elapsed, 1),
+            "progress_pct": round((i / total_steps) * 100, 1),
         })
 
         try:
@@ -273,14 +374,19 @@ def _run_pipeline(run_id: str, niche: str, profile: str, dry_run: bool) -> None:
 
             _publish(run_id, "log", {
                 "step": step_name,
-                "message": f"Invoking {step_name} lambda...",
+                "message": f"📡 [{i + 1}/{total_steps}] Invoking {step_name} lambda...",
             })
 
             result = _invoke_lambda(step_name, payload)
 
+            step_elapsed = time.time() - step_start_time
+
             # Check for error in response
             if isinstance(result, dict) and "errorMessage" in result:
                 raise RuntimeError(result["errorMessage"])
+
+            # Record actual duration for future ETA estimation
+            _record_step_duration(step_name, step_elapsed)
 
             # Merge result keys into cumulative state
             for k in step_def["merge_keys"]:
@@ -293,6 +399,7 @@ def _run_pipeline(run_id: str, niche: str, profile: str, dry_run: bool) -> None:
             # Update run state
             step_info["status"] = "done"
             step_info["finished_at"] = _now()
+            step_info["elapsed_sec"] = round(step_elapsed, 1)
             summary = {}
             for k in ["title", "selected_topic", "script_s3_key",
                        "final_video_s3_key", "video_url", "video_id"]:
@@ -303,39 +410,87 @@ def _run_pipeline(run_id: str, niche: str, profile: str, dry_run: bool) -> None:
             if "title" in state:
                 run["title"] = state["title"]
 
+            # Calculate updated pipeline progress
+            pipeline_elapsed = time.time() - pipeline_start
+            run["elapsed_sec"] = round(pipeline_elapsed, 1)
+            steps_done = i + 1
+            progress_pct = round((steps_done / total_steps) * 100, 1)
+
+            # Remaining ETA after this step
+            remaining_eta = sum(
+                (_estimate_step_duration(PIPELINE[j]["name"]) or 0)
+                for j in range(i + 1, total_steps)
+            )
+            run["eta_remaining_sec"] = round(remaining_eta, 1)
+
+            elapsed_str = f"{int(step_elapsed // 60)}m {int(step_elapsed % 60)}s"
+            eta_str = f"{int(remaining_eta // 60)}m {int(remaining_eta % 60)}s" if remaining_eta > 0 else "almost done"
+
             _publish(run_id, "step_done", {
                 "step": step_name,
                 "index": i,
-                "message": f"{step_name} completed.",
+                "total_steps": total_steps,
+                "message": f"✅ [{steps_done}/{total_steps}] {step_name} completed in {elapsed_str}",
                 "summary": summary,
+                "elapsed_sec": round(step_elapsed, 1),
+                "pipeline_elapsed_sec": round(pipeline_elapsed, 1),
+                "eta_remaining_sec": round(remaining_eta, 1),
+                "progress_pct": progress_pct,
+            })
+
+            _publish(run_id, "log", {
+                "step": step_name,
+                "message": f"⏱ {step_name}: {elapsed_str} | "
+                           f"Progress: {progress_pct}% | ETA: {eta_str}",
             })
 
         except Exception as exc:
+            step_elapsed = time.time() - step_start_time
             error_msg = str(exc)
             step_info["status"] = "error"
             step_info["finished_at"] = _now()
+            step_info["elapsed_sec"] = round(step_elapsed, 1)
             step_info["error"] = error_msg
             run["status"] = "FAILED"
             run["error"] = f"{step_name}: {error_msg}"
             run["finished_at"] = _now()
+            run["elapsed_sec"] = round(time.time() - pipeline_start, 1)
+            run["eta_remaining_sec"] = 0
+
             _publish(run_id, "step_error", {
                 "step": step_name,
                 "index": i,
-                "message": f"{step_name} failed: {error_msg}",
+                "total_steps": total_steps,
+                "message": f"❌ [{i + 1}/{total_steps}] {step_name} failed after "
+                           f"{int(step_elapsed // 60)}m {int(step_elapsed % 60)}s: {error_msg}",
                 "error": error_msg,
+                "elapsed_sec": round(step_elapsed, 1),
+                "pipeline_elapsed_sec": round(time.time() - pipeline_start, 1),
+                "progress_pct": round((i / total_steps) * 100, 1),
             })
             _publish(run_id, "pipeline_done", {
                 "status": "FAILED",
                 "error": f"{step_name}: {error_msg}",
+                "total_elapsed_sec": round(time.time() - pipeline_start, 1),
             })
             return
 
     # All steps completed
+    total_elapsed = time.time() - pipeline_start
     run["status"] = "SUCCEEDED"
     run["finished_at"] = _now()
+    run["elapsed_sec"] = round(total_elapsed, 1)
+    run["eta_remaining_sec"] = 0
+
+    _publish(run_id, "log", {
+        "step": "Pipeline",
+        "message": f"🎉 Pipeline completed successfully in "
+                   f"{int(total_elapsed // 60)}m {int(total_elapsed % 60)}s",
+    })
     _publish(run_id, "pipeline_done", {
         "status": "SUCCEEDED",
         "title": state.get("title", ""),
+        "total_elapsed_sec": round(total_elapsed, 1),
     })
 
 

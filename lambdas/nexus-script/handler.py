@@ -4,6 +4,9 @@ import re
 import time
 import boto3
 import urllib.request
+from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
+
+log = get_logger("nexus-script")
 
 try:
     from json_repair import repair_json
@@ -276,7 +279,10 @@ def get_secret(name: str) -> dict:
 
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
-BEDROCK_MODEL_ID = "us.anthropic.claude-3-sonnet-20240229-v1:0"
+BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+# Set dynamically per-invocation from the profile's llm.script_model
+_active_model_id: str = BEDROCK_MODEL_ID_DEFAULT
 
 SCRIPT_JSON_SCHEMA = """{
   "title": "string",
@@ -323,8 +329,9 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     raise RuntimeError("Unreachable")
 
 
-def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3) -> str:
+def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3, model_id: str = "") -> str:
     client = boto3.client("bedrock-runtime")
+    bedrock_model = model_id or _active_model_id
     body = json.dumps(
         {
             "anthropic_version": "bedrock-2023-05-31",
@@ -335,7 +342,7 @@ def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3) -> str:
     for attempt in range(retries):
         try:
             response = client.invoke_model(
-                modelId=BEDROCK_MODEL_ID,
+                modelId=bedrock_model,
                 body=body,
                 contentType="application/json",
                 accept="application/json",
@@ -671,33 +678,6 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
-    """Send a step-level Discord notification. Silently swallows errors."""
-    if dry_run:
-        return
-    try:
-        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
-        if not webhook_url:
-            return
-        embed = {
-            "embeds": [{
-                "title": f"📝 Nexus Cloud — {step}",
-                "color": color,
-                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
-                "footer": {"text": "Nexus Cloud Pipeline"},
-            }]
-        }
-        data = json.dumps(embed).encode("utf-8")
-        req = urllib.request.Request(
-            webhook_url, data=data, method="POST",
-            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass
-
-
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
@@ -706,12 +686,21 @@ def lambda_handler(event: dict, context) -> dict:
     trending_context: str = event.get("trending_context", "")
     dry_run: bool = event.get("dry_run", False)
 
+    step_start = notify_step_start("script", run_id, niche=event.get("niche", ""), profile=profile_name, dry_run=dry_run)
+
     try:
         s3 = boto3.client("s3")
+        log.info("Loading profile: %s", profile_name)
         profile_obj = s3.get_object(Bucket=S3_CONFIG_BUCKET, Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
 
+        # Use the model configured in the profile (falls back to default)
+        global _active_model_id
+        _active_model_id = profile.get("llm", {}).get("script_model", BEDROCK_MODEL_ID_DEFAULT)
+        log.info("Using Bedrock model: %s", _active_model_id)
+
         if dry_run:
+            log.info("DRY RUN mode — returning stub script")
             script = {
                 "title": f"[DRY RUN] {topic}",
                 "description": "Dry run script.",
@@ -741,37 +730,39 @@ def lambda_handler(event: dict, context) -> dict:
         else:
             perplexity_key = get_secret("nexus/perplexity_api_key")["api_key"]
 
-            print(f"[INFO] Pass 1/6: Generating script structure for '{topic}'")
+            log.info("Pass 1/6: Generating script structure for '%s'", topic)
             script = _pass1_structure(topic, angle, trending_context, profile)
 
-            print(f"[INFO] Pass 2/6: Fact integrity self-audit")
+            log.info("Pass 2/6: Fact integrity self-audit")
             script = _pass_fact_integrity(script)
 
-            print(f"[INFO] Pass 3/6: Hook rewrite")
+            log.info("Pass 3/6: Hook rewrite")
             script = _pass2_hook_rewrite(script)
 
-            print(f"[INFO] Pass 4/6: Visual cues")
+            log.info("Pass 4/6: Visual cues")
             script = _pass3_visual_cues(script, profile)
 
-            print(f"[INFO] Pass 5/6: Pacing polish")
+            log.info("Pass 5/6: Pacing polish")
             script = _pass4_pacing(script, profile)
 
-            print(f"[INFO] Pass 6/6: Perplexity fact-check (web-verified)")
+            log.info("Pass 6/6: Perplexity fact-check (web-verified)")
             script = _pass5_fact_check(script, perplexity_key)
 
             confidence = script.get("factual_confidence", "unknown")
-            print(f"[INFO] Script complete — factual_confidence={confidence}")
+            log.info("Script complete — factual_confidence=%s", confidence)
 
         script["run_id"] = run_id
+        log.info("Saving script to S3")
         s3_key = _save_to_s3(run_id, script)
 
-        _notify_discord("Script Generated", 0x9B59B6, run_id, [
+        elapsed = time.time() - step_start
+        notify_step_complete("script", run_id, [
             {"name": "Title", "value": script["title"][:100], "inline": False},
             {"name": "Sections", "value": str(len(script.get("sections", []))), "inline": True},
             {"name": "Est. Duration", "value": f"{script.get('total_duration_estimate', 0)}s", "inline": True},
             {"name": "Profile", "value": profile_name, "inline": True},
             {"name": "Fact Confidence", "value": script.get("factual_confidence", "N/A"), "inline": True},
-        ], dry_run=dry_run)
+        ], elapsed_sec=elapsed, dry_run=dry_run, color=0x9B59B6)
 
         return {
             "run_id": run_id,
@@ -787,5 +778,6 @@ def lambda_handler(event: dict, context) -> dict:
         }
 
     except Exception as exc:
+        log.error("Script step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "script", exc)
         raise

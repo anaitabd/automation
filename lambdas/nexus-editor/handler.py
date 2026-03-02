@@ -6,6 +6,9 @@ import tempfile
 import time
 import urllib.request
 import boto3
+from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
+
+log = get_logger("nexus-editor")
 
 MEDIACONVERT_THRESHOLD_SECONDS = 600
 
@@ -59,22 +62,54 @@ DRAWTEXT_FONT = _find_font("DejaVuSans-Bold.ttf")
 DRAWTEXT_FONT_LIGHT = _find_font("DejaVuSans.ttf")
 
 
-def _escape_drawtext(text: str) -> str:
-    """Escape text for use inside an ffmpeg drawtext filter value.
+def _hex_to_0x(color: str) -> str:
+    """Convert '#RRGGBB' colour notation to '0xRRGGBB' so ffmpeg filter/lavfi
+    parsers don't treat the '#' as a comment character."""
+    if color.startswith("#"):
+        return "0x" + color[1:]
+    return color
 
-    ffmpeg drawtext requires its own escaping layer on top of shell escaping.
-    The following characters must be escaped:  \\ : ' % ; [ ]
-    We also remove newlines to prevent filter parse errors.
+
+def _escape_drawtext_content(text: str) -> str:
+    """Escape text for ffmpeg drawtext *content* (read from a textfile=).
+
+    Only characters meaningful to the drawtext filter itself need escaping.
+    Filter-graph-level delimiters (;  [ ] = { } #) are NOT escaped here
+    because the filter parser never sees textfile content.
     """
-    text = text.replace("\\", "\\\\\\\\")   # backslash
-    text = text.replace(":", "\\:")          # colon
-    text = text.replace("'", "'\\\\\\''")   # apostrophe — end quote, escaped quote, restart
-    text = text.replace("%", "%%")           # percent (strftime expansion)
-    text = text.replace(";", "\\;")          # semicolon (filter separator)
-    text = text.replace("[", "\\[")          # bracket
-    text = text.replace("]", "\\]")
+    text = text.replace("\\", "\\\\")            # backslash  (must be first)
+    text = text.replace(":", "\\:")               # colon  (drawtext key separator)
+    # --- quote handling ------------------------------------------------
+    text = text.replace("'", "\u2019")            # ASCII apostrophe
+    text = text.replace("\u2018", "\u2019")        # LEFT  single curly quote
+    text = text.replace('"', "\u201C")             # ASCII double quote
+    text = text.replace("\u201D", "\u201C")        # RIGHT double curly quote
+    # --- end quote handling -------------------------------------------
+    text = text.replace("%", "%%")                # percent (strftime expansion)
     text = text.replace("\n", " ")
     text = text.replace("\r", "")
+    if len(text) > 120:
+        text = text[:117] + "..."
+    return text
+
+
+def _escape_drawtext(text: str) -> str:
+    """Escape text for use inside an inline ffmpeg drawtext  text='…'  value.
+
+    This applies drawtext-content escaping *plus* filter-graph-level escaping
+    for characters that the filter parser would otherwise interpret as
+    delimiters (; [ ] = { } #).  Use this only for inline text='…' values;
+    prefer _escape_drawtext_content + textfile= for robustness.
+    """
+    text = _escape_drawtext_content(text)
+    # Additional filter-parser-level escapes (not needed for textfile=)
+    text = text.replace(";", "\\;")               # semicolon (filter separator)
+    text = text.replace("[", "\\[")               # bracket
+    text = text.replace("]", "\\]")
+    text = text.replace("=", "\\=")               # equals (key=value separator)
+    text = text.replace("{", "\\{")               # brace (expression syntax)
+    text = text.replace("}", "\\}")
+    text = text.replace("#", "\\#")               # hash (color codes / comments)
     return text
 
 
@@ -123,11 +158,13 @@ def _build_intro_slate(
     accent_color: str = "#C8A96E",
 ) -> str:
     out = os.path.join(tmpdir, "intro_slate.mp4")
+    accent_color = _hex_to_0x(accent_color)
     title_escaped = _escape_drawtext(video_title)
     channel_escaped = _escape_drawtext(channel_name)
     # Font file argument — fallback to fontsize-only if font doesn't exist
     font_arg = f":fontfile={DRAWTEXT_FONT}" if os.path.isfile(DRAWTEXT_FONT) else ""
     font_arg_light = f":fontfile={DRAWTEXT_FONT_LIGHT}" if os.path.isfile(DRAWTEXT_FONT_LIGHT) else ""
+
     cmd = [
         FFMPEG_BIN, "-y",
         "-f", "lavfi",
@@ -147,16 +184,16 @@ def _build_intro_slate(
             f"drawtext=text='{channel_escaped}'"
             f"{font_arg}"
             f":fontcolor={accent_color}:fontsize=52:x=(w-text_w)/2"
-            f":y='if(lt(t,0.8),h/2-120+40*(0.8-t),h/2-120)'"
-            f":alpha='if(lt(t,0.3),0,if(lt(t,1.0),(t-0.3)/0.7,if(lt(t,5.0),1,(6.0-t))))',"
+            f":y='if(lt(t\\,0.8)\\,h/2-120+40*(0.8-t)\\,h/2-120)'"
+            f":alpha='if(lt(t\\,0.3)\\,0\\,if(lt(t\\,1.0)\\,(t-0.3)/0.7\\,if(lt(t\\,5.0)\\,1\\,(6.0-t))))',"
             # Decorative accent line under channel name
             f"drawbox=x=(1920-400)/2:y=462:w=400:h=2:color={accent_color}@0.8:t=fill,"
             # Video title — fade in slightly after channel name
             f"drawtext=text='{title_escaped}'"
             f"{font_arg_light}"
             f":fontcolor=white:fontsize=38:x=(w-text_w)/2"
-            f":y='if(lt(t,1.2),h/2+20+30*(1.2-t),h/2+20)'"
-            f":alpha='if(lt(t,0.8),0,if(lt(t,1.5),(t-0.8)/0.7,if(lt(t,5.0),1,(6.0-t))))'"
+            f":y='if(lt(t\\,1.2)\\,h/2+20+30*(1.2-t)\\,h/2+20)'"
+            f":alpha='if(lt(t\\,0.8)\\,0\\,if(lt(t\\,1.5)\\,(t-0.8)/0.7\\,if(lt(t\\,5.0)\\,1\\,(6.0-t))))'"
             # Global fade-in / fade-out
             ",fade=t=in:st=0:d=0.5,fade=t=out:st=5.5:d=0.5[out]"
         ),
@@ -165,7 +202,13 @@ def _build_intro_slate(
         "-pix_fmt", "yuv420p",
         "-t", "6", out,
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as exc:
+        stderr_msg = exc.stderr.decode("utf-8", errors="replace")[-1500:] if exc.stderr else "no stderr"
+        log.error("Intro slate FFmpeg failed (exit %d):\n%s", exc.returncode, stderr_msg)
+        log.error("Intro slate cmd: %s", " ".join(cmd))
+        raise
     return out
 
 
@@ -176,12 +219,14 @@ def _build_outro_slate(
     accent_color: str = "#C8A96E",
 ) -> str:
     out = os.path.join(tmpdir, "outro_slate.mp4")
+    accent_color = _hex_to_0x(accent_color)
     channel_escaped = _escape_drawtext(channel_name)
     social_escaped = _escape_drawtext(social_handle)
     thanks_escaped = _escape_drawtext("Thanks for watching")
     subscribe_escaped = _escape_drawtext("SUBSCRIBE for more")
     font_arg = f":fontfile={DRAWTEXT_FONT}" if os.path.isfile(DRAWTEXT_FONT) else ""
     font_arg_light = f":fontfile={DRAWTEXT_FONT_LIGHT}" if os.path.isfile(DRAWTEXT_FONT_LIGHT) else ""
+
     cmd = [
         FFMPEG_BIN, "-y",
         "-f", "lavfi",
@@ -196,8 +241,8 @@ def _build_outro_slate(
             f"drawtext=text='{thanks_escaped}'"
             f"{font_arg}"
             f":fontcolor=white:fontsize=60:x=(w-text_w)/2"
-            f":y='if(lt(t,0.5),h/2-140+40*(0.5-t),h/2-140)'"
-            f":alpha='if(lt(t,0.3),0,if(lt(t,1.0),(t-0.3)/0.7,if(lt(t,8.5),1,(10.0-t)/1.5)))',"
+            f":y='if(lt(t\\,0.5)\\,h/2-140+40*(0.5-t)\\,h/2-140)'"
+            f":alpha='if(lt(t\\,0.3)\\,0\\,if(lt(t\\,1.0)\\,(t-0.3)/0.7\\,if(lt(t\\,8.5)\\,1\\,(10.0-t)/1.5)))',"
             # Accent line
             f"drawbox=x=(1920-500)/2:y=416:w=500:h=3:color={accent_color}@0.8:t=fill,"
             # Channel name
@@ -205,20 +250,20 @@ def _build_outro_slate(
             f"{font_arg}"
             f":fontcolor={accent_color}:fontsize=44:x=(w-text_w)/2"
             f":y=h/2-40"
-            f":alpha='if(lt(t,0.8),0,if(lt(t,1.5),(t-0.8)/0.7,if(lt(t,8.5),1,(10.0-t)/1.5)))',"
+            f":alpha='if(lt(t\\,0.8)\\,0\\,if(lt(t\\,1.5)\\,(t-0.8)/0.7\\,if(lt(t\\,8.5)\\,1\\,(10.0-t)/1.5)))',"
             # Social handle
             f"drawtext=text='{social_escaped}'"
             f"{font_arg_light}"
-            f":fontcolor=#AAAAAA:fontsize=30:x=(w-text_w)/2"
+            f":fontcolor=0xAAAAAA:fontsize=30:x=(w-text_w)/2"
             f":y=h/2+30"
-            f":alpha='if(lt(t,1.2),0,if(lt(t,2.0),(t-1.2)/0.8,if(lt(t,8.5),1,(10.0-t)/1.5)))',"
+            f":alpha='if(lt(t\\,1.2)\\,0\\,if(lt(t\\,2.0)\\,(t-1.2)/0.8\\,if(lt(t\\,8.5)\\,1\\,(10.0-t)/1.5)))',"
             # Subscribe CTA — pulsing accent color
             f"drawtext=text='{subscribe_escaped}'"
             f"{font_arg}"
             f":fontcolor={accent_color}:fontsize=36:x=(w-text_w)/2"
             f":y=h/2+110"
-            f":alpha='if(lt(t,2.0),0,if(lt(t,2.8),(t-2.0)/0.8,"
-            f"if(lt(t,8.5),0.7+0.3*sin(t*3),max(0,(10.0-t)/1.5))))'"
+            f":alpha='if(lt(t\\,2.0)\\,0\\,if(lt(t\\,2.8)\\,(t-2.0)/0.8\\,"
+            f"if(lt(t\\,8.5)\\,0.7+0.3*sin(t*3)\\,max(0\\,(10.0-t)/1.5))))'"
             # Fade in/out
             ",fade=t=in:st=0:d=0.8,fade=t=out:st=9.0:d=1.0"
         ),
@@ -226,11 +271,19 @@ def _build_outro_slate(
         "-pix_fmt", "yuv420p",
         "-t", "10", out,
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as exc:
+        stderr_msg = exc.stderr.decode("utf-8", errors="replace")[-1500:] if exc.stderr else "no stderr"
+        log.error("Outro slate FFmpeg failed (exit %d):\n%s", exc.returncode, stderr_msg)
+        log.error("Outro slate cmd: %s", " ".join(cmd))
+        raise
     return out
 
 
 def _build_overlay_filter(overlay_type: str, overlay_text: str, accent_color: str) -> str:
+    accent_color = _hex_to_0x(accent_color)
+
     if overlay_type == "lower_third" and overlay_text:
         text_esc = _escape_drawtext(overlay_text[:60])
         font_arg = f":fontfile={DRAWTEXT_FONT}" if os.path.isfile(DRAWTEXT_FONT) else ""
@@ -501,33 +554,6 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
-    """Send a step-level Discord notification. Silently swallows errors."""
-    if dry_run:
-        return
-    try:
-        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
-        if not webhook_url:
-            return
-        embed = {
-            "embeds": [{
-                "title": f"✂️ Nexus Cloud — {step}",
-                "color": color,
-                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
-                "footer": {"text": "Nexus Cloud Pipeline"},
-            }]
-        }
-        data = json.dumps(embed).encode("utf-8")
-        req = urllib.request.Request(
-            webhook_url, data=data, method="POST",
-            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass
-
-
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
@@ -537,12 +563,16 @@ def lambda_handler(event: dict, context) -> dict:
     dry_run: bool = event.get("dry_run", False)
     title_passthrough: str = event.get("title", "")
 
+    step_start = notify_step_start("editor", run_id, niche=event.get("niche", ""), profile=profile_name, dry_run=dry_run)
+
     try:
         s3 = boto3.client("s3")
 
+        log.info("Loading script from S3: %s", script_s3_key)
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
         script: dict = json.loads(script_obj["Body"].read())
 
+        log.info("Loading profile: %s", profile_name)
         profile_obj = s3.get_object(Bucket=S3_CONFIG_BUCKET, Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
 
@@ -562,6 +592,7 @@ def lambda_handler(event: dict, context) -> dict:
         total_est = script.get("total_duration_estimate", 600)
 
         if dry_run:
+            log.info("DRY RUN mode — returning stub video key")
             final_key = f"{run_id}/final_video_dry_run.mp4"
             return {
                 "run_id": run_id,
@@ -574,11 +605,15 @@ def lambda_handler(event: dict, context) -> dict:
             }
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            log.info("Downloading mixed audio from S3: %s", mixed_audio_s3_key)
             audio_local = os.path.join(tmpdir, "mixed_audio.wav")
             s3.download_file(S3_ASSETS_BUCKET, mixed_audio_s3_key, audio_local)
 
+            log.info("Detecting beats (beat_sync=%s)", beat_sync)
             beats = _detect_beats(audio_local) if beat_sync else []
+            log.info("Detected %d beats", len(beats))
 
+            log.info("Building intro slate (channel=%s, accent=%s)", channel_name, accent_color)
             intro_path = _build_intro_slate(
                 channel_name, script.get("title", ""), tmpdir, accent_color
             )
@@ -652,49 +687,120 @@ def lambda_handler(event: dict, context) -> dict:
 
                 clip_paths.append(section_video)
 
+            log.info("Building outro slate")
             outro_path = _build_outro_slate(
                 channel_name, f"@{channel_name.lower().replace(' ', '')}", tmpdir, accent_color
             )
 
             all_clips = [intro_path] + clip_paths + [outro_path]
+            log.info("Assembling %d clips (intro + %d sections + outro)", len(all_clips), len(clip_paths))
 
             if len(all_clips) < 2:
                 assembled = all_clips[0] if all_clips else intro_path
+            elif len(all_clips) == 2:
+                transition_to_use = (
+                    sections[0].get("transition_in", default_transition)
+                    if sections else default_transition
+                )
+                assembled = _apply_transition(
+                    all_clips[0], all_clips[1], transition_to_use,
+                    transition_dur, tmpdir, 0
+                )
             else:
-                current = all_clips[0]
-                for i, next_clip in enumerate(all_clips[1:], 1):
-                    transition_to_use = (
+                # ── Batch assembly: determine transitions for each join ──
+                transitions_list = []
+                for i in range(1, len(all_clips)):
+                    t = (
                         sections[i - 1].get("transition_in", default_transition)
                         if i - 1 < len(sections)
                         else default_transition
                     )
-                    current = _apply_transition(
-                        current, next_clip, transition_to_use,
-                        transition_dur, tmpdir, i
-                    )
-                assembled = current
+                    transitions_list.append(t)
 
+                # Check if all transitions are plain cuts — fast concat path
+                all_cuts = all(t == "cut" for t in transitions_list)
+
+                if all_cuts:
+                    # Fast path: concat demux with no re-encoding
+                    concat_file = os.path.join(tmpdir, "final_concat.txt")
+                    with open(concat_file, "w") as f:
+                        for clip in all_clips:
+                            f.write(f"file '{clip}'\n")
+                    assembled = os.path.join(tmpdir, "assembled_concat.mp4")
+                    subprocess.run(
+                        [FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
+                         "-i", concat_file, "-c", "copy", assembled],
+                        check=True, capture_output=True,
+                    )
+                else:
+                    # Mixed transitions: apply pairwise but limit re-encodes
+                    # by processing in groups of 4-5 clips, then concatenating groups
+                    group_size = 4
+                    group_outputs = []
+
+                    for g_start in range(0, len(all_clips), group_size):
+                        group = all_clips[g_start : g_start + group_size]
+                        group_trans = transitions_list[g_start : g_start + group_size - 1]
+
+                        if len(group) == 1:
+                            group_outputs.append(group[0])
+                        else:
+                            current = group[0]
+                            for gi, next_clip in enumerate(group[1:]):
+                                t = group_trans[gi] if gi < len(group_trans) else default_transition
+                                current = _apply_transition(
+                                    current, next_clip, t,
+                                    transition_dur, tmpdir,
+                                    g_start + gi,
+                                )
+                            group_outputs.append(current)
+
+                    # Concatenate all group outputs
+                    if len(group_outputs) == 1:
+                        assembled = group_outputs[0]
+                    else:
+                        concat_file = os.path.join(tmpdir, "groups_concat.txt")
+                        with open(concat_file, "w") as f:
+                            for gout in group_outputs:
+                                f.write(f"file '{gout}'\n")
+                        assembled = os.path.join(tmpdir, "assembled_groups.mp4")
+                        subprocess.run(
+                            [FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
+                             "-i", concat_file, "-c", "copy", assembled],
+                            check=True, capture_output=True,
+                        )
+
+            log.info("Final mux: merging video + audio")
             final_local = os.path.join(tmpdir, "final_video.mp4")
-            subprocess.run(
-                [
-                    FFMPEG_BIN, "-y",
-                    "-i", assembled,
-                    "-i", audio_local,
-                    "-c:v", "libx264", "-preset", "medium", "-crf", "16",
-                    "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-b:a", "256k",
-                    "-map_metadata", "-1",
-                    "-movflags", "+faststart",
-                    "-shortest",
-                    final_local,
-                ],
-                check=True, capture_output=True,
-            )
+            try:
+                subprocess.run(
+                    [
+                        FFMPEG_BIN, "-y",
+                        "-i", assembled,
+                        "-i", audio_local,
+                        "-map", "0:v:0",
+                        "-map", "1:a:0",
+                        "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+                        "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-b:a", "256k",
+                        "-map_metadata", "-1",
+                        "-movflags", "+faststart",
+                        "-shortest",
+                        final_local,
+                    ],
+                    check=True, capture_output=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                stderr_msg = exc.stderr.decode("utf-8", errors="replace")[-2000:] if exc.stderr else "no stderr"
+                log.error("Final mux FFmpeg failed (exit %d):\n%s", exc.returncode, stderr_msg)
+                raise
 
             video_dur = _get_duration(final_local)
+            log.info("Final video duration: %.1fs", video_dur)
             final_s3_key = f"{run_id}/final_video.mp4"
 
             if video_dur > MEDIACONVERT_THRESHOLD_SECONDS:
+                log.info("Video > %ds — submitting to MediaConvert", MEDIACONVERT_THRESHOLD_SECONDS)
                 raw_s3_key = f"{run_id}/raw_assembled.mp4"
                 s3.upload_file(final_local, S3_OUTPUTS_BUCKET, raw_s3_key)
                 output_prefix = f"s3://{S3_OUTPUTS_BUCKET}/{run_id}/"
@@ -702,14 +808,16 @@ def lambda_handler(event: dict, context) -> dict:
                     f"s3://{S3_OUTPUTS_BUCKET}/{raw_s3_key}", output_prefix, run_id
                 )
             else:
+                log.info("Uploading final video to S3: %s", final_s3_key)
                 s3.upload_file(final_local, S3_OUTPUTS_BUCKET, final_s3_key)
 
-        _notify_discord("Video Assembled", 0xE74C3C, run_id, [
+        elapsed = time.time() - step_start
+        notify_step_complete("editor", run_id, [
             {"name": "Title", "value": (script.get("title", "") or title_passthrough)[:100], "inline": False},
             {"name": "Duration", "value": f"{int(video_dur // 60)}m {int(video_dur % 60)}s", "inline": True},
             {"name": "Clips", "value": str(len(clip_paths)), "inline": True},
             {"name": "Profile", "value": profile_name, "inline": True},
-        ], dry_run=dry_run)
+        ], elapsed_sec=elapsed, dry_run=dry_run, color=0xE74C3C)
 
         return {
             "run_id": run_id,
@@ -722,5 +830,6 @@ def lambda_handler(event: dict, context) -> dict:
         }
 
     except Exception as exc:
+        log.error("Editor step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "editor", exc)
         raise

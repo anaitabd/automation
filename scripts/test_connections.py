@@ -28,6 +28,7 @@ import urllib.request
 import urllib.error
 
 import boto3
+import pytest
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 RESULTS: list[tuple[str, bool, str]] = []
@@ -43,10 +44,20 @@ def _record(name: str, ok: bool, detail: str = "") -> None:
     print(f"  {icon}  {name}" + (f"  — {detail}" if detail else ""), flush=True)
 
 
+def _aws_tests_enabled() -> bool:
+    return os.environ.get("RUN_AWS_TESTS", "").strip() == "1"
+
+
+def _require_aws_tests() -> None:
+    if not _aws_tests_enabled():
+        pytest.skip("AWS integration tests skipped (set RUN_AWS_TESTS=1 to enable)")
+
+
 # ─────────────────────────────────────────────────
 # 1. AWS STS (credentials check)
 # ─────────────────────────────────────────────────
 def test_aws_sts() -> None:
+    _require_aws_tests()
     try:
         sts = boto3.client("sts", region_name=REGION)
         identity = sts.get_caller_identity()
@@ -59,6 +70,7 @@ def test_aws_sts() -> None:
 # 2. S3 buckets
 # ─────────────────────────────────────────────────
 def test_s3_buckets() -> None:
+    _require_aws_tests()
     s3 = boto3.client("s3", region_name=REGION)
     buckets = [
         _env("ASSETS_BUCKET", "nexus-assets"),
@@ -79,12 +91,12 @@ def test_s3_buckets() -> None:
 # 3. Secrets Manager
 # ─────────────────────────────────────────────────
 def test_secrets_manager() -> None:
+    _require_aws_tests()
     sm = boto3.client("secretsmanager", region_name=REGION)
     secrets = [
         "nexus/perplexity_api_key",
         "nexus/elevenlabs_api_key",
         "nexus/pexels_api_key",
-        "nexus/runwayml_api_key",
         "nexus/youtube_credentials",
         "nexus/discord_webhook_url",
         "nexus/db_credentials",
@@ -103,6 +115,7 @@ def test_secrets_manager() -> None:
 # 4. AWS Bedrock — invoke claude-3-sonnet
 # ─────────────────────────────────────────────────
 def test_bedrock() -> None:
+    _require_aws_tests()
     try:
         client = boto3.client("bedrock-runtime", region_name=REGION)
         body = json.dumps({
@@ -268,6 +281,7 @@ def test_postgres() -> None:
 # 10. MediaConvert endpoint
 # ─────────────────────────────────────────────────
 def test_mediaconvert() -> None:
+    _require_aws_tests()
     try:
         mc = boto3.client("mediaconvert", region_name=REGION)
         endpoints = mc.describe_endpoints(MaxResults=1)
@@ -315,5 +329,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

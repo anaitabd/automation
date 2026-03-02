@@ -206,7 +206,7 @@ docker compose up --build
 | Script          | `us.anthropic.claude-3-sonnet-20240229-v1:0`  |
 | Thumbnail       | `us.anthropic.claude-3-sonnet-20240229-v1:0`  |
 | TTS             | `eleven_turbo_v2_5` (ElevenLabs)              |
-| Video search    | Pexels + Archive.org + Runway (no Storyblocks)|
+| Video search    | Pexels + Archive.org                          |
 | Video encoding  | AWS MediaConvert (for videos >10 min)         |
 
 ---

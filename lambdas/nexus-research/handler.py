@@ -5,6 +5,9 @@ import uuid
 import boto3
 import urllib.request
 import urllib.error
+from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
+
+log = get_logger("nexus-research")
 
 _cache: dict = {}
 
@@ -19,7 +22,8 @@ def get_secret(name: str) -> dict:
 
 
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
-BEDROCK_MODEL_ID = "us.anthropic.claude-3-sonnet-20240229-v1:0"
+S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
+BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
 
 
 def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
@@ -70,8 +74,9 @@ def _perplexity_search(query: str, api_key: str) -> str:
     return result["choices"][0]["message"]["content"]
 
 
-def _bedrock_select_topic(niche: str, perplexity_context: str) -> dict:
+def _bedrock_select_topic(niche: str, perplexity_context: str, model_id: str = "") -> dict:
     client = boto3.client("bedrock-runtime")
+    bedrock_model = model_id or BEDROCK_MODEL_ID_DEFAULT
     prompt = (
         f"You are an expert YouTube strategist. Based on the following research about '{niche}', "
         "select the single best video topic and angle to maximise views and watch time.\n\n"
@@ -93,7 +98,7 @@ def _bedrock_select_topic(niche: str, perplexity_context: str) -> dict:
     for attempt in range(retries):
         try:
             response = client.invoke_model(
-                modelId=BEDROCK_MODEL_ID,
+                modelId=bedrock_model,
                 body=body,
                 contentType="application/json",
                 accept="application/json",
@@ -126,10 +131,23 @@ def lambda_handler(event: dict, context) -> dict:
     profile: str = event.get("profile", "documentary")
     dry_run: bool = event.get("dry_run", False)
 
+    step_start = notify_step_start("research", run_id, niche=niche, profile=profile, dry_run=dry_run)
+
     try:
+        log.info("Fetching Perplexity API key from Secrets Manager")
         perplexity_key = get_secret("nexus/perplexity_api_key")["api_key"]
 
+        # Load profile to get the configured LLM model
+        s3 = boto3.client("s3")
+        try:
+            profile_obj = s3.get_object(Bucket=S3_CONFIG_BUCKET, Key=f"{profile}.json")
+            profile_data: dict = json.loads(profile_obj["Body"].read())
+        except Exception:
+            profile_data = {}
+        bedrock_model = profile_data.get("llm", {}).get("script_model", BEDROCK_MODEL_ID_DEFAULT)
+
         if dry_run:
+            log.info("DRY RUN mode — skipping real API calls")
             research_result = {
                 "selected_topic": f"[DRY RUN] Top story in {niche}",
                 "angle": "Untold history angle",
@@ -137,21 +155,26 @@ def lambda_handler(event: dict, context) -> dict:
                 "search_volume_estimate": "N/A",
             }
         else:
+            log.info("Calling Perplexity API for niche: %s", niche)
             trending_context = _perplexity_search(niche, perplexity_key)
-            research_result = _bedrock_select_topic(niche, trending_context)
+            log.info("Perplexity returned %d chars — selecting topic via Bedrock", len(trending_context))
+            research_result = _bedrock_select_topic(niche, trending_context, model_id=bedrock_model)
+            log.info("Bedrock selected topic: %s", research_result.get("selected_topic", "?")[:80])
 
         research_result["run_id"] = run_id
         research_result["niche"] = niche
         research_result["profile"] = profile
 
+        log.info("Saving research to S3")
         s3_key = _save_to_s3(run_id, research_result)
 
-        _notify_discord("Research Complete", 0x3498DB, run_id, [
+        elapsed = time.time() - step_start
+        notify_step_complete("research", run_id, [
             {"name": "Topic", "value": research_result["selected_topic"][:100], "inline": False},
             {"name": "Angle", "value": research_result["angle"][:100], "inline": False},
             {"name": "Search Volume", "value": research_result.get("search_volume_estimate", "N/A"), "inline": True},
             {"name": "Profile", "value": profile, "inline": True},
-        ], dry_run=dry_run)
+        ], elapsed_sec=elapsed, dry_run=dry_run, color=0x3498DB)
 
         return {
             "run_id": run_id,
@@ -165,6 +188,7 @@ def lambda_handler(event: dict, context) -> dict:
         }
 
     except Exception as exc:
+        log.error("Research step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "research", exc)
         raise
 
@@ -178,33 +202,6 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
             Body=json.dumps({"step": step, "error": str(exc)}, indent=2).encode("utf-8"),
             ContentType="application/json",
         )
-    except Exception:
-        pass
-
-
-def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
-    """Send a step-level Discord notification. Silently swallows errors."""
-    if dry_run:
-        return
-    try:
-        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
-        if not webhook_url:
-            return
-        embed = {
-            "embeds": [{
-                "title": f"🔍 Nexus Cloud — {step}",
-                "color": color,
-                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
-                "footer": {"text": "Nexus Cloud Pipeline"},
-            }]
-        }
-        data = json.dumps(embed).encode("utf-8")
-        req = urllib.request.Request(
-            webhook_url, data=data, method="POST",
-            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=10):
-            pass
     except Exception:
         pass
 

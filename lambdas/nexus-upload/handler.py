@@ -1,9 +1,13 @@
 import json
 import os
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import boto3
+from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
+
+log = get_logger("nexus-upload")
 
 _cache: dict = {}
 
@@ -128,33 +132,6 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-def _notify_discord(step: str, color: int, run_id: str, fields: list[dict], dry_run: bool = False) -> None:
-    """Send a step-level Discord notification. Silently swallows errors."""
-    if dry_run:
-        return
-    try:
-        webhook_url = get_secret("nexus/discord_webhook_url").get("url", "")
-        if not webhook_url:
-            return
-        embed = {
-            "embeds": [{
-                "title": f"🚀 Nexus Cloud — {step}",
-                "color": color,
-                "fields": [{"name": "Run ID", "value": run_id, "inline": False}] + fields,
-                "footer": {"text": "Nexus Cloud Pipeline"},
-            }]
-        }
-        data = json.dumps(embed).encode("utf-8")
-        req = urllib.request.Request(
-            webhook_url, data=data, method="POST",
-            headers={"Content-Type": "application/json", "User-Agent": "NexusCloud/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass
-
-
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
@@ -165,9 +142,12 @@ def lambda_handler(event: dict, context) -> dict:
     thumbnail_s3_keys: list = event.get("thumbnail_s3_keys", [primary_thumbnail_s3_key])
     video_duration_sec: float = float(event.get("video_duration_sec", 0))
 
+    step_start = notify_step_start("upload", run_id, niche=event.get("niche", ""), profile=profile_name, dry_run=dry_run)
+
     try:
         s3 = boto3.client("s3")
 
+        log.info("Loading script from S3: %s", script_s3_key)
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
         script: dict = json.loads(script_obj["Body"].read())
 
@@ -179,6 +159,7 @@ def lambda_handler(event: dict, context) -> dict:
             description = f"{description}\n\n{cta}"
 
         if dry_run:
+            log.info("DRY RUN mode — returning stub upload result")
             return {
                 "run_id": run_id,
                 "profile": profile_name,
@@ -192,10 +173,11 @@ def lambda_handler(event: dict, context) -> dict:
             }
 
         auto_publish = os.environ.get("YOUTUBE_AUTO_PUBLISH", "false").lower() == "true"
+        log.info("auto_publish=%s", auto_publish)
 
         if not auto_publish:
             # ── Manual approval mode ──
-            # Save upload-ready metadata to S3; user runs approve_upload.py later.
+            log.info("Manual approval mode — saving pending_upload.json to S3")
             pending = {
                 "run_id": run_id,
                 "profile": profile_name,
@@ -215,11 +197,12 @@ def lambda_handler(event: dict, context) -> dict:
                 ContentType="application/json",
             )
 
-            _notify_discord("Upload Pending Approval", 0xF39C12, run_id, [
+            elapsed = time.time() - step_start
+            notify_step_complete("upload", run_id, [
                 {"name": "Title", "value": title[:100], "inline": False},
-                {"name": "Status", "value": "pending approval", "inline": True},
+                {"name": "Status", "value": "⏳ pending approval", "inline": True},
                 {"name": "Profile", "value": profile_name, "inline": True},
-            ], dry_run=dry_run)
+            ], elapsed_sec=elapsed, dry_run=dry_run, color=0xF39C12)
 
             return {
                 "run_id": run_id,
@@ -234,6 +217,7 @@ def lambda_handler(event: dict, context) -> dict:
                 "auto_publish": False,
             }
 
+        log.info("Refreshing YouTube access token")
         yt_credentials = get_secret("nexus/youtube_credentials")
         access_token = _refresh_access_token(yt_credentials)
 
@@ -251,26 +235,32 @@ def lambda_handler(event: dict, context) -> dict:
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            log.info("Downloading video from S3: %s", final_video_s3_key)
             video_local = os.path.join(tmpdir, "final_video.mp4")
             s3.download_file(S3_OUTPUTS_BUCKET, final_video_s3_key, video_local)
 
+            log.info("Downloading thumbnail from S3: %s", primary_thumbnail_s3_key)
             thumbnail_local = os.path.join(tmpdir, "thumbnail.jpg")
             s3.download_file(S3_OUTPUTS_BUCKET, primary_thumbnail_s3_key, thumbnail_local)
 
+            log.info("Uploading video to YouTube")
             upload_result = _upload_video(video_local, video_metadata, access_token)
             video_id = upload_result.get("id", "")
             if not video_id:
                 raise RuntimeError("YouTube upload returned no video ID")
+            log.info("YouTube video ID: %s", video_id)
 
+            log.info("Setting thumbnail on YouTube")
             _upload_thumbnail(video_id, thumbnail_local, access_token)
 
         video_url = f"https://www.youtube.com/watch?v={video_id}"
 
-        _notify_discord("Video Uploaded", 0x2ECC71, run_id, [
+        elapsed = time.time() - step_start
+        notify_step_complete("upload", run_id, [
             {"name": "Title", "value": title[:100], "inline": False},
             {"name": "YouTube URL", "value": video_url, "inline": False},
             {"name": "Profile", "value": profile_name, "inline": True},
-        ], dry_run=dry_run)
+        ], elapsed_sec=elapsed, dry_run=dry_run, color=0x2ECC71)
 
         return {
             "run_id": run_id,
@@ -285,5 +275,6 @@ def lambda_handler(event: dict, context) -> dict:
         }
 
     except Exception as exc:
+        log.error("Upload step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "upload", exc)
         raise
