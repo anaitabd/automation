@@ -261,6 +261,29 @@
       min-width: 70px; text-align: center;
     }
     .log-entry .log-msg { flex: 1; }
+
+    /* ── Deploy Check ───────────────────────────────────────────── */
+    .deploy-check-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+    .deploy-check-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 6px;
+      font-size: 12px; min-width: 180px;
+    }
+    .deploy-check-dot {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    }
+    .dot-ok { background: var(--accent-fin); }
+    .dot-fail { background: var(--accent-ent); }
+    .dot-pending { background: var(--muted); }
+    .check-btn {
+      padding: 8px 18px; background: var(--surface2);
+      border: 1px solid var(--border); color: var(--text);
+      border-radius: 6px; font-family: var(--mono); font-size: 12px;
+      cursor: pointer; letter-spacing: 1px; transition: all .2s;
+    }
+    .check-btn:hover { border-color: var(--accent-doc); color: var(--accent-doc); }
+    .check-btn:disabled { opacity: .5; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -347,6 +370,9 @@ function App() {
   const pollerRef = React.useRef(null);
   const sseRef = React.useRef(null);
   const logEndRef = React.useRef(null);
+
+  const [deployCheck, setDeployCheck] = React.useState(null);
+  const [deployChecking, setDeployChecking] = React.useState(false);
 
   const accentClass = profile === 'finance' ? 'fin' : profile === 'entertainment' ? 'ent' : '';
 
@@ -526,6 +552,18 @@ function App() {
     return () => clearInterval(pollerRef.current);
   }, [runId]);
 
+  async function handleDeployCheck() {
+    setDeployChecking(true);
+    try {
+      const res = await apiGet('/deploy-check');
+      setDeployCheck(res);
+    } catch(e) {
+      setDeployCheck({ _error: String(e) });
+    } finally {
+      setDeployChecking(false);
+    }
+  }
+
   async function handleRun() {
     if (!niche.trim()) { setError('Enter a niche keyword'); return; }
     setError(''); setSuccess('');
@@ -654,6 +692,47 @@ function App() {
             {success && <div className="success-msg">✔ {success}</div>}
           </div>
         </section>
+
+        {/* ── Deploy Check (local mode only) ── */}
+        {IS_LOCAL && (
+          <section>
+            <h2>
+              Deployment Check
+              <button
+                className="check-btn"
+                style={{marginLeft:16,verticalAlign:'middle'}}
+                onClick={handleDeployCheck}
+                disabled={deployChecking}
+              >
+                {deployChecking ? '⏳ Checking…' : '⚡ Check Connectivity'}
+              </button>
+            </h2>
+            {deployCheck && !deployCheck._error && (
+              <div className="deploy-check-grid">
+                {Object.entries(deployCheck).map(([name, result]) => (
+                  <div key={name} className="deploy-check-item">
+                    <div className={`deploy-check-dot ${result.ok ? 'dot-ok' : 'dot-fail'}`} />
+                    <div>
+                      <div style={{fontWeight:700,textTransform:'capitalize'}}>{name}</div>
+                      {result.error
+                        ? <div style={{color:'var(--accent-ent)',fontSize:10,marginTop:2}}>{result.error}</div>
+                        : <div style={{color:'var(--accent-fin)',fontSize:10,marginTop:2}}>HTTP {result.status} — OK</div>
+                      }
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {deployCheck && deployCheck._error && (
+              <div className="error-msg">⚠ {deployCheck._error}</div>
+            )}
+            {!deployCheck && !deployChecking && (
+              <div style={{color:'var(--muted)',fontSize:12}}>
+                Run a connectivity check to verify external services are reachable.
+              </div>
+            )}
+          </section>
+        )}
 
         {/* ── Pipeline Progress ── */}
         {runId && (
