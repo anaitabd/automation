@@ -184,7 +184,7 @@ class NexusStack(Stack):
         )
         fn_audio = lambda_.Function(
             self, "NexusAudio",
-            **_lambda_props("nexus-audio", 2048, 15, audio_role, [ffmpeg_layer, api_layer]),
+            **_lambda_props("nexus-audio", 10240, 15, audio_role, [ffmpeg_layer, api_layer]),
         )
 
         visuals_role = _make_role(
@@ -230,7 +230,7 @@ class NexusStack(Stack):
             function_name="nexus-editor",
             code=lambda_.DockerImageCode.from_image_asset("lambdas/nexus-editor"),
             architecture=arm64,
-            memory_size=3008,
+            memory_size=10240,
             timeout=Duration.minutes(15),
             ephemeral_storage_size=cdk.Size.gibibytes(10),
             role=editor_role,

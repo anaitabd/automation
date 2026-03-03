@@ -403,6 +403,15 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"- Write MULTIPLE visual_cue search_queries per section (5 specific queries) for rich B-roll\n"
         f"- Consider visual variety: wide establishing shots, close-ups, archival, motion graphics\n\n"
 
+        f"═══ RETENTION ARCHITECTURE — OPEN LOOPS ═══\n"
+        f"To prevent viewer drop-off, you MUST embed 'Open Loops' every 2-3 sections:\n"
+        f"- An Open Loop is a teaser or forward hook that makes the viewer need to keep watching\n"
+        f"- Examples: 'But what happened next would change everything...', 'The answer, hidden for decades, is coming up', 'You won't believe what they found when they looked closer'\n"
+        f"- Place an Open Loop at the END of sections 2, 4, 6, 8 (and any section before a major revelation)\n"
+        f"- Each Open Loop must tease a REAL payoff that arrives 1-2 sections later — never mislead\n"
+        f"- Use the CLAIM → INTRIGUE → PAYOFF structure: state a claim, create intrigue, deliver the payoff sections later\n"
+        f"- The first section should always end with an Open Loop that sets up the central mystery or question\n\n"
+
         f"═══ FACTUAL INTEGRITY — ABSOLUTE RULES ═══\n"
         f"NEVER invent, assume, or embellish facts. Before writing ANY claim, ask yourself:\n"
         f"\"Do I know this for certain?\"\n\n"

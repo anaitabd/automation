@@ -171,30 +171,43 @@ def _synthesize_sentence(
 def _generate_voiceover(script: dict, profile: dict, api_key: str, tmpdir: str) -> str:
     voice_id = profile.get("voice", {}).get("voice_id", "21m00Tcm4TlvDq8ikWAM")
     segment_files: list[str] = []
-    silence_path = os.path.join(tmpdir, "silence_100ms.mp3")
 
-    subprocess.run(
-        [
-            FFMPEG_BIN, "-y",
-            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
-            "-t", "0.1",
-            "-q:a", "9", "-acodec", "libmp3lame",
-            silence_path,
-        ],
-        check=True,
-        capture_output=True,
-    )
+    def _make_silence(duration_ms: int, label: str) -> str:
+        path = os.path.join(tmpdir, f"silence_{label}.mp3")
+        subprocess.run(
+            [
+                FFMPEG_BIN, "-y",
+                "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+                "-t", str(duration_ms / 1000),
+                "-q:a", "9", "-acodec", "libmp3lame",
+                path,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return path
 
-    sentences: list[tuple[str, str]] = []
+    silence_300ms = _make_silence(300, "300ms")
+    silence_600ms = _make_silence(600, "600ms")
+
+    sentences: list[tuple[str, str, str]] = []
     for section in script.get("sections", []):
         content = section.get("content", "")
         default_emotion = section.get("emotion", "neutral")
-        for sent in content.replace("! ", "!|").replace("? ", "?|").replace(". ", ".|").split("|"):
+        parts = content.replace("! ", "!\x00").replace("? ", "?\x00").replace(". ", ".\x00").split("\x00")
+        for sent in parts:
             sent = sent.strip()
-            if sent:
-                sentences.append((sent, default_emotion))
+            if not sent:
+                continue
+            comma_parts = sent.split(", ")
+            for i, cp in enumerate(comma_parts):
+                cp = cp.strip()
+                if not cp:
+                    continue
+                is_last = (i == len(comma_parts) - 1)
+                silence_label = "600ms" if is_last else "300ms"
+                sentences.append((cp, default_emotion, silence_label))
 
-    # ── Parallel TTS synthesis (5 concurrent requests) ──────────────────
     TTS_WORKERS = int(os.environ.get("TTS_PARALLELISM", "5"))
 
     def _synth_one(idx: int, sent: str, default_emotion: str):
@@ -211,17 +224,16 @@ def _generate_voiceover(script: dict, profile: dict, api_key: str, tmpdir: str) 
     with ThreadPoolExecutor(max_workers=TTS_WORKERS) as pool:
         futures = {
             pool.submit(_synth_one, idx, sent, emo): idx
-            for idx, (sent, emo) in enumerate(sentences)
+            for idx, (sent, emo, _silence) in enumerate(sentences)
         }
         for fut in as_completed(futures):
-            idx, seg_path = fut.result()  # propagates exceptions
+            idx, seg_path = fut.result()
             seg_map[idx] = seg_path
 
-    # Rebuild ordered segment list with silences between
-    for idx in range(len(sentences)):
+    for idx, (_sent, _emo, silence_label) in enumerate(sentences):
         segment_files.append(seg_map[idx])
         if idx < len(sentences) - 1:
-            segment_files.append(silence_path)
+            segment_files.append(silence_300ms if silence_label == "300ms" else silence_600ms)
 
     list_file = os.path.join(tmpdir, "segments.txt")
     with open(list_file, "w") as f:
@@ -311,7 +323,6 @@ def _mix_audio(
     run_id: str,
 ) -> str:
     music_vol_narration = profile.get("sound_design", {}).get("music_volume_narration", -22)
-    music_vol_intro = profile.get("sound_design", {}).get("music_volume_intro", -14)
     output_path = os.path.join(tmpdir, "mixed_audio.wav")
 
     if music_path is None:
@@ -323,7 +334,6 @@ def _mix_audio(
         return output_path
 
     vol_factor_narration = 10 ** (music_vol_narration / 20)
-    vol_factor_intro = 10 ** (music_vol_intro / 20)
 
     music_af = (
         f"afade=t=in:st=0:d=2,"
@@ -331,8 +341,10 @@ def _mix_audio(
         f"afade=t=out:d=3"
     )
     af_complex = (
-        f"[1:a]{music_af}[music];"
-        f"[0:a][music]amix=inputs=2:duration=first:dropout_transition=3[out]"
+        f"[0:a]asplit=2[sc][vo];"
+        f"[1:a]{music_af}[music_raw];"
+        f"[sc][music_raw]sidechaincompress=threshold=0.02:ratio=4:attack=200:release=1000[ducked];"
+        f"[vo][ducked]amix=inputs=2:duration=first:dropout_transition=3[out]"
     )
 
     subprocess.run(
