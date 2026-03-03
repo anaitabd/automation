@@ -294,7 +294,7 @@
         "niche.$": "$.niche",
         "script_s3_key.$": "$.script_s3_key",
         "title.$": "$.title",
-        "final_video_s3_key.$": "States.Format('{}/final_video.mp4', $.run_id)",
+        "final_video_s3_key.$": "States.Format('{}/review/final_video.mp4', $.run_id)",
         "video_duration_sec.$": "$.total_duration_estimate"
       },
       "ResultPath": "$",

@@ -171,8 +171,8 @@ PIPELINE = [
         "input_keys": [
             "run_id", "profile", "dry_run", "niche",
             "title", "video_id", "video_url",
-            "video_duration_sec", "thumbnail_s3_keys",
-            "primary_thumbnail_s3_key",
+            "final_video_s3_key", "video_duration_sec",
+            "thumbnail_s3_keys", "primary_thumbnail_s3_key",
         ],
         "merge_keys": [],
     },
