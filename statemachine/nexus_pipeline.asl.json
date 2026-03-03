@@ -280,55 +280,6 @@
           "Next": "NotifyError"
         }
       ],
-      "Next": "Upload"
-    },
-
-    "Upload": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "${NexusUploadArn}",
-        "Payload": {
-          "run_id.$": "$.run_id",
-          "profile.$": "$.profile",
-          "dry_run.$": "$.dry_run",
-          "niche.$": "$.niche",
-          "script_s3_key.$": "$.script_s3_key",
-          "final_video_s3_key.$": "$.final_video_s3_key",
-          "primary_thumbnail_s3_key.$": "$.primary_thumbnail_s3_key",
-          "title.$": "$.title",
-          "video_duration_sec.$": "$.video_duration_sec",
-          "thumbnail_s3_keys.$": "$.thumbnail_s3_keys"
-        }
-      },
-      "ResultSelector": {
-        "run_id.$": "$.Payload.run_id",
-        "profile.$": "$.Payload.profile",
-        "dry_run.$": "$.Payload.dry_run",
-        "niche.$": "$$.Execution.Input.niche",
-        "title.$": "$.Payload.title",
-        "video_id.$": "$.Payload.video_id",
-        "video_url.$": "$.Payload.video_url",
-        "thumbnail_s3_keys.$": "$.Payload.thumbnail_s3_keys",
-        "primary_thumbnail_s3_key.$": "$.Payload.primary_thumbnail_s3_key",
-        "video_duration_sec.$": "$.Payload.video_duration_sec"
-      },
-      "ResultPath": "$",
-      "Retry": [
-        {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "ResultPath": "$.error",
-          "Next": "NotifyError"
-        }
-      ],
       "Next": "Notify"
     },
 
@@ -343,8 +294,7 @@
           "dry_run.$": "$.dry_run",
           "niche.$": "$.niche",
           "title.$": "$.title",
-          "video_id.$": "$.video_id",
-          "video_url.$": "$.video_url",
+          "final_video_s3_key.$": "$.final_video_s3_key",
           "video_duration_sec.$": "$.video_duration_sec",
           "thumbnail_s3_keys.$": "$.thumbnail_s3_keys",
           "primary_thumbnail_s3_key.$": "$.primary_thumbnail_s3_key",

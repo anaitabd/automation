@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 import boto3
@@ -102,18 +103,22 @@ def _send_discord(
 ) -> None:
     minutes = int(duration_sec // 60)
     seconds = int(duration_sec % 60)
+    parsed = urllib.parse.urlparse(video_url)
+    is_review = parsed.netloc not in ("youtube.com", "www.youtube.com")
+    status_label = "🔍 Ready for Manual Review" if is_review else "✅ New Video Published"
+    url_field_name = "Review Link (S3)" if is_review else "YouTube URL"
     embed = {
         "embeds": [
             {
-                "title": f"✅ Nexus Cloud — New Video Published",
+                "title": f"{status_label} — Nexus Cloud",
                 "description": f"**{title}**",
-                "color": 0x00A86B,
+                "color": 0xF39C12 if is_review else 0x00A86B,
                 "fields": [
                     {"name": "Niche", "value": niche, "inline": True},
                     {"name": "Profile", "value": profile, "inline": True},
                     {"name": "Duration", "value": f"{minutes}m {seconds}s", "inline": True},
                     {"name": "Run ID", "value": run_id, "inline": False},
-                    {"name": "YouTube URL", "value": video_url, "inline": False},
+                    {"name": url_field_name, "value": video_url or "—", "inline": False},
                 ],
                 "thumbnail": {"url": thumbnail_url},
                 "footer": {"text": "Nexus Cloud Pipeline"},
@@ -230,7 +235,7 @@ def lambda_handler(event: dict, context) -> dict:
 
     # ── Success mode: invoked by Notify state ──
     video_url: str = event.get("video_url", "")
-    video_id: str = event.get("video_id", "")
+    final_video_s3_key: str = event.get("final_video_s3_key", "")
     title: str = event.get("title", "")
     niche: str = event.get("niche", "")
     thumbnail_s3_keys: list = event.get("thumbnail_s3_keys", [])
@@ -252,6 +257,16 @@ def lambda_handler(event: dict, context) -> dict:
 
     try:
         s3 = boto3.client("s3")
+
+        if not video_url and final_video_s3_key and not dry_run:
+            try:
+                video_url = s3.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": S3_OUTPUTS_BUCKET, "Key": final_video_s3_key},
+                    ExpiresIn=604800,
+                )
+            except Exception:
+                video_url = f"s3://{S3_OUTPUTS_BUCKET}/{final_video_s3_key}"
 
         thumbnail_url = ""
         if primary_thumbnail_s3_key and not dry_run:
@@ -282,7 +297,6 @@ def lambda_handler(event: dict, context) -> dict:
                     video_duration_sec, video_url, elapsed,
                 )
             except Exception as db_exc:
-                # Log but don't fail the pipeline over a DB write failure
                 print(f"[WARN] _log_to_db failed: {db_exc}")
 
         return {

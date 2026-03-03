@@ -484,11 +484,10 @@ def _submit_mediaconvert_job(
                             "CodecSettings": {
                                 "Codec": "H_264",
                                 "H264Settings": {
-                                    "Bitrate": 15000000,
+                                    "Bitrate": 6000000,
                                     "CodecLevel": "AUTO",
                                     "CodecProfile": "HIGH",
-                                    "RateControlMode": "QVBR",
-                                    "QvbrSettings": {"QvbrQualityLevel": 8},
+                                    "RateControlMode": "CBR",
                                     "FramerateControl": "INITIALIZE_FROM_SOURCE",
                                     "GopSize": 2.0,
                                     "GopSizeUnits": "SECONDS",
@@ -502,7 +501,7 @@ def _submit_mediaconvert_job(
                                 "CodecSettings": {
                                     "Codec": "AAC",
                                     "AacSettings": {
-                                        "Bitrate": 256000,
+                                        "Bitrate": 192000,
                                         "CodingMode": "CODING_MODE_2_0",
                                         "SampleRate": 48000,
                                     },
@@ -780,9 +779,9 @@ def lambda_handler(event: dict, context) -> dict:
                         "-i", audio_local,
                         "-map", "0:v:0",
                         "-map", "1:a:0",
-                        "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+                        "-c:v", "libx264", "-preset", "medium", "-b:v", "6000k",
                         "-pix_fmt", "yuv420p",
-                        "-c:a", "aac", "-b:a", "256k",
+                        "-c:a", "aac", "-b:a", "192k",
                         "-map_metadata", "-1",
                         "-movflags", "+faststart",
                         "-shortest",
@@ -797,19 +796,29 @@ def lambda_handler(event: dict, context) -> dict:
 
             video_dur = _get_duration(final_local)
             log.info("Final video duration: %.1fs", video_dur)
-            final_s3_key = f"{run_id}/final_video.mp4"
+            final_s3_key = f"{run_id}/review/final_video.mp4"
 
             if video_dur > MEDIACONVERT_THRESHOLD_SECONDS:
                 log.info("Video > %ds — submitting to MediaConvert", MEDIACONVERT_THRESHOLD_SECONDS)
                 raw_s3_key = f"{run_id}/raw_assembled.mp4"
                 s3.upload_file(final_local, S3_OUTPUTS_BUCKET, raw_s3_key)
-                output_prefix = f"s3://{S3_OUTPUTS_BUCKET}/{run_id}/"
+                output_prefix = f"s3://{S3_OUTPUTS_BUCKET}/{run_id}/review/"
                 final_s3_key = _submit_mediaconvert_job(
                     f"s3://{S3_OUTPUTS_BUCKET}/{raw_s3_key}", output_prefix, run_id
                 )
             else:
                 log.info("Uploading final video to S3: %s", final_s3_key)
                 s3.upload_file(final_local, S3_OUTPUTS_BUCKET, final_s3_key)
+
+            log.info("Copying script to metadata: %s/metadata/script.txt", run_id)
+            try:
+                s3.copy_object(
+                    CopySource={"Bucket": S3_OUTPUTS_BUCKET, "Key": script_s3_key},
+                    Bucket=S3_OUTPUTS_BUCKET,
+                    Key=f"{run_id}/metadata/script.txt",
+                )
+            except Exception as copy_exc:
+                log.warning("Failed to copy script to metadata key: %s", copy_exc)
 
         elapsed = time.time() - step_start
         notify_step_complete("editor", run_id, [

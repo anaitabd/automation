@@ -268,10 +268,13 @@
 
 <script type="text/babel">
 // ─── Config (set API_BASE to your API Gateway URL) ───────────────────────────
-const API_BASE = '%%NEXUS_API_BASE%%' !== '%%NEXUS_API' + '_BASE%%'
-  ? '%%NEXUS_API_BASE%%'
-  : 'https://your-api-gateway-url.execute-api.us-east-1.amazonaws.com/prod';
-const IS_LOCAL = API_BASE.includes('localhost');
+const API_BASE = window.__NEXUS_API_BASE__
+  || ('%%NEXUS_API_BASE%%' !== '%%NEXUS_API' + '_BASE%%'
+      ? '%%NEXUS_API_BASE%%'
+      : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+        ? `http://${window.location.host}/api`
+        : 'https://your-api-gateway-url.execute-api.us-east-1.amazonaws.com/prod');
+const IS_LOCAL = API_BASE.includes('localhost') || API_BASE.includes('127.0.0.1');
 
 const STEPS = [
   { key: 'Research',  icon: '🔍', label: 'Research'  },

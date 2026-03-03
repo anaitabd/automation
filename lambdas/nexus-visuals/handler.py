@@ -298,6 +298,27 @@ def _has_video_stream(path: str) -> bool:
         return False
 
 
+def _has_motion(path: str) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                FFMPEG_BIN, "-i", path,
+                "-vf", "select=not(mod(n\\,10)),signalstats",
+                "-frames:v", "5",
+                "-f", "null", "-",
+            ],
+            capture_output=True, check=False, timeout=30,
+        )
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        import re
+        yavg_values = [float(m.group(1)) for m in re.finditer(r"YAVG:(\d+\.?\d*)", stderr)]
+        if len(yavg_values) < 2:
+            return True
+        return (max(yavg_values) - min(yavg_values)) >= 1.0
+    except Exception:
+        return True
+
+
 def _get_duration(path: str) -> float:
     try:
         result = subprocess.run(
@@ -376,7 +397,10 @@ def _build_camera_motion_filter(style: str, clip_dur: float) -> str:
             "scale=1920:1080"
         )
     else:
-        return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
+        import random
+        motion_styles = ["ken_burns_in", "ken_burns_out", "slow_drift", "pan_left", "pan_right"]
+        chosen = random.choice(motion_styles)
+        return _build_camera_motion_filter(chosen, clip_dur)
 
 
 def _process_clip(
@@ -496,6 +520,9 @@ def _source_and_process_section(
         raw_path = _download_video(url, tmpdir, f"{section_idx}_{idx}", pexels_key=pexels_key)
         if raw_path is None:
             continue
+        if not _has_motion(raw_path):
+            log.info("Section %d candidate %d rejected: no motion detected", section_idx, idx)
+            continue
         score = _score_clip(raw_path, query_text)
         scored.append((score, raw_path))
 
@@ -580,7 +607,7 @@ def lambda_handler(event: dict, context) -> dict:
     if context and hasattr(context, "get_remaining_time_in_millis"):
         deadline = handler_start + context.get_remaining_time_in_millis() / 1000 - 60
     else:
-        deadline = handler_start + 840  # 14 min fallback (Docker / local)
+        deadline = handler_start + 1740  # 29 min fallback (Docker / local)
 
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")

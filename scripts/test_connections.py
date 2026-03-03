@@ -124,7 +124,7 @@ def test_bedrock() -> None:
             "messages": [{"role": "user", "content": "Say hello in one word."}],
         })
         resp = client.invoke_model(
-            modelId="us.anthropic.claude-3-sonnet-20240229-v1:0",
+            modelId="anthropic.claude-3-sonnet-20240229-v1:0",
             body=body,
             contentType="application/json",
             accept="application/json",

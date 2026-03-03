@@ -41,7 +41,7 @@ def _find_bin(name: str) -> str:
 
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN") or _find_bin("ffmpeg")
 FFPROBE_BIN = os.environ.get("FFPROBE_BIN") or _find_bin("ffprobe")
-BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+BEDROCK_MODEL_ID_DEFAULT = "anthropic.claude-3-sonnet-20240229-v1:0"
 
 # Set dynamically per-invocation from the loaded profile
 _active_model_id: str = BEDROCK_MODEL_ID_DEFAULT

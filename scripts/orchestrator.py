@@ -25,6 +25,7 @@ import queue
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
@@ -66,10 +67,15 @@ else:
 INVOKE_PATH = "/2015-03-31/functions/function/invocations"
 INVOKE_TIMEOUT = 900  # 15 min — matches AWS Lambda max timeout
 
-# Steps that need the full timeout (seconds)
+# Steps that need extended timeouts (seconds)
 _STEP_TIMEOUTS: dict[str, int] = {
-    "Visuals": 900,   # full 15 min — heavy (downloads + CLIP + FFmpeg), parallelised
+    "Visuals": 1800,  # 30 min — heavy (downloads + CLIP + FFmpeg), parallelised
     "Editor":  900,    # full 15 min — MediaConvert can be slow
+}
+
+# Steps that need extra retries
+_STEP_RETRIES: dict[str, int] = {
+    "Visuals": 3,     # heavy step — more retries for transient network issues
 }
 
 # ── Pipeline Step Definitions ─────────────────────────────────────────────────
@@ -110,11 +116,11 @@ PIPELINE = [
         "name": "Visuals",
         "input_keys": [
             "run_id", "profile", "dry_run", "niche",
-            "script_s3_key", "mixed_audio_s3_key", "total_duration_estimate",
+            "script_s3_key", "total_duration_estimate",
         ],
         "merge_keys": [
             "run_id", "profile", "dry_run", "niche",
-            "script_s3_key", "mixed_audio_s3_key", "total_duration_estimate",
+            "script_s3_key", "total_duration_estimate",
             "title", "sections",
         ],
     },
@@ -294,19 +300,172 @@ def _unsubscribe(run_id: str, q: queue.Queue) -> None:
 
 
 # ── Pipeline Execution ────────────────────────────────────────────────────────
-def _invoke_lambda(step_name: str, payload: dict) -> dict:
+# Steps that run in parallel (indices into PIPELINE array)
+_PARALLEL_GROUP = {"Audio", "Visuals"}  # runs concurrently after Script
+
+
+def _wait_for_container(step_name: str, max_wait: int = 60) -> None:
+    """Block until the Lambda RIE container is accepting TCP connections."""
+    import socket
+    base = _ENDPOINTS[step_name]           # e.g. http://nexus-visuals:8080
+    host = base.split("://")[1].split(":")[0]
+    port = int(base.rsplit(":", 1)[1])
+    for attempt in range(max_wait):
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                return
+        except OSError:
+            if attempt % 10 == 0:
+                ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                print(f"\033[0;33m[{ts}] ⏳ Waiting for {step_name} ({host}:{port}) ..."
+                      f" attempt {attempt + 1}/{max_wait}\033[0m", flush=True)
+            time.sleep(1)
+    raise RuntimeError(f"{step_name} container not reachable at {host}:{port} after {max_wait}s")
+
+
+def _invoke_lambda(step_name: str, payload: dict, retries: int = 2) -> dict:
+    """Invoke a Lambda container with readiness check, connect/read timeouts, and retry."""
+    _wait_for_container(step_name)
+
+    retries = _STEP_RETRIES.get(step_name, retries)
     url = _ENDPOINTS[step_name] + INVOKE_PATH
-    timeout = _STEP_TIMEOUTS.get(step_name, INVOKE_TIMEOUT)
-    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    print(f"\033[0;90m[{ts}] → POST {url}  (timeout={timeout}s)\033[0m", flush=True)
-    resp = requests.post(url, json=payload, timeout=timeout)
-    print(f"\033[0;90m[{ts}] ← {resp.status_code} from {step_name} ({len(resp.content)} bytes)\033[0m", flush=True)
-    resp.raise_for_status()
-    return resp.json()
+    read_timeout = _STEP_TIMEOUTS.get(step_name, INVOKE_TIMEOUT)
+    last_err: Exception | None = None
+
+    for attempt in range(1, retries + 1):
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        print(f"\033[0;90m[{ts}] → POST {url}  (timeout=10/{read_timeout}s, "
+              f"attempt {attempt}/{retries})\033[0m", flush=True)
+        try:
+            resp = requests.post(url, json=payload, timeout=(10, read_timeout))
+            print(f"\033[0;90m[{ts}] ← {resp.status_code} from {step_name} "
+                  f"({len(resp.content)} bytes)\033[0m", flush=True)
+            resp.raise_for_status()
+            return resp.json()
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.ReadTimeout) as exc:
+            last_err = exc
+            print(f"\033[0;31m[{ts}] ⚠ {step_name} attempt {attempt}/{retries} failed: "
+                  f"{exc}\033[0m", flush=True)
+            if attempt < retries:
+                time.sleep(5)
+                _wait_for_container(step_name)
+
+    raise RuntimeError(f"{step_name}: {last_err}")
+
+
+def _exec_step(
+    run_id: str, run: dict, state: dict, i: int, step_def: dict,
+    pipeline_start: float, total_steps: int, niche: str,
+) -> None:
+    """Execute a single pipeline step — shared by sequential & parallel paths."""
+    step_name = step_def["name"]
+    step_info = run["steps"][i]
+    step_start_time = time.time()
+
+    remaining_estimated = sum(
+        (_estimate_step_duration(PIPELINE[j]["name"]) or 0)
+        for j in range(i, total_steps)
+    )
+
+    run["current_step"] = step_name
+    run["current_step_index"] = i
+    pipeline_elapsed = time.time() - pipeline_start
+    run["elapsed_sec"] = round(pipeline_elapsed, 1)
+    run["eta_remaining_sec"] = round(remaining_estimated, 1)
+
+    step_info["status"] = "running"
+    step_info["started_at"] = _now()
+
+    est_duration = _estimate_step_duration(step_name)
+    est_str = f" (estimated: {int(est_duration // 60)}m {int(est_duration % 60)}s)" if est_duration else ""
+
+    _publish(run_id, "step_start", {
+        "step": step_name,
+        "index": i,
+        "total_steps": total_steps,
+        "message": f"▶ [{i + 1}/{total_steps}] Starting {step_name}...{est_str}",
+        "estimated_duration_sec": est_duration,
+        "eta_remaining_sec": round(remaining_estimated, 1),
+        "pipeline_elapsed_sec": round(pipeline_elapsed, 1),
+        "progress_pct": round((i / total_steps) * 100, 1),
+    })
+
+    # Build payload: only send keys the step needs (that exist in state)
+    payload = {}
+    for k in step_def["input_keys"]:
+        if k in state:
+            payload[k] = state[k]
+
+    _publish(run_id, "log", {
+        "step": step_name,
+        "message": f"📡 [{i + 1}/{total_steps}] Invoking {step_name} lambda...",
+    })
+
+    result = _invoke_lambda(step_name, payload)
+
+    step_elapsed = time.time() - step_start_time
+
+    if isinstance(result, dict) and "errorMessage" in result:
+        raise RuntimeError(result["errorMessage"])
+
+    _record_step_duration(step_name, step_elapsed)
+
+    # Merge result keys into cumulative state (thread-safe for parallel)
+    with _lock:
+        for k in step_def["merge_keys"]:
+            if isinstance(result, dict) and k in result:
+                state[k] = result[k]
+        state["niche"] = niche
+
+    step_info["status"] = "done"
+    step_info["finished_at"] = _now()
+    step_info["elapsed_sec"] = round(step_elapsed, 1)
+    summary = {}
+    for k in ["title", "selected_topic", "script_s3_key",
+               "final_video_s3_key", "video_url", "video_id"]:
+        if k in (result if isinstance(result, dict) else {}):
+            summary[k] = result[k]
+    step_info["output_summary"] = summary or None
+
+    if "title" in state:
+        run["title"] = state["title"]
+
+    pipeline_elapsed = time.time() - pipeline_start
+    run["elapsed_sec"] = round(pipeline_elapsed, 1)
+    steps_done = sum(1 for s in run["steps"] if s["status"] == "done")
+    progress_pct = round((steps_done / total_steps) * 100, 1)
+
+    remaining_eta = sum(
+        (_estimate_step_duration(PIPELINE[j]["name"]) or 0)
+        for j in range(i + 1, total_steps)
+    )
+    run["eta_remaining_sec"] = round(remaining_eta, 1)
+
+    elapsed_str = f"{int(step_elapsed // 60)}m {int(step_elapsed % 60)}s"
+    eta_str = f"{int(remaining_eta // 60)}m {int(remaining_eta % 60)}s" if remaining_eta > 0 else "almost done"
+
+    _publish(run_id, "step_done", {
+        "step": step_name,
+        "index": i,
+        "total_steps": total_steps,
+        "message": f"✅ [{steps_done}/{total_steps}] {step_name} completed in {elapsed_str}",
+        "summary": summary,
+        "elapsed_sec": round(step_elapsed, 1),
+        "pipeline_elapsed_sec": round(pipeline_elapsed, 1),
+        "eta_remaining_sec": round(remaining_eta, 1),
+        "progress_pct": progress_pct,
+    })
+
+    _publish(run_id, "log", {
+        "step": step_name,
+        "message": f"⏱ {step_name}: {elapsed_str} | "
+                   f"Progress: {progress_pct}% | ETA: {eta_str}",
+    })
 
 
 def _run_pipeline(run_id: str, niche: str, profile: str, dry_run: bool) -> None:
-    """Execute the full pipeline in a background thread."""
+    """Execute the pipeline — Audio ∥ Visuals run in parallel."""
     state = {
         "run_id": run_id,
         "niche": niche,
@@ -315,164 +474,125 @@ def _run_pipeline(run_id: str, niche: str, profile: str, dry_run: bool) -> None:
     }
 
     run = _runs[run_id]
+    run["state"] = state
     pipeline_start = time.time()
     total_steps = len(PIPELINE)
 
-    # Compute initial total ETA
     total_estimated = sum(
         (_estimate_step_duration(s["name"]) or 0) for s in PIPELINE
     )
+    # For parallel group, ETA = max(Audio, Visuals) instead of sum
+    audio_est = _estimate_step_duration("Audio") or 0
+    visuals_est = _estimate_step_duration("Visuals") or 0
+    parallel_saving = (audio_est + visuals_est) - max(audio_est, visuals_est)
+    total_estimated -= parallel_saving
 
     _publish(run_id, "log", {
         "step": "Pipeline",
-        "message": f"🚀 Pipeline started with {total_steps} steps. "
+        "message": f"🚀 Pipeline started with {total_steps} steps (Audio ∥ Visuals in parallel). "
                    f"Estimated total: {int(total_estimated // 60)}m {int(total_estimated % 60)}s",
     })
 
+    # Build ordered execution plan:
+    #   sequential steps before parallel, parallel group, sequential steps after
+    seq_before = []  # (index, step_def)
+    parallel = []    # (index, step_def)
+    seq_after = []   # (index, step_def)
+    past_parallel = False
     for i, step_def in enumerate(PIPELINE):
-        step_name = step_def["name"]
+        if step_def["name"] in _PARALLEL_GROUP:
+            parallel.append((i, step_def))
+        elif not parallel and not past_parallel:
+            seq_before.append((i, step_def))
+        else:
+            past_parallel = True
+            seq_after.append((i, step_def))
+
+    def _fail(step_name: str, i: int, exc: Exception, step_start: float) -> None:
+        step_elapsed = time.time() - step_start
+        error_msg = str(exc)
         step_info = run["steps"][i]
-        step_start_time = time.time()
+        step_info["status"] = "error"
+        step_info["finished_at"] = _now()
+        step_info["elapsed_sec"] = round(step_elapsed, 1)
+        step_info["error"] = error_msg
+        run["status"] = "FAILED"
+        run["error"] = f"{step_name}: {error_msg}"
+        run["finished_at"] = _now()
+        run["elapsed_sec"] = round(time.time() - pipeline_start, 1)
+        run["eta_remaining_sec"] = 0
 
-        # Calculate remaining ETA (sum of estimates for remaining steps)
-        remaining_estimated = sum(
-            (_estimate_step_duration(PIPELINE[j]["name"]) or 0)
-            for j in range(i, total_steps)
-        )
-
-        # Update run-level progress
-        run["current_step"] = step_name
-        run["current_step_index"] = i
-        pipeline_elapsed = time.time() - pipeline_start
-        run["elapsed_sec"] = round(pipeline_elapsed, 1)
-        run["eta_remaining_sec"] = round(remaining_estimated, 1)
-
-        # Mark step as active
-        step_info["status"] = "running"
-        step_info["started_at"] = _now()
-
-        est_duration = _estimate_step_duration(step_name)
-        est_str = f" (estimated: {int(est_duration // 60)}m {int(est_duration % 60)}s)" if est_duration else ""
-
-        _publish(run_id, "step_start", {
+        _publish(run_id, "step_error", {
             "step": step_name,
             "index": i,
             "total_steps": total_steps,
-            "message": f"▶ [{i + 1}/{total_steps}] Starting {step_name}...{est_str}",
-            "estimated_duration_sec": est_duration,
-            "eta_remaining_sec": round(remaining_estimated, 1),
-            "pipeline_elapsed_sec": round(pipeline_elapsed, 1),
+            "message": f"❌ [{i + 1}/{total_steps}] {step_name} failed after "
+                       f"{int(step_elapsed // 60)}m {int(step_elapsed % 60)}s: {error_msg}",
+            "error": error_msg,
+            "elapsed_sec": round(step_elapsed, 1),
+            "pipeline_elapsed_sec": round(time.time() - pipeline_start, 1),
             "progress_pct": round((i / total_steps) * 100, 1),
         })
+        _publish(run_id, "pipeline_done", {
+            "status": "FAILED",
+            "error": f"{step_name}: {error_msg}",
+            "total_elapsed_sec": round(time.time() - pipeline_start, 1),
+        })
 
+    # ── Phase 1: Sequential steps before parallel (Research, Script) ──
+    for i, step_def in seq_before:
         try:
-            # Build payload: only send keys the step needs (that exist in state)
-            payload = {}
-            for k in step_def["input_keys"]:
-                if k in state:
-                    payload[k] = state[k]
-
-            _publish(run_id, "log", {
-                "step": step_name,
-                "message": f"📡 [{i + 1}/{total_steps}] Invoking {step_name} lambda...",
-            })
-
-            result = _invoke_lambda(step_name, payload)
-
-            step_elapsed = time.time() - step_start_time
-
-            # Check for error in response
-            if isinstance(result, dict) and "errorMessage" in result:
-                raise RuntimeError(result["errorMessage"])
-
-            # Record actual duration for future ETA estimation
-            _record_step_duration(step_name, step_elapsed)
-
-            # Merge result keys into cumulative state
-            for k in step_def["merge_keys"]:
-                if isinstance(result, dict) and k in result:
-                    state[k] = result[k]
-
-            # Keep niche from original input
-            state["niche"] = niche
-
-            # Update run state
-            step_info["status"] = "done"
-            step_info["finished_at"] = _now()
-            step_info["elapsed_sec"] = round(step_elapsed, 1)
-            summary = {}
-            for k in ["title", "selected_topic", "script_s3_key",
-                       "final_video_s3_key", "video_url", "video_id"]:
-                if k in (result if isinstance(result, dict) else {}):
-                    summary[k] = result[k]
-            step_info["output_summary"] = summary or None
-
-            if "title" in state:
-                run["title"] = state["title"]
-
-            # Calculate updated pipeline progress
-            pipeline_elapsed = time.time() - pipeline_start
-            run["elapsed_sec"] = round(pipeline_elapsed, 1)
-            steps_done = i + 1
-            progress_pct = round((steps_done / total_steps) * 100, 1)
-
-            # Remaining ETA after this step
-            remaining_eta = sum(
-                (_estimate_step_duration(PIPELINE[j]["name"]) or 0)
-                for j in range(i + 1, total_steps)
-            )
-            run["eta_remaining_sec"] = round(remaining_eta, 1)
-
-            elapsed_str = f"{int(step_elapsed // 60)}m {int(step_elapsed % 60)}s"
-            eta_str = f"{int(remaining_eta // 60)}m {int(remaining_eta % 60)}s" if remaining_eta > 0 else "almost done"
-
-            _publish(run_id, "step_done", {
-                "step": step_name,
-                "index": i,
-                "total_steps": total_steps,
-                "message": f"✅ [{steps_done}/{total_steps}] {step_name} completed in {elapsed_str}",
-                "summary": summary,
-                "elapsed_sec": round(step_elapsed, 1),
-                "pipeline_elapsed_sec": round(pipeline_elapsed, 1),
-                "eta_remaining_sec": round(remaining_eta, 1),
-                "progress_pct": progress_pct,
-            })
-
-            _publish(run_id, "log", {
-                "step": step_name,
-                "message": f"⏱ {step_name}: {elapsed_str} | "
-                           f"Progress: {progress_pct}% | ETA: {eta_str}",
-            })
-
+            _exec_step(run_id, run, state, i, step_def, pipeline_start, total_steps, niche)
         except Exception as exc:
-            step_elapsed = time.time() - step_start_time
-            error_msg = str(exc)
-            step_info["status"] = "error"
-            step_info["finished_at"] = _now()
-            step_info["elapsed_sec"] = round(step_elapsed, 1)
-            step_info["error"] = error_msg
-            run["status"] = "FAILED"
-            run["error"] = f"{step_name}: {error_msg}"
-            run["finished_at"] = _now()
-            run["elapsed_sec"] = round(time.time() - pipeline_start, 1)
-            run["eta_remaining_sec"] = 0
+            _fail(step_def["name"], i, exc, time.time())
+            return
 
-            _publish(run_id, "step_error", {
-                "step": step_name,
-                "index": i,
-                "total_steps": total_steps,
-                "message": f"❌ [{i + 1}/{total_steps}] {step_name} failed after "
-                           f"{int(step_elapsed // 60)}m {int(step_elapsed % 60)}s: {error_msg}",
-                "error": error_msg,
-                "elapsed_sec": round(step_elapsed, 1),
-                "pipeline_elapsed_sec": round(time.time() - pipeline_start, 1),
-                "progress_pct": round((i / total_steps) * 100, 1),
-            })
-            _publish(run_id, "pipeline_done", {
-                "status": "FAILED",
-                "error": f"{step_name}: {error_msg}",
-                "total_elapsed_sec": round(time.time() - pipeline_start, 1),
-            })
+    # ── Phase 2: Parallel group (Audio ∥ Visuals) ──
+    if parallel:
+        par_names = [sd["name"] for _, sd in parallel]
+        _publish(run_id, "log", {
+            "step": "Pipeline",
+            "message": f"⚡ Running {' ∥ '.join(par_names)} in PARALLEL...",
+        })
+
+        errors: list[tuple[str, int, Exception]] = []
+        par_start = time.time()
+
+        with ThreadPoolExecutor(max_workers=len(parallel)) as pool:
+            futures = {}
+            for idx, step_def in parallel:
+                fut = pool.submit(
+                    _exec_step,
+                    run_id, run, state, idx, step_def,
+                    pipeline_start, total_steps, niche,
+                )
+                futures[fut] = (idx, step_def)
+
+            for fut in as_completed(futures):
+                idx, step_def = futures[fut]
+                exc = fut.exception()
+                if exc:
+                    errors.append((step_def["name"], idx, exc))
+
+        if errors:
+            # Report first error (use par_start for correct elapsed time)
+            name, idx, exc = errors[0]
+            _fail(name, idx, exc, par_start)
+            return
+
+        parallel_elapsed = time.time() - pipeline_start
+        _publish(run_id, "log", {
+            "step": "Pipeline",
+            "message": f"✅ Parallel group finished in "
+                       f"{int(parallel_elapsed // 60)}m {int(parallel_elapsed % 60)}s",
+        })
+
+    # ── Phase 3: Sequential steps after parallel (Editor, Thumbnail, Upload, Notify) ──
+    for i, step_def in seq_after:
+        try:
+            _exec_step(run_id, run, state, i, step_def, pipeline_start, total_steps, niche)
+        except Exception as exc:
+            _fail(step_def["name"], i, exc, time.time())
             return
 
     # All steps completed
@@ -553,6 +673,27 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_response(404, {"error": "run not found"})
                 return
             self._json_response(200, run)
+            return
+
+        # ── API: run outputs ──
+        if path.startswith("/api/outputs/"):
+            run_id = path.split("/api/outputs/")[-1]
+            run = _runs.get(run_id)
+            if not run:
+                self._json_response(404, {"error": "run not found"})
+                return
+            state = run.get("state", {})
+            outputs = {
+                "run_id": run_id,
+                "title": state.get("title", ""),
+                "video_url": state.get("video_url"),
+                "video_id": state.get("video_id"),
+                "final_video_s3_key": state.get("final_video_s3_key"),
+                "primary_thumbnail_s3_key": state.get("primary_thumbnail_s3_key"),
+                "thumbnail_s3_keys": state.get("thumbnail_s3_keys"),
+                "video_duration_sec": state.get("video_duration_sec"),
+            }
+            self._json_response(200, outputs)
             return
 
         # ── API: SSE events ──

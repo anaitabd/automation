@@ -279,7 +279,7 @@ def get_secret(name: str) -> dict:
 
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
-BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+BEDROCK_MODEL_ID_DEFAULT = "anthropic.claude-3-sonnet-20240229-v1:0"
 
 # Set dynamically per-invocation from the profile's llm.script_model
 _active_model_id: str = BEDROCK_MODEL_ID_DEFAULT
@@ -402,6 +402,15 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"- The final section should deliver a powerful conclusion that reframes everything\n"
         f"- Write MULTIPLE visual_cue search_queries per section (5 specific queries) for rich B-roll\n"
         f"- Consider visual variety: wide establishing shots, close-ups, archival, motion graphics\n\n"
+
+        f"═══ RETENTION ARCHITECTURE — OPEN LOOPS ═══\n"
+        f"To prevent viewer drop-off, you MUST embed 'Open Loops' every 2-3 sections:\n"
+        f"- An Open Loop is a teaser or forward hook that makes the viewer need to keep watching\n"
+        f"- Examples: 'But what happened next would change everything...', 'The answer, hidden for decades, is coming up', 'You won't believe what they found when they looked closer'\n"
+        f"- Place an Open Loop at the END of sections 2, 4, 6, 8 (and any section before a major revelation)\n"
+        f"- Each Open Loop must tease a REAL payoff that arrives 1-2 sections later — never mislead\n"
+        f"- Use the CLAIM → INTRIGUE → PAYOFF structure: state a claim, create intrigue, deliver the payoff sections later\n"
+        f"- The first section should always end with an Open Loop that sets up the central mystery or question\n\n"
 
         f"═══ FACTUAL INTEGRITY — ABSOLUTE RULES ═══\n"
         f"NEVER invent, assume, or embellish facts. Before writing ANY claim, ask yourself:\n"
@@ -533,6 +542,21 @@ def _pass_fact_integrity(script: dict) -> dict:
         audited = _extract_json(raw)
         # Preserve structural fields the LLM should not have touched
         audited.setdefault("factual_confidence", "medium")
+        # Validate sections: if the LLM mangled them, keep the originals
+        orig_sections = script.get("sections", [])
+        new_sections = audited.get("sections", [])
+        if (
+            not new_sections
+            or not isinstance(new_sections, list)
+            or not all(isinstance(s, dict) for s in new_sections)
+        ):
+            print(
+                f"[WARN] _pass_fact_integrity: sections corrupted "
+                f"(got {type(new_sections).__name__} with "
+                f"{sum(1 for s in new_sections if not isinstance(s, dict)) if isinstance(new_sections, list) else '?'} "
+                f"non-dict items) — keeping original {len(orig_sections)} sections"
+            )
+            audited["sections"] = orig_sections
         return audited
     except json.JSONDecodeError:
         # If parsing fails, return original script with a warning note
@@ -545,6 +569,10 @@ def _pass3_visual_cues(script: dict, profile: dict) -> dict:
     transition = profile.get("editing", {}).get("default_transition", "dissolve")
 
     for i, section in enumerate(script.get("sections", [])):
+        # Guard: LLM / json_repair can return sections as strings instead of dicts
+        if not isinstance(section, dict):
+            print(f"[WARN] _pass3_visual_cues: section {i} is {type(section).__name__}, skipping")
+            continue
         prompt = (
             f"Generate precise visual cue metadata for this YouTube script section.\n"
             f"Section title: {section['title']}\n"
@@ -602,7 +630,18 @@ def _pass4_pacing(script: dict, profile: dict) -> dict:
     )
     raw = _bedrock_call(prompt, max_tokens=32768)
     try:
-        return _extract_json(raw)
+        paced = _extract_json(raw)
+        # Validate sections structure
+        orig_sections = script.get("sections", [])
+        new_sections = paced.get("sections", [])
+        if (
+            not new_sections
+            or not isinstance(new_sections, list)
+            or not all(isinstance(s, dict) for s in new_sections)
+        ):
+            print("[WARN] _pass4_pacing: sections corrupted — keeping originals")
+            paced["sections"] = orig_sections
+        return paced
     except json.JSONDecodeError:
         return script
 
