@@ -580,7 +580,7 @@ def lambda_handler(event: dict, context) -> dict:
     if context and hasattr(context, "get_remaining_time_in_millis"):
         deadline = handler_start + context.get_remaining_time_in_millis() / 1000 - 60
     else:
-        deadline = handler_start + 840  # 14 min fallback (Docker / local)
+        deadline = handler_start + 1740  # 29 min fallback (Docker / local)
 
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")

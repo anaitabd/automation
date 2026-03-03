@@ -22,8 +22,8 @@ RUN pip install --no-cache-dir \
     librosa numpy scipy scikit-learn \
     --extra-index-url https://pypi.org/simple/
 
-COPY nexus_pipeline_utils.py ${LAMBDA_TASK_ROOT}/nexus_pipeline_utils.py
-COPY handler.py ${LAMBDA_TASK_ROOT}/handler.py
+COPY lambdas/nexus_pipeline_utils.py ${LAMBDA_TASK_ROOT}/nexus_pipeline_utils.py
+COPY lambdas/nexus-editor/handler.py ${LAMBDA_TASK_ROOT}/handler.py
 
 CMD ["handler.lambda_handler"]
 

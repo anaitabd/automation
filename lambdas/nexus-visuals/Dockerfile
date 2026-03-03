@@ -23,8 +23,8 @@ RUN pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu \
     --extra-index-url https://pypi.org/simple/
 
-COPY nexus_pipeline_utils.py ${LAMBDA_TASK_ROOT}/nexus_pipeline_utils.py
-COPY handler.py ${LAMBDA_TASK_ROOT}/handler.py
+COPY lambdas/nexus_pipeline_utils.py ${LAMBDA_TASK_ROOT}/nexus_pipeline_utils.py
+COPY lambdas/nexus-visuals/handler.py ${LAMBDA_TASK_ROOT}/handler.py
 
 CMD ["handler.lambda_handler"]
 

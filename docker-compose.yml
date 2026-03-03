@@ -3,6 +3,7 @@ services:
     image: postgres:16-alpine
     ports:
       - "5432:5432"
+    command: postgres -c log_checkpoints=off -c log_min_messages=warning
     environment:
       POSTGRES_USER: ${DB_USER:-nexus_user}
       POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
@@ -66,6 +67,11 @@ services:
     environment:
       - AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
       - AWS_LAMBDA_FUNCTION_TIMEOUT=900
+    restart: on-failure:3
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     depends_on:
       setup-aws:
         condition: service_completed_successfully
@@ -79,8 +85,13 @@ services:
     env_file: .env
     environment:
       - AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
-      - AWS_LAMBDA_FUNCTION_TIMEOUT=900
+      - AWS_LAMBDA_FUNCTION_TIMEOUT=1800
       - VISUALS_PARALLELISM=4
+    restart: on-failure:3
+    deploy:
+      resources:
+        limits:
+          memory: 4g
     depends_on:
       setup-aws:
         condition: service_completed_successfully
@@ -96,6 +107,11 @@ services:
       - AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
       - MEDIACONVERT_ROLE_ARN=${MEDIACONVERT_ROLE_ARN}
       - AWS_LAMBDA_FUNCTION_TIMEOUT=900
+    restart: on-failure:3
+    deploy:
+      resources:
+        limits:
+          memory: 4g
     depends_on:
       setup-aws:
         condition: service_completed_successfully

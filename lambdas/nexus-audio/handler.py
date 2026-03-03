@@ -3,6 +3,7 @@ import os
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 import urllib.request
 import urllib.parse
@@ -193,16 +194,32 @@ def _generate_voiceover(script: dict, profile: dict, api_key: str, tmpdir: str) 
             if sent:
                 sentences.append((sent, default_emotion))
 
-    for idx, (sent, default_emotion) in enumerate(sentences):
+    # ── Parallel TTS synthesis (5 concurrent requests) ──────────────────
+    TTS_WORKERS = int(os.environ.get("TTS_PARALLELISM", "5"))
+
+    def _synth_one(idx: int, sent: str, default_emotion: str):
         cleaned = _clean_text(sent)
         emotion = _detect_emotion(cleaned, default_emotion)
         voice_settings = _get_voice_settings(profile, emotion)
         audio_bytes = _synthesize_sentence(cleaned, voice_id, voice_settings, api_key)
-
         seg_path = os.path.join(tmpdir, f"seg_{idx:04d}.mp3")
         with open(seg_path, "wb") as f:
             f.write(audio_bytes)
-        segment_files.append(seg_path)
+        return idx, seg_path
+
+    seg_map: dict[int, str] = {}
+    with ThreadPoolExecutor(max_workers=TTS_WORKERS) as pool:
+        futures = {
+            pool.submit(_synth_one, idx, sent, emo): idx
+            for idx, (sent, emo) in enumerate(sentences)
+        }
+        for fut in as_completed(futures):
+            idx, seg_path = fut.result()  # propagates exceptions
+            seg_map[idx] = seg_path
+
+    # Rebuild ordered segment list with silences between
+    for idx in range(len(sentences)):
+        segment_files.append(seg_map[idx])
         if idx < len(sentences) - 1:
             segment_files.append(silence_path)
 
