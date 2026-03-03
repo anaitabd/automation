@@ -553,19 +553,33 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-def lambda_handler(event: dict, context) -> dict:
-    run_id: str = event["run_id"]
-    profile_name: str = event.get("profile", "documentary")
-    sections: list[dict] = event.get("sections", [])
-    mixed_audio_s3_key: str = event["mixed_audio_s3_key"]
-    script_s3_key: str = event["script_s3_key"]
-    dry_run: bool = event.get("dry_run", False)
-    title_passthrough: str = event.get("title", "")
+SCRATCH_DIR = os.environ.get("TMPDIR", "/mnt/scratch")
 
-    step_start = notify_step_start("editor", run_id, niche=event.get("niche", ""), profile=profile_name, dry_run=dry_run)
+
+def lambda_handler(event: dict, context) -> dict:
+    run_id: str = event.get("run_id") or os.environ.get("RUN_ID", "")
+    profile_name: str = event.get("profile") or os.environ.get("PROFILE", "documentary")
+    niche: str = event.get("niche") or os.environ.get("NICHE", "")
+    sections: list[dict] = event.get("sections", [])
+    mixed_audio_s3_key: str = event.get("mixed_audio_s3_key") or os.environ.get("MIXED_AUDIO_S3_KEY", "")
+    script_s3_key: str = event.get("script_s3_key") or os.environ.get("SCRIPT_S3_KEY", "")
+    dry_run_raw = event.get("dry_run") if "dry_run" in event else os.environ.get("DRY_RUN", "false")
+    dry_run: bool = dry_run_raw if isinstance(dry_run_raw, bool) else str(dry_run_raw).lower() == "true"
+    title_passthrough: str = event.get("title") or os.environ.get("TITLE", "")
+
+    step_start = notify_step_start("editor", run_id, niche=niche, profile=profile_name, dry_run=dry_run)
 
     try:
         s3 = boto3.client("s3")
+
+        if not sections and run_id:
+            sections_key = f"{run_id}/status/visuals_sections.json"
+            try:
+                sections_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=sections_key)
+                sections = json.loads(sections_obj["Body"].read())
+                log.info("Loaded %d sections from S3: %s", len(sections), sections_key)
+            except Exception as exc:
+                log.warning("Could not load sections from S3 (%s): %s", sections_key, exc)
 
         log.info("Loading script from S3: %s", script_s3_key)
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
@@ -603,7 +617,7 @@ def lambda_handler(event: dict, context) -> dict:
                 "video_duration_sec": total_est,
             }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=SCRATCH_DIR if os.path.isdir(SCRATCH_DIR) else None) as tmpdir:
             log.info("Downloading mixed audio from S3: %s", mixed_audio_s3_key)
             audio_local = os.path.join(tmpdir, "mixed_audio.wav")
             s3.download_file(S3_ASSETS_BUCKET, mixed_audio_s3_key, audio_local)

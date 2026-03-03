@@ -1,6 +1,5 @@
 FROM public.ecr.aws/lambda/python:3.12
 
-# Install font libraries required by ffmpeg drawtext filter
 RUN dnf install -y tar gzip xz \
         freetype fontconfig fontconfig-devel \
         dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts && \
@@ -16,14 +15,17 @@ RUN dnf install -y tar gzip xz \
     ffmpeg -version && \
     dnf clean all
 
-# Install Python dependencies
 RUN pip install --no-cache-dir \
     requests boto3 psycopg2-binary python-dotenv json-repair \
     librosa numpy scipy scikit-learn \
     --extra-index-url https://pypi.org/simple/
 
+RUN mkdir -p /mnt/scratch
+
 COPY lambdas/nexus_pipeline_utils.py ${LAMBDA_TASK_ROOT}/nexus_pipeline_utils.py
 COPY lambdas/nexus-editor/handler.py ${LAMBDA_TASK_ROOT}/handler.py
+
+ENV TMPDIR=/mnt/scratch
 
 CMD ["handler.lambda_handler"]
 

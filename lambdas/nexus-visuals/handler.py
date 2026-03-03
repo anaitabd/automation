@@ -601,22 +601,23 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
+SCRATCH_DIR = os.environ.get("TMPDIR", "/mnt/scratch")
+
+
 def lambda_handler(event: dict, context) -> dict:
     handler_start = time.time()
-    # Leave 60s buffer before Lambda hard-kills us (15 min = 900s)
-    if context and hasattr(context, "get_remaining_time_in_millis"):
-        deadline = handler_start + context.get_remaining_time_in_millis() / 1000 - 60
-    else:
-        deadline = handler_start + 1740  # 29 min fallback (Docker / local)
+    deadline = handler_start + 7140  # 119 min — leaves buffer before 2h Fargate task timeout
 
-    run_id: str = event["run_id"]
-    profile_name: str = event.get("profile", "documentary")
-    script_s3_key: str = event["script_s3_key"]
-    dry_run: bool = event.get("dry_run", False)
-    mixed_audio_s3_key: str = event.get("mixed_audio_s3_key", "")
-    total_duration_estimate: float = float(event.get("total_duration_estimate", 0))
+    run_id: str = event.get("run_id") or os.environ.get("RUN_ID", "")
+    profile_name: str = event.get("profile") or os.environ.get("PROFILE", "documentary")
+    niche: str = event.get("niche") or os.environ.get("NICHE", "")
+    script_s3_key: str = event.get("script_s3_key") or os.environ.get("SCRIPT_S3_KEY", "")
+    dry_run_raw = event.get("dry_run") if "dry_run" in event else os.environ.get("DRY_RUN", "false")
+    dry_run: bool = dry_run_raw if isinstance(dry_run_raw, bool) else str(dry_run_raw).lower() == "true"
+    mixed_audio_s3_key: str = event.get("mixed_audio_s3_key") or os.environ.get("MIXED_AUDIO_S3_KEY", "")
+    total_duration_estimate: float = float(event.get("total_duration_estimate") or os.environ.get("TOTAL_DURATION_ESTIMATE", 0))
 
-    step_start = notify_step_start("visuals", run_id, niche=event.get("niche", ""), profile=profile_name, dry_run=dry_run)
+    step_start = notify_step_start("visuals", run_id, niche=niche, profile=profile_name, dry_run=dry_run)
 
     try:
         s3 = boto3.client("s3")
@@ -660,7 +661,7 @@ def lambda_handler(event: dict, context) -> dict:
 
         color_grade_default = profile.get("visuals", {}).get("color_grade_default", "cinematic_warm")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=SCRATCH_DIR if os.path.isdir(SCRATCH_DIR) else None) as tmpdir:
             lut_local_path = _download_lut(color_grade_default, tmpdir, s3)
 
             # ── Process sections in parallel to stay within the 15-min timeout ──
@@ -727,6 +728,15 @@ def lambda_handler(event: dict, context) -> dict:
             processed_sections.sort(key=lambda s: s["section_idx"])
 
         log.info("Visuals complete — %d/%d sections produced clips", len(processed_sections), len(sections))
+
+        sections_key = f"{run_id}/status/visuals_sections.json"
+        s3.put_object(
+            Bucket=S3_OUTPUTS_BUCKET,
+            Key=sections_key,
+            Body=json.dumps(processed_sections).encode("utf-8"),
+            ContentType="application/json",
+        )
+        log.info("Sections metadata written to s3://%s/%s", S3_OUTPUTS_BUCKET, sections_key)
 
         elapsed = time.time() - step_start
         notify_step_complete("visuals", run_id, [

@@ -443,15 +443,20 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-def lambda_handler(event: dict, context) -> dict:
-    run_id: str = event["run_id"]
-    profile_name: str = event.get("profile", "documentary")
-    script_s3_key: str = event["script_s3_key"]
-    dry_run: bool = event.get("dry_run", False)
-    title: str = event.get("title", "")
-    total_duration_estimate: float = float(event.get("total_duration_estimate", 0))
+SCRATCH_DIR = os.environ.get("TMPDIR", "/mnt/scratch")
 
-    step_start = notify_step_start("audio", run_id, niche=event.get("niche", ""), profile=profile_name, dry_run=dry_run)
+
+def lambda_handler(event: dict, context) -> dict:
+    run_id: str = event.get("run_id") or os.environ.get("RUN_ID", "")
+    profile_name: str = event.get("profile") or os.environ.get("PROFILE", "documentary")
+    niche: str = event.get("niche") or os.environ.get("NICHE", "")
+    script_s3_key: str = event.get("script_s3_key") or os.environ.get("SCRIPT_S3_KEY", "")
+    dry_run_raw = event.get("dry_run") if "dry_run" in event else os.environ.get("DRY_RUN", "false")
+    dry_run: bool = dry_run_raw if isinstance(dry_run_raw, bool) else str(dry_run_raw).lower() == "true"
+    title: str = event.get("title") or os.environ.get("TITLE", "")
+    total_duration_estimate: float = float(event.get("total_duration_estimate") or os.environ.get("TOTAL_DURATION_ESTIMATE", 0))
+
+    step_start = notify_step_start("audio", run_id, niche=niche, profile=profile_name, dry_run=dry_run)
 
     try:
         s3 = boto3.client("s3")
@@ -483,7 +488,7 @@ def lambda_handler(event: dict, context) -> dict:
         pixabay_api_key = get_secret("nexus/pexels_api_key").get("pixabay_key", "")
         music_mood = profile.get("sound_design", {}).get("music_mood", "tension_atmospheric")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=SCRATCH_DIR if os.path.isdir(SCRATCH_DIR) else None) as tmpdir:
             log.info("Generating voiceover via ElevenLabs (%d sections)", len(script.get("sections", [])))
             voiceover_raw = _generate_voiceover(script, profile, el_api_key, tmpdir)
 
