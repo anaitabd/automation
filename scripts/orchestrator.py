@@ -15,6 +15,7 @@ API:
     GET  /api/status/<run_id>
     GET  /api/runs
     GET  /api/events/<run_id>  (SSE stream)
+    GET  /api/deploy-check     (external service connectivity check)
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
 
 import requests
+
+from check_external import check_all as _check_external
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 PORT = int(os.environ.get("ORCHESTRATOR_PORT", "3000"))
@@ -703,6 +706,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_response(404, {"error": "run not found"})
                 return
             self._serve_sse(run_id)
+            return
+
+        # ── API: deploy check ──
+        if path == "/api/deploy-check":
+            results = _check_external()
+            self._json_response(200, results)
             return
 
         self._json_response(404, {"error": "not found"})
