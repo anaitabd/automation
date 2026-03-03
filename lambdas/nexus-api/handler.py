@@ -6,6 +6,7 @@ import boto3
 
 STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
 OUTPUTS_BUCKET = os.environ["OUTPUTS_BUCKET"]
+ECS_SUBNETS = json.loads(os.environ.get("ECS_SUBNETS", "[]"))
 
 sfn = boto3.client("stepfunctions")
 s3 = boto3.client("s3")
@@ -156,6 +157,7 @@ def _handle_run(body: dict) -> dict:
                 "niche": niche,
                 "profile": profile,
                 "dry_run": dry_run,
+                "subnets": ECS_SUBNETS,
             }
         ),
     )

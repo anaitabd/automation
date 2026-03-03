@@ -21,6 +21,7 @@
         "profile.$": "$.Payload.profile",
         "dry_run.$": "$.Payload.dry_run",
         "niche.$": "$$.Execution.Input.niche",
+        "subnets.$": "$$.Execution.Input.subnets",
         "research_s3_key.$": "$.Payload.research_s3_key",
         "selected_topic.$": "$.Payload.selected_topic",
         "angle.$": "$.Payload.angle",
@@ -66,6 +67,7 @@
         "profile.$": "$.Payload.profile",
         "dry_run.$": "$.Payload.dry_run",
         "niche.$": "$$.Execution.Input.niche",
+        "subnets.$": "$$.Execution.Input.subnets",
         "script_s3_key.$": "$.Payload.script_s3_key",
         "title.$": "$.Payload.title",
         "section_count.$": "$.Payload.section_count",
@@ -98,39 +100,60 @@
           "States": {
             "Audio": {
               "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
+              "Resource": "arn:aws:states:::ecs:runTask.sync",
               "Parameters": {
-                "FunctionName": "${NexusAudioArn}",
-                "Payload": {
-                  "run_id.$": "$.run_id",
-                  "profile.$": "$.profile",
-                  "dry_run.$": "$.dry_run",
-                  "niche.$": "$.niche",
-                  "script_s3_key.$": "$.script_s3_key",
-                  "title.$": "$.title",
-                  "total_duration_estimate.$": "$.total_duration_estimate"
+                "LaunchType": "FARGATE",
+                "Cluster": "${NexusClusterArn}",
+                "TaskDefinition": "${NexusAudioTaskDefArn}",
+                "NetworkConfiguration": {
+                  "AwsvpcConfiguration": {
+                    "AssignPublicIp": "ENABLED",
+                    "Subnets.$": "$.subnets"
+                  }
+                },
+                "Overrides": {
+                  "ContainerOverrides": [
+                    {
+                      "Name": "nexus-audio",
+                      "Environment": [
+                        { "Name": "RUN_ID", "Value.$": "$.run_id" },
+                        { "Name": "PROFILE", "Value.$": "$.profile" },
+                        { "Name": "DRY_RUN", "Value.$": "States.Format('{}', $.dry_run)" },
+                        { "Name": "NICHE", "Value.$": "$.niche" },
+                        { "Name": "SCRIPT_S3_KEY", "Value.$": "$.script_s3_key" },
+                        { "Name": "TITLE", "Value.$": "$.title" },
+                        { "Name": "TOTAL_DURATION_ESTIMATE", "Value.$": "States.Format('{}', $.total_duration_estimate)" }
+                      ]
+                    }
+                  ]
                 }
               },
-              "ResultSelector": {
-                "run_id.$": "$.Payload.run_id",
-                "profile.$": "$.Payload.profile",
-                "dry_run.$": "$.Payload.dry_run",
-                "niche.$": "$$.Execution.Input.niche",
-                "script_s3_key.$": "$.Payload.script_s3_key",
-                "title.$": "$.Payload.title",
-                "total_duration_estimate.$": "$.Payload.total_duration_estimate",
-                "voiceover_s3_key.$": "$.Payload.voiceover_s3_key",
-                "mixed_audio_s3_key.$": "$.Payload.mixed_audio_s3_key"
-              },
-              "ResultPath": "$",
+              "ResultPath": "$.ecs_result",
               "Retry": [
                 {
-                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
-                  "IntervalSeconds": 5,
-                  "MaxAttempts": 3,
+                  "ErrorEquals": ["ECS.AmazonECSException", "States.TaskFailed"],
+                  "IntervalSeconds": 10,
+                  "MaxAttempts": 2,
                   "BackoffRate": 2.0
                 }
               ],
+              "Next": "SetAudioKeys"
+            },
+            "SetAudioKeys": {
+              "Type": "Pass",
+              "Parameters": {
+                "run_id.$": "$.run_id",
+                "profile.$": "$.profile",
+                "dry_run.$": "$.dry_run",
+                "niche.$": "$.niche",
+                "subnets.$": "$.subnets",
+                "script_s3_key.$": "$.script_s3_key",
+                "title.$": "$.title",
+                "total_duration_estimate.$": "$.total_duration_estimate",
+                "voiceover_s3_key.$": "States.Format('{}/audio/voiceover.wav', $.run_id)",
+                "mixed_audio_s3_key.$": "States.Format('{}/audio/mixed_audio.wav', $.run_id)"
+              },
+              "ResultPath": "$",
               "End": true
             }
           }
@@ -140,36 +163,41 @@
           "States": {
             "Visuals": {
               "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "TimeoutSeconds": 960,
+              "Resource": "arn:aws:states:::ecs:runTask.sync",
+              "TimeoutSeconds": 3600,
               "Parameters": {
-                "FunctionName": "${NexusVisualsArn}",
-                "Payload": {
-                  "run_id.$": "$.run_id",
-                  "profile.$": "$.profile",
-                  "dry_run.$": "$.dry_run",
-                  "niche.$": "$.niche",
-                  "script_s3_key.$": "$.script_s3_key",
-                  "title.$": "$.title",
-                  "total_duration_estimate.$": "$.total_duration_estimate"
+                "LaunchType": "FARGATE",
+                "Cluster": "${NexusClusterArn}",
+                "TaskDefinition": "${NexusVisualsTaskDefArn}",
+                "NetworkConfiguration": {
+                  "AwsvpcConfiguration": {
+                    "AssignPublicIp": "ENABLED",
+                    "Subnets.$": "$.subnets"
+                  }
+                },
+                "Overrides": {
+                  "ContainerOverrides": [
+                    {
+                      "Name": "nexus-visuals",
+                      "Environment": [
+                        { "Name": "RUN_ID", "Value.$": "$.run_id" },
+                        { "Name": "PROFILE", "Value.$": "$.profile" },
+                        { "Name": "DRY_RUN", "Value.$": "States.Format('{}', $.dry_run)" },
+                        { "Name": "NICHE", "Value.$": "$.niche" },
+                        { "Name": "SCRIPT_S3_KEY", "Value.$": "$.script_s3_key" },
+                        { "Name": "TITLE", "Value.$": "$.title" },
+                        { "Name": "TOTAL_DURATION_ESTIMATE", "Value.$": "States.Format('{}', $.total_duration_estimate)" }
+                      ]
+                    }
+                  ]
                 }
               },
-              "ResultSelector": {
-                "run_id.$": "$.Payload.run_id",
-                "profile.$": "$.Payload.profile",
-                "dry_run.$": "$.Payload.dry_run",
-                "niche.$": "$$.Execution.Input.niche",
-                "script_s3_key.$": "$.Payload.script_s3_key",
-                "title.$": "$.Payload.title",
-                "total_duration_estimate.$": "$.Payload.total_duration_estimate",
-                "sections.$": "$.Payload.sections"
-              },
-              "ResultPath": "$",
+              "ResultPath": "$.ecs_result",
               "Retry": [
                 {
-                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
-                  "IntervalSeconds": 5,
-                  "MaxAttempts": 3,
+                  "ErrorEquals": ["ECS.AmazonECSException", "States.TaskFailed"],
+                  "IntervalSeconds": 10,
+                  "MaxAttempts": 2,
                   "BackoffRate": 2.0
                 }
               ],
@@ -186,42 +214,63 @@
           "Next": "NotifyError"
         }
       ],
+      "Next": "MergeParallelOutputs"
+    },
+
+    "MergeParallelOutputs": {
+      "Type": "Pass",
+      "Parameters": {
+        "run_id.$": "$[0].run_id",
+        "profile.$": "$[0].profile",
+        "dry_run.$": "$[0].dry_run",
+        "niche.$": "$[0].niche",
+        "script_s3_key.$": "$[0].script_s3_key",
+        "title.$": "$[0].title",
+        "total_duration_estimate.$": "$[0].total_duration_estimate",
+        "mixed_audio_s3_key.$": "$[0].mixed_audio_s3_key",
+        "subnets.$": "$[0].subnets"
+      },
+      "ResultPath": "$",
       "Next": "Editor"
     },
 
     "Editor": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "TimeoutSeconds": 960,
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "TimeoutSeconds": 7200,
       "Parameters": {
-        "FunctionName": "${NexusEditorArn}",
-        "Payload": {
-          "run_id.$": "$[0].run_id",
-          "profile.$": "$[0].profile",
-          "dry_run.$": "$[0].dry_run",
-          "niche.$": "$[0].niche",
-          "script_s3_key.$": "$[0].script_s3_key",
-          "sections.$": "$[1].sections",
-          "mixed_audio_s3_key.$": "$[0].mixed_audio_s3_key",
-          "title.$": "$[0].title",
-          "total_duration_estimate.$": "$[0].total_duration_estimate"
+        "LaunchType": "FARGATE",
+        "Cluster": "${NexusClusterArn}",
+        "TaskDefinition": "${NexusEditorTaskDefArn}",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "AssignPublicIp": "ENABLED",
+            "Subnets.$": "$.subnets"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "nexus-editor",
+              "Environment": [
+                { "Name": "RUN_ID", "Value.$": "$.run_id" },
+                { "Name": "PROFILE", "Value.$": "$.profile" },
+                { "Name": "DRY_RUN", "Value.$": "States.Format('{}', $.dry_run)" },
+                { "Name": "NICHE", "Value.$": "$.niche" },
+                { "Name": "SCRIPT_S3_KEY", "Value.$": "$.script_s3_key" },
+                { "Name": "MIXED_AUDIO_S3_KEY", "Value.$": "$.mixed_audio_s3_key" },
+                { "Name": "TITLE", "Value.$": "$.title" },
+                { "Name": "TOTAL_DURATION_ESTIMATE", "Value.$": "States.Format('{}', $.total_duration_estimate)" }
+              ]
+            }
+          ]
         }
       },
-      "ResultSelector": {
-        "run_id.$": "$.Payload.run_id",
-        "profile.$": "$.Payload.profile",
-        "dry_run.$": "$.Payload.dry_run",
-        "niche.$": "$$.Execution.Input.niche",
-        "script_s3_key.$": "$.Payload.script_s3_key",
-        "title.$": "$.Payload.title",
-        "final_video_s3_key.$": "$.Payload.final_video_s3_key",
-        "video_duration_sec.$": "$.Payload.video_duration_sec"
-      },
-      "ResultPath": "$",
+      "ResultPath": null,
       "Retry": [
         {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
-          "IntervalSeconds": 10,
+          "ErrorEquals": ["ECS.AmazonECSException", "States.TaskFailed"],
+          "IntervalSeconds": 15,
           "MaxAttempts": 2,
           "BackoffRate": 2.0
         }
@@ -233,6 +282,22 @@
           "Next": "NotifyError"
         }
       ],
+      "Next": "SetEditorKeys"
+    },
+
+    "SetEditorKeys": {
+      "Type": "Pass",
+      "Parameters": {
+        "run_id.$": "$.run_id",
+        "profile.$": "$.profile",
+        "dry_run.$": "$.dry_run",
+        "niche.$": "$.niche",
+        "script_s3_key.$": "$.script_s3_key",
+        "title.$": "$.title",
+        "final_video_s3_key.$": "States.Format('{}/final_video.mp4', $.run_id)",
+        "video_duration_sec.$": "$.total_duration_estimate"
+      },
+      "ResultPath": "$",
       "Next": "Thumbnail"
     },
 

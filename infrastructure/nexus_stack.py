@@ -15,6 +15,10 @@ from aws_cdk import (
     aws_events_targets as event_targets,
     aws_cloudwatch as cloudwatch,
     aws_logs as logs,
+    aws_ecs as ecs,
+    aws_ecr as ecr,
+    aws_efs as efs,
+    aws_ec2 as ec2,
 )
 from constructs import Construct
 import json
@@ -117,12 +121,145 @@ class NexusStack(Stack):
         arm64 = lambda_.Architecture.ARM_64
         py312 = lambda_.Runtime.PYTHON_3_12
 
-        # Common env vars for all Lambdas — bucket names must match what setup_aws.py created
         common_env = {
             "ASSETS_BUCKET": assets_bucket.bucket_name,
             "OUTPUTS_BUCKET": outputs_bucket.bucket_name,
             "CONFIG_BUCKET": config_bucket.bucket_name,
         }
+
+        vpc = ec2.Vpc.from_lookup(self, "DefaultVpc", is_default=True)
+
+        ecs_cluster = ecs.Cluster(
+            self, "NexusVideoCluster",
+            cluster_name="nexus-video-cluster",
+            vpc=vpc,
+        )
+
+        scratch_fs = efs.FileSystem(
+            self, "NexusScratchFS",
+            file_system_name="nexus-scratch",
+            vpc=vpc,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
+        scratch_ap = scratch_fs.add_access_point(
+            "NexusScratchAP",
+            path="/scratch",
+            create_acl=efs.Acl(owner_uid="0", owner_gid="0", permissions="755"),
+            posix_user=efs.PosixUser(uid="0", gid="0"),
+        )
+
+        ecs_task_execution_role = iam.Role(
+            self, "NexusEcsTaskExecutionRole",
+            role_name="nexus-ecs-task-execution-role",
+            assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AmazonECSTaskExecutionRolePolicy"
+                )
+            ],
+        )
+        ecs_task_execution_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:nexus/*"],
+            )
+        )
+
+        ecs_task_role = iam.Role(
+            self, "NexusEcsTaskRole",
+            role_name="nexus-ecs-task-role",
+            assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+        )
+        assets_bucket.grant_read_write(ecs_task_role)
+        outputs_bucket.grant_read_write(ecs_task_role)
+        ecs_task_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:nexus/*"],
+            )
+        )
+
+        efs_volume = ecs.Volume(
+            name="nexus-scratch",
+            efs_volume_configuration=ecs.EfsVolumeConfiguration(
+                file_system_id=scratch_fs.file_system_id,
+                transit_encryption="ENABLED",
+                authorization_config=ecs.AuthorizationConfig(
+                    access_point_id=scratch_ap.access_point_id,
+                    iam="ENABLED",
+                ),
+            ),
+        )
+
+        scratch_fs.grant_root_access(ecs_task_role)
+
+        fargate_common_env = {
+            "S3_BUCKET_ASSETS": assets_bucket.bucket_name,
+            "S3_BUCKET_OUTPUTS": outputs_bucket.bucket_name,
+            "AWS_REGION": self.region,
+            **common_env,
+        }
+
+        def _make_fargate_task(task_id: str, fn_name: str, extra_env: dict | None = None) -> ecs.FargateTaskDefinition:
+            repo = ecr.Repository(
+                self, f"{task_id}Repo",
+                repository_name=fn_name,
+                removal_policy=RemovalPolicy.DESTROY,
+            )
+            task_def = ecs.FargateTaskDefinition(
+                self, f"{task_id}Task",
+                family=fn_name,
+                cpu=4096,
+                memory_limit_mib=16384,
+                execution_role=ecs_task_execution_role,
+                task_role=ecs_task_role,
+                volumes=[efs_volume],
+            )
+            container = task_def.add_container(
+                fn_name,
+                container_name=fn_name,
+                image=ecs.ContainerImage.from_ecr_repository(repo),
+                environment={**fargate_common_env, **(extra_env or {})},
+                logging=ecs.LogDrivers.aws_logs(
+                    stream_prefix=fn_name,
+                    log_group=logs.LogGroup(
+                        self, f"{task_id}LogGroup",
+                        log_group_name=f"/ecs/{fn_name}",
+                        removal_policy=RemovalPolicy.DESTROY,
+                        retention=logs.RetentionDays.ONE_MONTH,
+                    ),
+                ),
+            )
+            container.add_mount_points(
+                ecs.MountPoint(
+                    container_path="/mnt/scratch",
+                    source_volume="nexus-scratch",
+                    read_only=False,
+                )
+            )
+            return task_def
+
+        visuals_task_def = _make_fargate_task("NexusVisuals", "nexus-visuals")
+        audio_task_def = _make_fargate_task("NexusAudio", "nexus-audio")
+
+        mediaconvert_role = iam.Role(
+            self, "MediaConvertRole",
+            assumed_by=iam.ServicePrincipal("mediaconvert.amazonaws.com"),
+        )
+        assets_bucket.grant_read(mediaconvert_role)
+        outputs_bucket.grant_read_write(mediaconvert_role)
+        ecs_task_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["mediaconvert:*", "iam:PassRole"],
+                resources=["*"],
+            )
+        )
+
+        editor_task_def = _make_fargate_task(
+            "NexusEditor", "nexus-editor",
+            extra_env={"MEDIACONVERT_ROLE_ARN": mediaconvert_role.role_arn},
+        )
 
         def _lambda_props(fn_name, memory, timeout_min, role, layers=None, env=None):
             merged_env = {**common_env, **(env or {})}
@@ -171,71 +308,6 @@ class NexusStack(Stack):
         fn_script = lambda_.Function(
             self, "NexusScript",
             **_lambda_props("nexus-script", 1024, 15, script_role, [api_layer]),
-        )
-
-        audio_role = _make_role(
-            "nexus-audio",
-            extra_buckets=[assets_bucket],
-            secret_names_allowed=[
-                "nexus/elevenlabs_api_key",
-                "nexus/pexels_api_key",
-                "nexus/discord_webhook_url",
-            ],
-        )
-        fn_audio = lambda_.Function(
-            self, "NexusAudio",
-            **_lambda_props("nexus-audio", 10240, 15, audio_role, [ffmpeg_layer, api_layer]),
-        )
-
-        visuals_role = _make_role(
-            "nexus-visuals",
-            extra_buckets=[assets_bucket],
-            secret_names_allowed=[
-                "nexus/pexels_api_key",
-                "nexus/discord_webhook_url",
-            ],
-        )
-        fn_visuals = lambda_.DockerImageFunction(
-            self, "NexusVisuals",
-            function_name="nexus-visuals",
-            code=lambda_.DockerImageCode.from_image_asset("lambdas/nexus-visuals"),
-            architecture=arm64,
-            memory_size=3008,
-            timeout=Duration.minutes(15),
-            ephemeral_storage_size=cdk.Size.gibibytes(10),
-            role=visuals_role,
-            environment=common_env,
-            tracing=lambda_.Tracing.ACTIVE,
-        )
-
-        editor_role = _make_role(
-            "nexus-editor",
-            extra_buckets=[assets_bucket],
-            secret_names_allowed=["nexus/discord_webhook_url"],
-        )
-        mediaconvert_role = iam.Role(
-            self, "MediaConvertRole",
-            assumed_by=iam.ServicePrincipal("mediaconvert.amazonaws.com"),
-        )
-        assets_bucket.grant_read(mediaconvert_role)
-        outputs_bucket.grant_read_write(mediaconvert_role)
-        editor_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["mediaconvert:*", "iam:PassRole"],
-                resources=["*"],
-            )
-        )
-        fn_editor = lambda_.DockerImageFunction(
-            self, "NexusEditor",
-            function_name="nexus-editor",
-            code=lambda_.DockerImageCode.from_image_asset("lambdas/nexus-editor"),
-            architecture=arm64,
-            memory_size=10240,
-            timeout=Duration.minutes(15),
-            ephemeral_storage_size=cdk.Size.gibibytes(10),
-            role=editor_role,
-            environment={**common_env, "MEDIACONVERT_ROLE_ARN": mediaconvert_role.role_arn},
-            tracing=lambda_.Tracing.ACTIVE,
         )
 
         thumbnail_role = _make_role(
@@ -298,9 +370,10 @@ class NexusStack(Stack):
             asl_str
             .replace("${NexusResearchArn}", fn_research.function_arn)
             .replace("${NexusScriptArn}", fn_script.function_arn)
-            .replace("${NexusAudioArn}", fn_audio.function_arn)
-            .replace("${NexusVisualsArn}", fn_visuals.function_arn)
-            .replace("${NexusEditorArn}", fn_editor.function_arn)
+            .replace("${NexusVisualsTaskDefArn}", visuals_task_def.task_definition_arn)
+            .replace("${NexusAudioTaskDefArn}", audio_task_def.task_definition_arn)
+            .replace("${NexusEditorTaskDefArn}", editor_task_def.task_definition_arn)
+            .replace("${NexusClusterArn}", ecs_cluster.cluster_arn)
             .replace("${NexusThumbnailArn}", fn_thumbnail.function_arn)
             .replace("${NexusUploadArn}", fn_upload.function_arn)
             .replace("${NexusNotifyArn}", fn_notify.function_arn)
@@ -311,9 +384,29 @@ class NexusStack(Stack):
             self, "NexusStateMachineRole",
             assumed_by=iam.ServicePrincipal("states.amazonaws.com"),
         )
-        for fn in [fn_research, fn_script, fn_audio, fn_visuals,
-                   fn_editor, fn_thumbnail, fn_upload, fn_notify, fn_notify_error]:
+        for fn in [fn_research, fn_script,
+                   fn_thumbnail, fn_upload, fn_notify, fn_notify_error]:
             fn.grant_invoke(sfn_role)
+
+        sfn_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["ecs:RunTask"],
+                resources=[
+                    visuals_task_def.task_definition_arn,
+                    audio_task_def.task_definition_arn,
+                    editor_task_def.task_definition_arn,
+                ],
+            )
+        )
+        sfn_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["iam:PassRole"],
+                resources=[
+                    ecs_task_execution_role.role_arn,
+                    ecs_task_role.role_arn,
+                ],
+            )
+        )
 
         sfn_log_group = logs.LogGroup(
             self, "NexusPipelineLogGroup",
@@ -404,6 +497,7 @@ class NexusStack(Stack):
             environment={
                 "STATE_MACHINE_ARN": state_machine.attr_arn,
                 "OUTPUTS_BUCKET": outputs_bucket.bucket_name,
+                "ECS_SUBNETS": json.dumps([s.subnet_id for s in vpc.public_subnets]),
             },
         )
 
@@ -451,6 +545,7 @@ class NexusStack(Stack):
                         "niche": "technology",
                         "profile": "documentary",
                         "dry_run": False,
+                        "subnets": [s.subnet_id for s in vpc.public_subnets],
                     }
                 ),
             )
@@ -465,8 +560,7 @@ class NexusStack(Stack):
                 title="Lambda Durations",
                 left=[
                     fn.metric_duration(statistic="p95")
-                    for fn in [fn_research, fn_script, fn_audio,
-                               fn_visuals, fn_editor, fn_thumbnail,
+                    for fn in [fn_research, fn_script, fn_thumbnail,
                                fn_upload, fn_notify]
                 ],
             ),
@@ -474,8 +568,7 @@ class NexusStack(Stack):
                 title="Lambda Errors",
                 left=[
                     fn.metric_errors()
-                    for fn in [fn_research, fn_script, fn_audio,
-                               fn_visuals, fn_editor, fn_thumbnail,
+                    for fn in [fn_research, fn_script, fn_thumbnail,
                                fn_upload, fn_notify]
                 ],
             ),
@@ -487,3 +580,7 @@ class NexusStack(Stack):
         cdk.CfnOutput(self, "AssetsBucket", value=assets_bucket.bucket_name)
         cdk.CfnOutput(self, "OutputsBucket", value=outputs_bucket.bucket_name)
         cdk.CfnOutput(self, "ConfigBucket", value=config_bucket.bucket_name)
+        cdk.CfnOutput(self, "EcsClusterArn", value=ecs_cluster.cluster_arn)
+        cdk.CfnOutput(self, "VisualsTaskDefArn", value=visuals_task_def.task_definition_arn)
+        cdk.CfnOutput(self, "AudioTaskDefArn", value=audio_task_def.task_definition_arn)
+        cdk.CfnOutput(self, "EditorTaskDefArn", value=editor_task_def.task_definition_arn)
