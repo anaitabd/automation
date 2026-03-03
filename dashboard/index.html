@@ -338,6 +338,8 @@ function App() {
   const [stepTimers, setStepTimers] = React.useState({}); // stepName -> {elapsed, estimated}
   const [pipelineStartTime, setPipelineStartTime] = React.useState(null);
 
+  const [health, setHealth] = React.useState(null); // null=unknown, 'healthy', 'degraded', 'error'
+
   const [history, setHistory] = React.useState(() => {
     try { return JSON.parse(localStorage.getItem('nexus_history') || '[]'); }
     catch { return []; }
@@ -349,6 +351,13 @@ function App() {
   const logEndRef = React.useRef(null);
 
   const accentClass = profile === 'finance' ? 'fin' : profile === 'entertainment' ? 'ent' : '';
+
+  // Health check on mount
+  React.useEffect(() => {
+    apiGet('/health').then(h => {
+      setHealth(h.status === 'healthy' ? 'healthy' : h.status === 'degraded' ? 'degraded' : 'error');
+    }).catch(() => setHealth('error'));
+  }, []);
 
   // Auto-scroll logs
   React.useEffect(() => {
@@ -600,8 +609,19 @@ function App() {
             borderRadius:4, fontSize:10, letterSpacing:2, fontWeight:700,
           }}>🔧 LOCAL</span>
         )}
-        <div style={{fontSize:11,color:'var(--muted)',marginLeft:'auto'}}>
+        <div style={{fontSize:11,color:'var(--muted)',marginLeft:'auto',display:'flex',alignItems:'center',gap:12}}>
           {IS_LOCAL ? 'Local Docker Orchestrator' : 'Serverless YouTube Automation Pipeline'}
+          {health && (
+            <span style={{
+              display:'inline-flex', alignItems:'center', gap:5, padding:'3px 10px',
+              borderRadius:4, fontSize:10, letterSpacing:1, fontWeight:700,
+              background: health === 'healthy' ? '#0a2a1a' : health === 'degraded' ? '#2a1a0a' : '#2a0a0a',
+              color: health === 'healthy' ? 'var(--accent-fin)' : health === 'degraded' ? '#ffa500' : 'var(--accent-ent)',
+              border: `1px solid ${health === 'healthy' ? 'var(--accent-fin)' : health === 'degraded' ? '#ffa500' : 'var(--accent-ent)'}`,
+            }}>
+              {health === 'healthy' ? '● DEPLOY OK' : health === 'degraded' ? '● DEGRADED' : '● UNREACHABLE'}
+            </span>
+          )}
         </div>
       </header>
 
