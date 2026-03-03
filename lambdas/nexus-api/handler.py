@@ -310,6 +310,28 @@ def _handle_outputs(run_id: str) -> dict:
     return _response(200, {"run_id": run_id, "urls": presigned_urls, "error_logs": error_logs})
 
 
+def _handle_health() -> dict:
+    checks = {}
+
+    try:
+        sfn.describe_state_machine(stateMachineArn=STATE_MACHINE_ARN)
+        checks["step_functions"] = "ok"
+    except Exception:
+        checks["step_functions"] = "error"
+
+    try:
+        s3.head_bucket(Bucket=OUTPUTS_BUCKET)
+        checks["s3"] = "ok"
+    except Exception:
+        checks["s3"] = "error"
+
+    all_ok = all(v == "ok" for v in checks.values())
+    return _response(
+        200 if all_ok else 503,
+        {"status": "healthy" if all_ok else "degraded", "checks": checks},
+    )
+
+
 def lambda_handler(event: dict, context) -> dict:
     method = event.get("httpMethod", "")
     path = event.get("path", "")
@@ -318,6 +340,9 @@ def lambda_handler(event: dict, context) -> dict:
     # Handle CORS preflight
     if method == "OPTIONS":
         return _response(200, {})
+
+    if method == "GET" and path == "/health":
+        return _handle_health()
 
     if method == "POST" and path == "/run":
         body = json.loads(event.get("body") or "{}")

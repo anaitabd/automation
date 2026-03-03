@@ -476,6 +476,7 @@ class NexusStack(Stack):
                 actions=[
                     "states:StartExecution",
                     "states:DescribeExecution",
+                    "states:DescribeStateMachine",
                     "states:ListExecutions",
                     "states:GetExecutionHistory",
                 ],
@@ -499,6 +500,12 @@ class NexusStack(Stack):
                 "OUTPUTS_BUCKET": outputs_bucket.bucket_name,
                 "ECS_SUBNETS": json.dumps([s.subnet_id for s in vpc.public_subnets]),
             },
+        )
+
+        health_resource = api.root.add_resource("health")
+        health_resource.add_method(
+            "GET",
+            apigw.LambdaIntegration(fn_api),
         )
 
         run_resource = api.root.add_resource("run")

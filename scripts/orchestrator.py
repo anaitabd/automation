@@ -646,6 +646,11 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_dashboard()
             return
 
+        # ── API: health check ──
+        if path == "/api/health":
+            self._json_response(200, {"status": "healthy", "mode": "local", "port": PORT})
+            return
+
         # ── API: list runs ──
         if path == "/api/runs":
             runs_list = []
