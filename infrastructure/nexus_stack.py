@@ -6,7 +6,6 @@ from aws_cdk import (
     aws_lambda as lambda_,
     aws_s3 as s3,
     aws_iam as iam,
-    aws_secretsmanager as secretsmanager,
     aws_stepfunctions as sfn,
     aws_apigateway as apigw,
     aws_cloudfront as cloudfront,
@@ -80,22 +79,6 @@ class NexusStack(Stack):
             compatible_runtimes=[lambda_.Runtime.PYTHON_3_12],
             description="requests, boto3, psycopg2, python-dotenv",
         )
-
-        secret_names = [
-            "nexus/perplexity_api_key",
-            "nexus/elevenlabs_api_key",
-            "nexus/pexels_api_key",
-            "nexus/youtube_credentials",
-            "nexus/discord_webhook_url",
-            "nexus/db_credentials",
-        ]
-        {
-            name: secretsmanager.Secret.from_secret_name_v2(
-                self, name.replace("/", "_").replace("-", "_"),
-                secret_name=name,
-            )
-            for name in secret_names
-        }
 
         def _make_role(fn_name: str, extra_buckets=None, secret_names_allowed=None):
             role = iam.Role(

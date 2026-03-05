@@ -715,10 +715,6 @@ def lambda_handler(event: dict, context) -> dict:
         profile: dict = json.loads(profile_obj["Body"].read())
 
         editing_cfg = profile.get("editing", {})
-        editing_cfg.get("j_cut_enabled", False)
-        editing_cfg.get("l_cut_enabled", False)
-        editing_cfg.get("j_cut_overlap_sec", 0.8)
-        editing_cfg.get("l_cut_overlap_sec", 1.0)
         default_transition = editing_cfg.get("default_transition", "dissolve")
         transition_dur = editing_cfg.get("transition_duration_sec", 1.0)
         beat_sync = editing_cfg.get("beat_sync_cuts", True)

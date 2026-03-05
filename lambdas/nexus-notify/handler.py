@@ -236,7 +236,6 @@ def lambda_handler(event: dict, context) -> dict:
     final_video_s3_key: str = event.get("final_video_s3_key", "")
     title: str = event.get("title", "")
     niche: str = event.get("niche", "")
-    event.get("thumbnail_s3_keys", [])
     primary_thumbnail_s3_key: str = event.get("primary_thumbnail_s3_key", "")
     video_duration_sec: float = float(event.get("video_duration_sec", 0))
     execution_start_raw = event.get("execution_start_time", time.time())
