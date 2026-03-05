@@ -125,15 +125,15 @@ def _get_voice_settings(profile: dict, emotion: str) -> dict:
     if emotion in emotion_mapping:
         overrides = emotion_mapping[emotion]
         return {
-            "stability": overrides.get("stability", voice_cfg.get("stability", 0.5)),
-            "similarity_boost": voice_cfg.get("similarity_boost", 0.80),
-            "style": overrides.get("style", voice_cfg.get("style", 0.5)),
+            "stability": overrides.get("stability", voice_cfg.get("stability", 0.35)),
+            "similarity_boost": voice_cfg.get("similarity_boost", 0.75),
+            "style": overrides.get("style", voice_cfg.get("style", 0.45)),
             "use_speaker_boost": True,
         }
     return {
-        "stability": voice_cfg.get("stability", 0.5),
-        "similarity_boost": voice_cfg.get("similarity_boost", 0.80),
-        "style": voice_cfg.get("style", 0.5),
+        "stability": voice_cfg.get("stability", 0.35),
+        "similarity_boost": voice_cfg.get("similarity_boost", 0.75),
+        "style": voice_cfg.get("style", 0.45),
         "use_speaker_boost": True,
     }
 
@@ -323,12 +323,16 @@ def _mix_audio(
     tmpdir: str,
     run_id: str,
 ) -> str:
-    music_vol_narration = profile.get("sound_design", {}).get("music_volume_narration", -22)
+    # Music at -18dB relative to voice reference (0dB); profile override still respected if set
+    music_vol_narration = profile.get("sound_design", {}).get("music_volume_narration", -18)
     output_path = os.path.join(tmpdir, "mixed_audio.wav")
 
     if music_path is None:
+        # Apply dynaudnorm on voice-only path too for consistent loudness
         subprocess.run(
-            [FFMPEG_BIN, "-y", "-i", voiceover_path, output_path],
+            [FFMPEG_BIN, "-y", "-i", voiceover_path,
+             "-af", "dynaudnorm=p=0.9:m=100",
+             output_path],
             check=True,
             capture_output=True,
         )
@@ -362,6 +366,7 @@ def _mix_audio(
         log.warning("Music loop failed: %s — using original music", exc)
         looped_music = music_path
 
+    # Music chain: fade in, set -18dB volume, fade out
     music_af = (
         f"afade=t=in:st=0:d=2,"
         f"volume={vol_factor_narration:.4f},"
@@ -370,8 +375,9 @@ def _mix_audio(
 
     # Try with sidechain compression first; fall back to simple mix if unsupported
     def _run_complex_mix() -> None:
+        # dynaudnorm on voice track before mixing (voice=0dB reference)
         af_complex = (
-            f"[0:a]asplit=2[sc][vo];"
+            f"[0:a]dynaudnorm=p=0.9:m=100,asplit=2[sc][vo];"
             f"[1:a]{music_af}[music_raw];"
             f"[sc][music_raw]sidechaincompress=threshold=0.02:ratio=4:attack=200:release=1000[ducked];"
             f"[vo][ducked]amix=inputs=2:duration=first:dropout_transition=3[out]"
@@ -384,9 +390,11 @@ def _mix_audio(
         )
 
     def _run_simple_mix() -> None:
+        # dynaudnorm on voice track before mixing (voice=0dB reference)
         af_complex = (
+            f"[0:a]dynaudnorm=p=0.9:m=100[vo_norm];"
             f"[1:a]{music_af}[music_raw];"
-            f"[0:a][music_raw]amix=inputs=2:duration=first:dropout_transition=3[out]"
+            f"[vo_norm][music_raw]amix=inputs=2:duration=first:dropout_transition=3[out]"
         )
         subprocess.run(
             [FFMPEG_BIN, "-y", "-i", voiceover_path, "-i", looped_music,
@@ -408,7 +416,9 @@ def _mix_audio(
             log.warning("Simple mix failed (exit=%d, stderr=%s); using voiceover only",
                         exc2.returncode, stderr_tail2)
             subprocess.run(
-                [FFMPEG_BIN, "-y", "-i", voiceover_path, output_path],
+                [FFMPEG_BIN, "-y", "-i", voiceover_path,
+                 "-af", "dynaudnorm=p=0.9:m=100",
+                 output_path],
                 check=True, capture_output=True,
             )
 

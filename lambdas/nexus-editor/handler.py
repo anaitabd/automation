@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import random
 import subprocess
 import tempfile
 import time
@@ -177,9 +178,22 @@ def _detect_beats(audio_path: str) -> list[float]:
         y, sr = librosa.load(audio_path, sr=22050, mono=True)
         tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
         beat_times = librosa.frames_to_time(beat_frames, sr=sr).tolist()
+        if not beat_times:
+            raise ValueError("librosa returned empty beat list")
         return beat_times
-    except Exception:
+    except Exception as exc:
+        log.warning("Beat detection failed (%s) — falling back to fixed 3.5s cut points", exc)
         return []
+
+
+def _fallback_cut_points(duration: float, interval: float = 3.5, jitter: float = 0.4) -> list[float]:
+    # Generate cut points every interval seconds with ±jitter random offset
+    points = []
+    t = interval
+    while t < duration:
+        points.append(t + random.uniform(-jitter, jitter))
+        t += interval
+    return points
 
 
 def _snap_to_beat(timestamp: float, beats: list[float], window: float = 0.4) -> float:
@@ -737,7 +751,12 @@ def lambda_handler(event: dict, context) -> dict:
 
             log.info("Detecting beats (beat_sync=%s)", beat_sync)
             beats = _detect_beats(audio_local) if beat_sync else []
-            log.info("Detected %d beats", len(beats))
+            if beat_sync and not beats:
+                audio_duration = _get_duration(audio_local)
+                beats = _fallback_cut_points(audio_duration)
+                log.info("Using fallback cut points: %d points over %.1fs", len(beats), audio_duration)
+            else:
+                log.info("Detected %d beats", len(beats))
 
             log.info("Building intro slate (channel=%s, accent=%s)", channel_name, accent_color)
             intro_path = _build_intro_slate(

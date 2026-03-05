@@ -168,26 +168,63 @@ def _pick_best_pexels_file(video_files: list[dict]) -> str | None:
     return candidates[0][2]
 
 
-def _search_pexels(query: str, api_key: str, per_page: int = 8) -> list[str]:
+def _search_pexels(query: str, api_key: str, per_page: int = 8) -> list[dict]:
     log.info("Pexels search: query=%r per_page=%d", query, per_page)
     encoded = urllib.parse.quote(query)
-    url = f"https://api.pexels.com/videos/search?query={encoded}&per_page={per_page}&orientation=landscape&size=large"
+    # min_width=1920 ensures we only get Full HD or better footage
+    url = f"https://api.pexels.com/videos/search?query={encoded}&per_page={per_page}&orientation=landscape&size=large&min_width=1920"
     headers = {"Authorization": api_key}
     try:
         data = json.loads(_http_get(url, headers=headers))
-        urls = []
+        results = []
         for video in data.get("videos", []):
             best_file = _pick_best_pexels_file(video.get("video_files", []))
             if best_file:
-                urls.append(best_file)
-        log.info("Pexels returned %d usable videos", len(urls))
-        return urls
+                results.append({"id": video.get("id", 0), "url": best_file})
+        log.info("Pexels returned %d usable videos", len(results))
+        return results
     except Exception as exc:
         log.warning("Pexels search failed: %s", exc)
         return []
 
 
-def _search_archive_org(query: str, per_page: int = 5) -> list[str]:
+BEDROCK_MODEL_ID_VISUALS = os.environ.get("BEDROCK_MODEL_ID_VISUALS", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+
+
+def _expand_queries_with_claude(segment_text: str, base_queries: list[str]) -> list[str]:
+    # Use Claude to generate 4 visually descriptive search query variants from the segment text
+    client = boto3.client("bedrock-runtime")
+    prompt = (
+        f"You are a video researcher. Given this script segment, generate exactly 4 visually descriptive "
+        f"stock footage search queries. Each query should be 2-5 words and describe a concrete visual scene "
+        f"(e.g. 'ancient ruins sunset', 'crumbling stone aerial view', 'crowded city street night').\n\n"
+        f"Script segment:\n{segment_text[:1000]}\n\n"
+        f"Existing queries for context: {base_queries}\n\n"
+        f"Return ONLY a JSON array of exactly 4 strings. No markdown, no explanation."
+    )
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 256,
+        "messages": [{"role": "user", "content": prompt}],
+    })
+    try:
+        response = client.invoke_model(
+            modelId=BEDROCK_MODEL_ID_VISUALS,
+            body=body,
+            contentType="application/json",
+            accept="application/json",
+        )
+        raw = json.loads(response["body"].read())["content"][0]["text"]
+        raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        expanded = json.loads(raw)
+        if isinstance(expanded, list):
+            return [str(q) for q in expanded[:4]]
+    except Exception as exc:
+        log.warning("Claude query expansion failed: %s — using base queries", exc)
+    return base_queries[:4]
+
+
+
     log.info("Archive.org search: query=%r", query)
     encoded = urllib.parse.quote(query)
     url = (
@@ -494,28 +531,32 @@ def _source_and_process_section(
     log.info("── Section %d: %d clips needed, %.0fs duration, queries=%s",
              section_idx, clips_needed, section_duration, queries[:2])
 
-    # ── Gather candidates from all queries (use up to 3 queries, 5 results each) ──
-    candidates: list[str] = []
-    for query in queries[:3]:
-        candidates += _search_pexels(query, pexels_key, per_page=5)
-        if "archive_org" in archive_enabled:
-            candidates += _search_archive_org(query, per_page=3)
+    # ── Expand queries with Claude to get 4 visually descriptive variants ──
+    segment_text = section.get("content", section.get("title", ""))
+    expanded_queries = _expand_queries_with_claude(segment_text, queries)
+    all_queries = list(dict.fromkeys(queries + expanded_queries))  # merge, preserve order, no dupes
 
-    # Deduplicate URLs
-    seen_urls: set[str] = set()
-    unique_candidates: list[str] = []
-    for url in candidates:
-        if url not in seen_urls:
-            seen_urls.add(url)
-            unique_candidates.append(url)
-    candidates = unique_candidates
+    # ── Gather candidates from all queries (use all 4 expanded + base queries, 5 results each) ──
+    # Deduplicate by Pexels video ID to avoid downloading the same clip via different queries
+    seen_ids: set[int] = set()
+    candidates: list[str] = []
+    for query in all_queries:
+        for hit in _search_pexels(query, pexels_key, per_page=5):
+            vid_id = hit["id"]
+            if vid_id not in seen_ids:
+                seen_ids.add(vid_id)
+                candidates.append(hit["url"])
+        if "archive_org" in archive_enabled:
+            for url in _search_archive_org(query, per_page=3):
+                if url not in candidates:
+                    candidates.append(url)
 
     max_candidates = int(os.environ.get("VISUALS_MAX_CANDIDATES", 8))
     log.info("Section %d: %d unique candidates to score (max %d)", section_idx, len(candidates), max_candidates)
 
     # ── Score and rank all candidates ──
     scored: list[tuple[float, str]] = []
-    query_text = " ".join(queries)
+    query_text = " ".join(all_queries)
     for idx, url in enumerate(candidates[:max_candidates]):
         raw_path = _download_video(url, tmpdir, f"{section_idx}_{idx}", pexels_key=pexels_key)
         if raw_path is None:
