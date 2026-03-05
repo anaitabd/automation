@@ -33,11 +33,10 @@ NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 NVIDIA_VISION_MODEL = os.environ.get("NVIDIA_VISION_MODEL", "microsoft/phi-3.5-vision-instruct")
 NVIDIA_TEXT_MODEL = os.environ.get("NVIDIA_TEXT_MODEL", "meta/llama-3.1-70b-instruct")
 
-# Stability AI — optional background image generation for thumbnails
-# Set STABILITY_API_KEY env var or store in Secrets Manager under "nexus/stability_api_key"
 STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY", "")
 STABILITY_API_URL = "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image"
-# TODO: configure STABILITY_API_KEY in Secrets Manager ("nexus/stability_api_key") to enable AI backgrounds
+
+NVIDIA_FLUX_URL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev"
 
 
 def _find_bin(name: str) -> str:
@@ -405,6 +404,62 @@ def _pil_draw_text_centered(draw, text: str, font, y: int, img_w: int,
     draw.text((x, y), text, font=font, fill=fill)
 
 
+def _generate_nvidia_flux_background(concept_text: str, out_path: str) -> bool:
+    api_key = NVIDIA_API_KEY
+    if not api_key:
+        try:
+            api_key = get_secret("nexus/nvidia_api_key").get("api_key", "")
+        except Exception:
+            pass
+    if not api_key:
+        return False
+    try:
+        prompt = (
+            f"YouTube thumbnail background, cinematic, {concept_text}, "
+            "4K, photorealistic, no text, no watermark, no logo"
+        )
+        body = json.dumps({
+            "prompt": prompt,
+            "mode": "base",
+            "cfg_scale": 3.5,
+            "width": 1280,
+            "height": 720,
+            "seed": 0,
+            "steps": 50,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            NVIDIA_FLUX_URL,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            if resp.status != 200:
+                log.warning("NVIDIA FLUX API returned status %d", resp.status)
+                return False
+            result = json.loads(resp.read())
+        artifacts = result.get("artifacts", [])
+        if artifacts:
+            img_b64 = artifacts[0].get("base64", "")
+        else:
+            data_list = result.get("data", [])
+            img_b64 = data_list[0].get("b64_json", "") if data_list else ""
+        if not img_b64:
+            log.warning("NVIDIA FLUX returned no image data")
+            return False
+        with open(out_path, "wb") as f:
+            f.write(base64.b64decode(img_b64))
+        log.info("NVIDIA FLUX background generated: %s", out_path)
+        return True
+    except Exception as exc:
+        log.warning("NVIDIA FLUX background generation failed: %s — using fallback", exc)
+        return False
+
+
 def _generate_stability_background(concept_text: str, out_path: str) -> bool:
     # Generate a 1280x720 background image using Stability AI from the thumbnail concept string.
     # Returns True if successful, False if Stability AI is not configured or the call fails.
@@ -462,30 +517,28 @@ def _render_thumbnail(
     tmpdir: str,
     idx: int,
 ) -> str:
-    """Render a YouTube thumbnail by compositing text overlays with Pillow.
-    Uses a Stability AI-generated background when available; falls back to video frame."""
     out_path = os.path.join(tmpdir, f"thumbnail_{idx}.jpg")
     accent_raw = profile.get("thumbnail", {}).get("accent_color", "#C8A96E")
     channel_name = profile.get("name", "Nexus").upper()
     top_text = concept.get("top_text", "")[:45]
     sub_text = concept.get("sub_text", "")[:45]
 
-    # Step 1: Try Stability AI background; fall back to video frame with eq enhancement
-    stability_bg = os.path.join(tmpdir, f"thumb_bg_{idx}.jpg")
     concept_desc = f"{concept.get('emotion_trigger', '')} {concept.get('color_scheme', '')} {top_text} {sub_text}".strip()
-    used_ai_bg = _generate_stability_background(concept_desc, stability_bg)
+    ai_bg = os.path.join(tmpdir, f"thumb_bg_{idx}.jpg")
+
+    used_ai_bg = _generate_nvidia_flux_background(concept_desc, ai_bg)
+    if not used_ai_bg:
+        used_ai_bg = _generate_stability_background(concept_desc, ai_bg)
 
     eq_path = os.path.join(tmpdir, f"eq_{idx}.jpg")
     if used_ai_bg:
-        # Resize AI background to 1280x720 with ffmpeg to ensure correct dimensions
         subprocess.run(
-            [FFMPEG_BIN, "-y", "-i", stability_bg,
+            [FFMPEG_BIN, "-y", "-i", ai_bg,
              "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
              "-q:v", "2", eq_path],
             check=True, capture_output=True,
         )
     else:
-        # Use video frame with color enhancement (original fallback behavior)
         subprocess.run(
             [FFMPEG_BIN, "-y", "-i", frame_path,
              "-vf", "eq=contrast=1.15:saturation=1.25:brightness=0.02",

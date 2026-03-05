@@ -315,6 +315,10 @@ def create_secrets() -> None:
         "user": _env("DB_USER", "nexus_user"),
         "password": _env("DB_PASSWORD"),
     })
+    if _env("NVIDIA_API_KEY"):
+        _upsert_secret("nexus/nvidia_api_key", {
+            "api_key": _env("NVIDIA_API_KEY"),
+        })
 
 
 # ────────────────────────────────────────────────────────────────
