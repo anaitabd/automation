@@ -780,7 +780,7 @@ class Handler(BaseHTTPRequestHandler):
             if run:
                 self._sse_write("snapshot", run)
 
-            last_ping = time.time()
+            time.time()
             while True:
                 try:
                     msg = q.get(timeout=10)

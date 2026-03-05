@@ -322,7 +322,7 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
             req = urllib.request.Request(url, data=data, headers=merged, method="POST")
             with urllib.request.urlopen(req, timeout=90) as resp:
                 return json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
+        except Exception:
             if attempt == retries - 1:
                 raise
             time.sleep(2 ** attempt)
@@ -357,7 +357,7 @@ def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3, model_i
                     f"Last 80 chars: ...{text[-80:]!r}"
                 )
             return text
-        except Exception as exc:
+        except Exception:
             if attempt == retries - 1:
                 raise
             time.sleep(2 ** attempt)

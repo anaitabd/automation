@@ -16,7 +16,6 @@ from aws_cdk import (
     aws_cloudwatch as cloudwatch,
     aws_logs as logs,
     aws_ecs as ecs,
-    aws_ecr as ecr,
     aws_ecr_assets as ecr_assets,
     aws_efs as efs,
     aws_ec2 as ec2,
@@ -90,7 +89,7 @@ class NexusStack(Stack):
             "nexus/discord_webhook_url",
             "nexus/db_credentials",
         ]
-        secrets = {
+        {
             name: secretsmanager.Secret.from_secret_name_v2(
                 self, name.replace("/", "_").replace("-", "_"),
                 secret_name=name,

@@ -152,13 +152,13 @@ def main():
 
             mp3_path = _download_preview(result, tmpdir, canonical_name)
             if mp3_path is None:
-                print(f"    ⚠ Download failed — skipping")
+                print("    ⚠ Download failed — skipping")
                 continue
 
             wav_path = os.path.join(tmpdir, canonical_name)
             converted = _convert_to_wav(mp3_path, wav_path)
             if not converted:
-                print(f"    ⚠ Conversion failed — skipping")
+                print("    ⚠ Conversion failed — skipping")
                 continue
 
             uploaded = _upload_to_s3(wav_path, canonical_name, args.bucket, args.dry_run)

@@ -35,7 +35,7 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
             req = urllib.request.Request(url, data=data, headers=merged, method="POST")
             with urllib.request.urlopen(req, timeout=60) as resp:
                 return json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
+        except Exception:
             if attempt == retries - 1:
                 raise
             time.sleep(2 ** attempt)
@@ -106,7 +106,7 @@ def _bedrock_select_topic(niche: str, perplexity_context: str, model_id: str = "
             raw = json.loads(response["body"].read())["content"][0]["text"]
             raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
             return json.loads(raw)
-        except Exception as exc:
+        except Exception:
             if attempt == retries - 1:
                 raise
             time.sleep(2 ** attempt)
