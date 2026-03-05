@@ -32,7 +32,7 @@
     }
   },
   "visuals": {
-    "source_priority": ["pexels", "runway_generate"],
+    "source_priority": ["pexels"],
     "archive_org_enabled": false,
     "clip_score_threshold": 0.60,
     "avg_clip_duration_sec": 6.0,

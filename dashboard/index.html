@@ -174,11 +174,115 @@
     .badge-FAILED { background: #2a0a0a; color: var(--accent-ent); }
     .badge-TIMED_OUT { background: #2a1a0a; color: #ffa500; }
 
+    /* ── Resume ──────────────────────────────────────────────────── */
+    .resume-grid { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+    @media(max-width:600px) { .resume-grid { grid-template-columns: 1fr; } }
+    select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 14px;
+      outline: none;
+      appearance: none;
+      cursor: pointer;
+      transition: border-color .2s;
+    }
+    select:focus { border-color: #4A9EFF; }
+    .resume-btn {
+      width: 100%; padding: 14px; margin-top: 6px;
+      background: #1a4a8a; color: #fff; border: none;
+      border-radius: 6px; font-family: var(--mono); font-size: 14px;
+      font-weight: 700; letter-spacing: 2px; cursor: pointer;
+      text-transform: uppercase; transition: opacity .2s;
+      border: 1px solid #4A9EFF;
+    }
+    .resume-btn:hover { background: #1e5aa0; }
+    .resume-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .resume-action-btn {
+      padding: 3px 10px; font-size: 10px; font-family: var(--mono);
+      background: #0d1f3a; border: 1px solid #4A9EFF; color: #4A9EFF;
+      border-radius: 4px; cursor: pointer; letter-spacing: 1px;
+      white-space: nowrap; transition: background .2s;
+    }
+    .resume-action-btn:hover { background: #1a3a6a; }
+    .completed-steps-row {
+      display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;
+    }
+    .step-pill {
+      padding: 2px 10px; border-radius: 10px; font-size: 10px;
+      letter-spacing: 1px; text-transform: uppercase;
+    }
+    .step-pill.done { background: #0a2a1a; color: var(--accent-fin); border: 1px solid var(--accent-fin); }
+    .step-pill.target { background: #1a2a4a; color: #4A9EFF; border: 1px solid #4A9EFF; font-weight:700; }
+
     a { color: var(--accent-doc); text-decoration: none; }
     a:hover { text-decoration: underline; }
 
     .error-msg { color: var(--accent-ent); font-size: 12px; margin-top: 8px; }
     .success-msg { color: var(--accent-fin); font-size: 12px; margin-top: 8px; }
+
+    /* ── Download ──────────────────────────────────────────────── */
+    .dl-btn {
+      padding: 3px 10px; font-size: 10px; font-family: var(--mono);
+      background: #0d1f2a; border: 1px solid var(--accent-doc); color: var(--accent-doc);
+      border-radius: 4px; cursor: pointer; letter-spacing: 1px;
+      white-space: nowrap; transition: background .2s; margin-left: 6px;
+    }
+    .dl-btn:hover { background: #1a3040; }
+    .dl-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .dl-panel {
+      position: fixed; inset: 0; z-index: 1000;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,.75);
+    }
+    .dl-panel-box {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 28px 32px; width: 520px; max-width: 96vw;
+      max-height: 80vh; overflow-y: auto;
+    }
+    .dl-panel-title {
+      font-size: 13px; font-weight: 700; letter-spacing: 2px;
+      text-transform: uppercase; margin-bottom: 18px;
+      color: var(--accent-doc); display: flex; justify-content: space-between;
+      align-items: center;
+    }
+    .dl-panel-close {
+      background: none; border: none; color: var(--muted); font-size: 20px;
+      cursor: pointer; line-height: 1;
+    }
+    .dl-panel-close:hover { color: var(--text); }
+    .dl-file-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 0; border-bottom: 1px solid var(--border); gap: 10px;
+    }
+    .dl-file-row:last-child { border-bottom: none; }
+    .dl-file-label {
+      font-size: 11px; color: var(--text); flex: 1; word-break: break-all;
+    }
+    .dl-file-type {
+      font-size: 9px; padding: 2px 6px; border-radius: 3px; letter-spacing: 1px;
+      text-transform: uppercase; background: var(--surface2);
+      color: var(--muted); white-space: nowrap; flex-shrink: 0;
+    }
+    .dl-file-a {
+      padding: 4px 12px; font-size: 10px; font-family: var(--mono);
+      background: var(--accent-doc); color: #000; border-radius: 4px;
+      text-decoration: none; white-space: nowrap; flex-shrink: 0;
+      font-weight: 700; letter-spacing: 1px;
+    }
+    .dl-file-a:hover { opacity: .85; text-decoration: none; }
+    .dl-all-btn {
+      width: 100%; margin-top: 18px; padding: 11px;
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); border-radius: 6px; font-family: var(--mono);
+      font-size: 12px; cursor: pointer; letter-spacing: 1px; transition: border-color .2s;
+    }
+    .dl-all-btn:hover { border-color: var(--accent-doc); color: var(--accent-doc); }
+    .dl-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 20px 0; }
 
     /* ── Overall Progress Bar ──────────────────────────────────── */
     .progress-bar-container {
@@ -327,6 +431,15 @@ function App() {
   const [error, setError] = React.useState('');
   const [success, setSuccess] = React.useState('');
 
+  // Resume state
+  const [resumeRunId, setResumeRunId] = React.useState('');
+  const [resumeStep, setResumeStep] = React.useState('');   // '' = auto-detect
+  const [resumeLoading, setResumeLoading] = React.useState(false);
+  const [resumeError, setResumeError] = React.useState('');
+  const [resumeSuccess, setResumeSuccess] = React.useState('');
+  const [resumeCompletedSteps, setResumeCompletedSteps] = React.useState([]);
+  const [resumeDetectedStep, setResumeDetectedStep] = React.useState('');
+
   const [runId, setRunId] = React.useState('');
   const [status, setStatus] = React.useState(null);   // { status, current_step }
   const [outputs, setOutputs] = React.useState(null); // { urls }
@@ -349,6 +462,61 @@ function App() {
   const pollerRef = React.useRef(null);
   const sseRef = React.useRef(null);
   const logEndRef = React.useRef(null);
+
+  // Download panel
+  const [dlPanel, setDlPanel] = React.useState(null); // { run_id, files: [{label, url, type}] } | null
+  const [dlLoading, setDlLoading] = React.useState(''); // run_id being fetched
+
+  async function handleDownload(run_id) {
+    setDlLoading(run_id);
+    try {
+      const o = await apiGet(`/outputs/${run_id}`);
+      const urls = o?.urls || {};
+      const FILE_LABELS = {
+        [`${run_id}/review/final_video.mp4`]:       { label: 'Final Video',          type: 'MP4'  },
+        [`${run_id}/final_video.mp4`]:              { label: 'Final Video',          type: 'MP4'  },
+        [`${run_id}/audio/voiceover.mp3`]:          { label: 'Voiceover Audio',      type: 'MP3'  },
+        [`${run_id}/audio/background.mp3`]:         { label: 'Background Music',     type: 'MP3'  },
+        [`${run_id}/audio/sfx_mix.mp3`]:            { label: 'SFX Mix',              type: 'MP3'  },
+        [`${run_id}/script.json`]:                  { label: 'Script (JSON)',         type: 'JSON' },
+        [`${run_id}/research.json`]:                { label: 'Research Output',       type: 'JSON' },
+        [`${run_id}/review/thumbnail_0.jpg`]:       { label: 'Thumbnail 1',          type: 'JPG'  },
+        [`${run_id}/review/thumbnail_1.jpg`]:       { label: 'Thumbnail 2',          type: 'JPG'  },
+        [`${run_id}/review/thumbnail_2.jpg`]:       { label: 'Thumbnail 3',          type: 'JPG'  },
+        [`${run_id}/thumbnails/thumbnail_0.jpg`]:   { label: 'Thumbnail 1',          type: 'JPG'  },
+        [`${run_id}/thumbnails/thumbnail_1.jpg`]:   { label: 'Thumbnail 2',          type: 'JPG'  },
+        [`${run_id}/thumbnails/thumbnail_2.jpg`]:   { label: 'Thumbnail 3',          type: 'JPG'  },
+        [`${run_id}/visuals/visuals.mp4`]:          { label: 'Raw Visuals',          type: 'MP4'  },
+        [`${run_id}/visuals/visuals_eq.mp4`]:       { label: 'Color-Graded Visuals', type: 'MP4'  },
+      };
+      const files = Object.entries(urls)
+        .filter(([, url]) => !!url)
+        .map(([key, url]) => ({
+          label: FILE_LABELS[key]?.label || key.split('/').pop(),
+          type:  FILE_LABELS[key]?.type  || key.split('.').pop().toUpperCase(),
+          url,
+        }));
+      setDlPanel({ run_id, files });
+    } catch(e) {
+      alert('Could not fetch outputs: ' + String(e));
+    } finally {
+      setDlLoading('');
+    }
+  }
+
+  function downloadAll(files) {
+    files.forEach((f, i) => {
+      setTimeout(() => {
+        const a = document.createElement('a');
+        a.href = f.url;
+        a.download = f.label;
+        a.target = '_blank';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }, i * 350);
+    });
+  }
 
   const accentClass = profile === 'finance' ? 'fin' : profile === 'entertainment' ? 'ent' : '';
 
@@ -538,6 +706,7 @@ function App() {
   async function handleRun() {
     if (!niche.trim()) { setError('Enter a niche keyword'); return; }
     setError(''); setSuccess('');
+    setResumeRunId(''); setResumeStep(''); setResumeError(''); setResumeSuccess(''); setResumeCompletedSteps([]); setResumeDetectedStep('');
     setLoading(true);
     setStatus(null); setOutputs(null); setScript(null); setLogs([]);
     setProgressPct(0); setEtaRemaining(null); setPipelineElapsed(0);
@@ -559,6 +728,49 @@ function App() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleResume() {
+    if (!resumeRunId.trim()) { setResumeError('Enter a Run ID'); return; }
+    setResumeError(''); setResumeSuccess(''); setResumeCompletedSteps([]); setResumeDetectedStep('');
+    setResumeLoading(true);
+    setStatus(null); setOutputs(null); setScript(null); setLogs([]);
+    setProgressPct(0); setEtaRemaining(null); setPipelineElapsed(0);
+    setStepTimers({}); setPipelineStartTime(null);
+    try {
+      const body = {
+        run_id: resumeRunId.trim(),
+        dry_run: dryRun,
+      };
+      if (resumeStep) body.resume_from = resumeStep;
+      const res = await apiPost('/resume', body);
+      if (res.error) { setResumeError(res.error); return; }
+      setResumeCompletedSteps(res.completed_steps || []);
+      setResumeDetectedStep(res.resume_from || '');
+      setRunId(res.run_id);
+      const newEntry = {
+        run_id: res.run_id, niche: '', profile: '',
+        dry_run: dryRun, status: 'RUNNING', title: '',
+        start: new Date().toISOString(),
+        resume_of: resumeRunId.trim(),
+        resume_from: res.resume_from,
+      };
+      const updated = [newEntry, ...history].slice(0, 10);
+      setHistory(updated);
+      localStorage.setItem('nexus_history', JSON.stringify(updated));
+      setResumeSuccess(`Resumed from ${res.resume_from}. New run: ${res.run_id}`);
+    } catch(e) {
+      setResumeError(String(e));
+    } finally {
+      setResumeLoading(false);
+    }
+  }
+
+  function fillResume(h) {
+    setResumeRunId(h.resume_of || h.run_id);
+    setResumeStep('');
+    setResumeError(''); setResumeSuccess(''); setResumeCompletedSteps([]); setResumeDetectedStep('');
+    document.getElementById('resume-section')?.scrollIntoView({ behavior: 'smooth' });
   }
 
   // Update history entry when status changes
@@ -596,11 +808,43 @@ function App() {
     return '';
   }
 
-  const videoUrl = outputs?.urls?.[`${runId}/final_video.mp4`];
-  const thumbUrls = [0, 1, 2].map(i => outputs?.urls?.[`${runId}/thumbnails/thumbnail_${i}.jpg`]).filter(Boolean);
+  const videoUrl = outputs?.urls?.[`${runId}/review/final_video.mp4`]
+    || outputs?.urls?.[`${runId}/final_video.mp4`];
+  const thumbUrls = [0, 1, 2].map(i =>
+    outputs?.urls?.[`${runId}/review/thumbnail_${i}.jpg`]
+    || outputs?.urls?.[`${runId}/thumbnails/thumbnail_${i}.jpg`]
+  ).filter(Boolean);
 
   return (
     <div>
+      {/* ── Download Panel ── */}
+      {dlPanel && (
+        <div className="dl-panel" onClick={() => setDlPanel(null)}>
+          <div className="dl-panel-box" onClick={e => e.stopPropagation()}>
+            <div className="dl-panel-title">
+              <span>📥 Downloads — <span style={{fontWeight:400,color:'var(--muted)'}}>{dlPanel.run_id.slice(0,8)}…</span></span>
+              <button className="dl-panel-close" onClick={() => setDlPanel(null)}>✕</button>
+            </div>
+            {dlPanel.files.length === 0
+              ? <div className="dl-empty">No output files available for this run.</div>
+              : <>
+                  {dlPanel.files.map((f, i) => (
+                    <div key={i} className="dl-file-row">
+                      <span className="dl-file-label">{f.label}</span>
+                      <span className="dl-file-type">{f.type}</span>
+                      <a className="dl-file-a" href={f.url} download={f.label} target="_blank" rel="noreferrer">
+                        ↓ Download
+                      </a>
+                    </div>
+                  ))}
+                  <button className="dl-all-btn" onClick={() => downloadAll(dlPanel.files)}>
+                    ↓ Download All ({dlPanel.files.length} files)
+                  </button>
+                </>
+            }
+          </div>
+        </div>
+      )}
       <header>
         <div className="logo">NEXUS<span> CLOUD</span></div>
         {IS_LOCAL && (
@@ -672,6 +916,57 @@ function App() {
             </button>
             {error && <div className="error-msg">⚠ {error}</div>}
             {success && <div className="success-msg">✔ {success}</div>}
+          </div>
+        </section>
+
+        {/* ── Resume Failed Run ── */}
+        <section id="resume-section">
+          <h2>↺ Resume Failed Run</h2>
+          <div className="card">
+            <div className="resume-grid">
+              <div className="field" style={{marginBottom:0}}>
+                <label>Run ID to Resume</label>
+                <input
+                  type="text"
+                  value={resumeRunId}
+                  onChange={e => { setResumeRunId(e.target.value); setResumeError(''); setResumeSuccess(''); setResumeCompletedSteps([]); setResumeDetectedStep(''); }}
+                  placeholder="e.g. e0e1d1ab-e575-4a95-8b72-babd36653832"
+                  onKeyDown={e => e.key === 'Enter' && handleResume()}
+                />
+              </div>
+              <div className="field" style={{marginBottom:0}}>
+                <label>Resume From Step</label>
+                <select value={resumeStep} onChange={e => setResumeStep(e.target.value)}>
+                  <option value="">Auto-detect</option>
+                  <option value="Research">Research</option>
+                  <option value="Script">Script</option>
+                  <option value="AudioVisuals">AudioVisuals</option>
+                  <option value="Editor">Editor</option>
+                  <option value="Thumbnail">Thumbnail</option>
+                  <option value="Notify">Notify</option>
+                </select>
+              </div>
+            </div>
+            {resumeCompletedSteps.length > 0 && (
+              <div className="completed-steps-row" style={{marginTop:12}}>
+                <span style={{fontSize:10,color:'var(--muted)',alignSelf:'center',marginRight:4}}>S3:</span>
+                {['Research','Script','AudioVisuals','Editor','Thumbnail','Notify'].map(s => (
+                  <span key={s} className={`step-pill ${resumeCompletedSteps.includes(s) ? 'done' : s === resumeDetectedStep ? 'target' : ''}`}
+                    style={{opacity: resumeCompletedSteps.includes(s) || s === resumeDetectedStep ? 1 : 0.3}}>
+                    {resumeCompletedSteps.includes(s) ? '✓ ' : s === resumeDetectedStep ? '▶ ' : ''}{s}
+                  </span>
+                ))}
+              </div>
+            )}
+            <button
+              className="resume-btn"
+              onClick={handleResume}
+              disabled={resumeLoading || !resumeRunId.trim()}
+            >
+              {resumeLoading ? '⏳  Checking S3...' : `↺  Resume${resumeDetectedStep ? ' from ' + resumeDetectedStep : ''}`}
+            </button>
+            {resumeError && <div className="error-msg">⚠ {resumeError}</div>}
+            {resumeSuccess && <div className="success-msg">✔ {resumeSuccess}</div>}
           </div>
         </section>
 
@@ -862,7 +1157,17 @@ function App() {
         {/* ── Outputs ── */}
         {outputs && (
           <section>
-            <h2>Outputs</h2>
+            <h2 style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+              <span>Outputs</span>
+              <button
+                className="dl-btn"
+                style={{fontSize:11,padding:'4px 14px'}}
+                disabled={dlLoading === runId}
+                onClick={() => handleDownload(runId)}
+              >
+                {dlLoading === runId ? '⏳ Loading...' : '📥 Download All Outputs'}
+              </button>
+            </h2>
             <div className="output-grid">
               {/* Video */}
               <div>
@@ -947,18 +1252,24 @@ function App() {
                     <th>Profile</th>
                     <th>Status</th>
                     <th>Started</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {history.map(h => (
                     <tr key={h.run_id} style={{cursor:'pointer'}}
-                      onClick={() => setRunId(h.run_id)}>
+                      onClick={() => setRunId(h.resume_of || h.run_id)}>
                       <td>
                         <code style={{fontSize:10}}>{h.run_id.slice(0,8)}…</code>
                         {h.dry_run && <span style={{marginLeft:6,fontSize:10,color:'var(--muted)'}}>[dry]</span>}
+                        {h.resume_of && (
+                          <span style={{marginLeft:6,fontSize:10,color:'#4A9EFF',opacity:.8}}>
+                            ↺{h.resume_from ? ' '+h.resume_from : ''}
+                          </span>
+                        )}
                       </td>
-                      <td>{h.niche}</td>
-                      <td>{h.profile}</td>
+                      <td>{h.niche || <span style={{color:'var(--muted)'}}>—</span>}</td>
+                      <td>{h.profile || <span style={{color:'var(--muted)'}}>—</span>}</td>
                       <td>
                         <span className={`status-badge badge-${h.status || 'RUNNING'}`}>
                           {h.status || 'RUNNING'}
@@ -966,6 +1277,23 @@ function App() {
                       </td>
                       <td style={{color:'var(--muted)'}}>
                         {h.start ? new Date(h.start).toLocaleString() : '—'}
+                      </td>
+                      <td onClick={e => e.stopPropagation()}>
+                        <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                          {(h.status === 'FAILED' || h.status === 'TIMED_OUT') && (
+                            <button className="resume-action-btn" onClick={() => fillResume(h)}>
+                              ↺ Resume
+                            </button>
+                          )}
+                          <button
+                            className="dl-btn"
+                            disabled={dlLoading === h.run_id}
+                            onClick={() => handleDownload(h.run_id)}
+                            title="Download all outputs for this run"
+                          >
+                            {dlLoading === h.run_id ? '⏳' : '📥 Download'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

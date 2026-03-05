@@ -28,5 +28,9 @@ COPY lambdas/nexus-visuals/handler.py ${LAMBDA_TASK_ROOT}/handler.py
 
 ENV TMPDIR=/mnt/scratch
 
-CMD ["handler.lambda_handler"]
+# Override the Lambda RIC entrypoint — run as a standalone Python script.
+# Step Functions passes inputs via ECS ContainerOverrides environment variables;
+# lambda_handler() already reads them with os.environ fallbacks.
+ENTRYPOINT ["python"]
+CMD ["/var/task/handler.py"]
 

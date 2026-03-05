@@ -58,10 +58,25 @@ if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
     exit 1
 fi
 
+# Validate other required API keys
+MISSING_KEYS=()
+[ -z "${PERPLEXITY_API_KEY:-}"  ] && MISSING_KEYS+=("PERPLEXITY_API_KEY")
+[ -z "${ELEVENLABS_API_KEY:-}"  ] && MISSING_KEYS+=("ELEVENLABS_API_KEY")
+[ -z "${PEXELS_API_KEY:-}"      ] && MISSING_KEYS+=("PEXELS_API_KEY")
+[ -z "${PIXABAY_API_KEY:-}"     ] && MISSING_KEYS+=("PIXABAY_API_KEY")
+[ -z "${FREESOUND_API_KEY:-}"   ] && MISSING_KEYS+=("FREESOUND_API_KEY")
+[ -z "${DISCORD_WEBHOOK_URL:-}" ] && MISSING_KEYS+=("DISCORD_WEBHOOK_URL")
+if [ ${#MISSING_KEYS[@]} -gt 0 ]; then
+    err "Missing required keys in .env:"
+    for k in "${MISSING_KEYS[@]}"; do err "  • $k"; done
+    exit 1
+fi
+
 export AWS_ACCESS_KEY_ID
 export AWS_SECRET_ACCESS_KEY
 export AWS_DEFAULT_REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${AWS_REGION:-us-east-1}"
+export JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1
 
 # Verify credentials work
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
@@ -101,6 +116,29 @@ AWS_REGION="$AWS_REGION" \
 docker compose -f "$PROJECT_DIR/docker-compose.yml" up setup-aws --build
 ok "AWS resources bootstrapped"
 
+# ──────────────────────────────────────────────────────────────
+# 2b. Connection tests — verify all services before building
+# ──────────────────────────────────────────────────────────────
+
+log "Running connection tests (AWS, external APIs, PostgreSQL)..."
+if AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+   AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+   AWS_REGION="$AWS_REGION" \
+   docker compose -f "$PROJECT_DIR/docker-compose.yml" run --rm --build test-connections; then
+    ok "All connection tests passed!"
+else
+    CONN_EXIT=$?
+    warn "Some connection tests failed (exit $CONN_EXIT). Review the output above."
+    warn "Bedrock failures are expected if models are not yet enabled in AWS Console."
+    echo ""
+    read -rp "$(echo -e "${YELLOW}Continue deployment anyway? [y/N]:${NC} ")" CONTINUE_DEPLOY
+    if [[ ! "$CONTINUE_DEPLOY" =~ ^[Yy]$ ]]; then
+        err "Deployment aborted. Fix the failing connections and re-run."
+        exit 1
+    fi
+    warn "Continuing deployment despite connection failures..."
+fi
+
 # Re-source .env — setup_aws.py writes back MEDIACONVERT_ROLE_ARN, bucket names, etc.
 set -a
 while IFS= read -r line || [ -n "$line" ]; do
@@ -122,15 +160,15 @@ log "Building Lambda layers..."
 LAYER_BUILD_IMAGE="python:3.12-slim"
 
 # --- API Layer ---
-log "Building API layer (requests, boto3, psycopg2, python-dotenv)..."
+log "Building API layer (requests, boto3, psycopg2, python-dotenv, Pillow)..."
 rm -rf "$LAYERS_DIR/api"
 mkdir -p "$LAYERS_DIR/api/python"
 API_CID=$(docker create --platform linux/arm64 "$LAYER_BUILD_IMAGE" \
-    bash -c "mkdir /out && pip install --no-cache-dir requests boto3 psycopg2-binary python-dotenv json-repair -t /out && rm -rf /out/*.dist-info /out/__pycache__")
+    bash -c "mkdir /out && pip install --no-cache-dir requests boto3 psycopg2-binary python-dotenv json-repair Pillow -t /out && rm -rf /out/*.dist-info /out/__pycache__")
 docker start -a "$API_CID"
 docker cp "$API_CID":/out/. "$LAYERS_DIR/api/python/"
 docker rm "$API_CID" >/dev/null
-ok "API layer built"
+ok "API layer built (includes Pillow)"
 
 # --- FFmpeg Layer ---
 log "Building FFmpeg layer (static arm64 binaries)..."
@@ -140,8 +178,10 @@ FFMPEG_CID=$(docker create --platform linux/arm64 debian:bookworm-slim \
     bash -c "
         apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates &&
         mkdir /out &&
-        curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz \
-        | tar -xJ --strip-components=1 -C /out --wildcards '*/ffmpeg' '*/ffprobe' &&
+        curl -L --retry 5 --retry-delay 10 --retry-all-errors \
+            -o /tmp/ffmpeg.tar.xz \
+            https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz &&
+        tar -xJf /tmp/ffmpeg.tar.xz --strip-components=1 -C /out --wildcards '*/ffmpeg' '*/ffprobe' &&
         chmod +x /out/ffmpeg /out/ffprobe &&
         /out/ffmpeg -version
     ")
@@ -203,6 +243,28 @@ ok "CDK bootstrapped"
 # ──────────────────────────────────────────────────────────────
 # 7. Deploy the CDK stack
 # ──────────────────────────────────────────────────────────────
+
+# Auto-delete stack if it's stuck in ROLLBACK_COMPLETE
+STACK_STATUS=$(AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+    AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+    AWS_DEFAULT_REGION="$AWS_REGION" \
+    aws cloudformation describe-stacks \
+        --stack-name NexusCloud \
+        --region "$AWS_REGION" \
+        --query 'Stacks[0].StackStatus' \
+        --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
+    warn "Stack NexusCloud is in ROLLBACK_COMPLETE — deleting before redeploy..."
+    AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+    AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+    AWS_DEFAULT_REGION="$AWS_REGION" \
+    aws cloudformation delete-stack --stack-name NexusCloud --region "$AWS_REGION"
+    AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+    AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+    AWS_DEFAULT_REGION="$AWS_REGION" \
+    aws cloudformation wait stack-delete-complete --stack-name NexusCloud --region "$AWS_REGION"
+    ok "Stack deleted — redeploying cleanly"
+fi
 
 log "Deploying NexusCloud stack..."
 cd "$INFRA_DIR"
@@ -267,8 +329,37 @@ fi
 # ──────────────────────────────────────────────────────────────
 
 log "Uploading profiles to S3..."
-aws s3 cp "$PROJECT_DIR/profiles/" "s3://$CONFIG_BUCKET/" --recursive --content-type "application/json"
+AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+AWS_DEFAULT_REGION="$AWS_REGION" \
+aws s3 cp "$PROJECT_DIR/profiles/" "s3://$CONFIG_BUCKET/" --recursive --content-type "application/json" --region "$AWS_REGION"
 ok "Profiles uploaded to s3://$CONFIG_BUCKET/"
+
+# ──────────────────────────────────────────────────────────────
+# 9b. Generate & upload LUT files
+# ──────────────────────────────────────────────────────────────
+
+log "Generating and uploading LUT files..."
+if python3 "$PROJECT_DIR/scripts/setup_luts.py" \
+    --upload-to-s3 \
+    --bucket "${ASSETS_BUCKET:-nexus-assets-$AWS_ACCOUNT_ID}"; then
+    ok "LUTs uploaded to s3://${ASSETS_BUCKET}/luts/"
+else
+    warn "setup_luts.py failed — color grading will use fallback palette"
+fi
+
+# ──────────────────────────────────────────────────────────────
+# 9c. Download & upload SFX files
+# ──────────────────────────────────────────────────────────────
+
+log "Downloading and uploading SFX files..."
+if FREESOUND_API_KEY="${FREESOUND_API_KEY}" \
+   python3 "$PROJECT_DIR/scripts/upload_sfx.py" \
+    --bucket "${ASSETS_BUCKET:-nexus-assets-$AWS_ACCOUNT_ID}"; then
+    ok "SFX uploaded to s3://${ASSETS_BUCKET}/sfx/"
+else
+    warn "upload_sfx.py failed — sound effects will be skipped at runtime"
+fi
 
 # ──────────────────────────────────────────────────────────────
 # 10. Upload dashboard with API URL injected
@@ -280,7 +371,10 @@ DASHBOARD_TMP=$(mktemp)
 # Remove trailing slash from API_URL if present for clean URLs
 API_URL_CLEAN="${API_URL%/}"
 sed "s|%%NEXUS_API_BASE%%|${API_URL_CLEAN}|g" "$PROJECT_DIR/dashboard/index.html" > "$DASHBOARD_TMP"
-aws s3 cp "$DASHBOARD_TMP" "s3://$DASHBOARD_BUCKET/index.html" --content-type "text/html"
+AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+AWS_DEFAULT_REGION="$AWS_REGION" \
+aws s3 cp "$DASHBOARD_TMP" "s3://$DASHBOARD_BUCKET/index.html" --content-type "text/html" --region "$AWS_REGION"
 rm -f "$DASHBOARD_TMP"
 ok "Dashboard uploaded to s3://$DASHBOARD_BUCKET/"
 
@@ -291,6 +385,7 @@ ok "Dashboard uploaded to s3://$DASHBOARD_BUCKET/"
 log "Updating .env with deployment outputs..."
 sed -i.bak "s|^STATE_MACHINE_ARN=.*|STATE_MACHINE_ARN=$STATE_MACHINE_ARN|" "$PROJECT_DIR/.env"
 sed -i.bak "s|^AWS_ACCOUNT_ID=.*|AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID|" "$PROJECT_DIR/.env"
+sed -i.bak "s|^ASSETS_BUCKET=.*|ASSETS_BUCKET=${ASSETS_BUCKET:-nexus-assets-$AWS_ACCOUNT_ID}|" "$PROJECT_DIR/.env"
 rm -f "$PROJECT_DIR/.env.bak"
 ok ".env updated"
 

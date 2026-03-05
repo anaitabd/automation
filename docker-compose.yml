@@ -180,12 +180,14 @@ services:
       context: .
       dockerfile: Dockerfile.setup
     env_file: .env
+    environment:
+      RUN_AWS_TESTS: "1"
     entrypoint: ["python", "/app/scripts/test_connections.py"]
     depends_on:
       postgres:
         condition: service_healthy
-    profiles:
-      - test
+      setup-aws:
+        condition: service_completed_successfully
 
   orchestrator:
     build:

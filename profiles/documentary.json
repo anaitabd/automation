@@ -8,15 +8,15 @@
     "script_passes": ["structure", "depth", "hook_polish", "fact_integrity", "pacing"]
   },
   "voice": {
-    "model_id": "eleven_turbo_v2_5",
+    "model_id": "eleven_multilingual_v2",
     "voice_id": "21m00Tcm4TlvDq8ikWAM",
-    "stability": 0.42,
+    "stability": 0.45,
     "similarity_boost": 0.80,
-    "style": 0.72,
+    "style": 0.68,
     "emotion_mapping": {
-      "tense": {"stability": 0.30, "style": 0.85},
-      "dramatic": {"stability": 0.28, "style": 0.92},
-      "somber": {"stability": 0.55, "style": 0.60}
+      "tense": {"stability": 0.32, "style": 0.80},
+      "dramatic": {"stability": 0.30, "style": 0.88},
+      "somber": {"stability": 0.55, "style": 0.55}
     }
   },
   "sound_design": {
@@ -32,11 +32,11 @@
     }
   },
   "visuals": {
-    "source_priority": ["pexels", "archive_org", "runway_generate"],
+    "source_priority": ["pexels", "archive_org"],
     "archive_org_enabled": true,
-    "clip_score_threshold": 0.65,
-    "avg_clip_duration_sec": 10.0,
-    "clips_per_section": 3,
+    "clip_score_threshold": 0.52,
+    "avg_clip_duration_sec": 12.0,
+    "clips_per_section": 5,
     "color_grade_default": "cinematic_warm",
     "lut_file": "luts/cinematic_teal_orange.cube",
     "vignette_strength": 0.35,

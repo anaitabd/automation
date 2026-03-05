@@ -44,9 +44,9 @@ def _find_bin(name: str) -> str:
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN") or _find_bin("ffmpeg")
 FFPROBE_BIN = os.environ.get("FFPROBE_BIN") or _find_bin("ffprobe")
 
-# ── Default font for drawtext ──
+# ── Font discovery (used by Pillow renderer) ──
 def _find_font(name: str) -> str:
-    """Search common font directories for a font file."""
+    """Search common font directories for a TTF font file."""
     candidates = [
         f"/usr/share/fonts/dejavu-sans-fonts/{name}",
         f"/usr/share/fonts/dejavu/{name}",
@@ -60,6 +60,58 @@ def _find_font(name: str) -> str:
 
 DRAWTEXT_FONT = _find_font("DejaVuSans-Bold.ttf")
 DRAWTEXT_FONT_LIGHT = _find_font("DejaVuSans.ttf")
+
+
+# ── PIL helpers ──────────────────────────────────────────────────────────────
+
+def _hex_to_rgba(color: str, alpha: int = 255) -> tuple:
+    """Convert '#RRGGBB' or '0xRRGGBB' to an (R, G, B, A) tuple."""
+    color = color.strip()
+    if color.startswith("#"):
+        color = color[1:]
+    elif color.lower().startswith("0x"):
+        color = color[2:]
+    r = int(color[0:2], 16)
+    g = int(color[2:4], 16)
+    b = int(color[4:6], 16)
+    return (r, g, b, alpha)
+
+
+def _pil_load_font(font_path: str, size: int):
+    """Load a PIL ImageFont, falling back to the built-in default if unavailable."""
+    try:
+        from PIL import ImageFont
+        if font_path and os.path.isfile(font_path):
+            return ImageFont.truetype(font_path, size)
+    except Exception:
+        pass
+    try:
+        from PIL import ImageFont
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _pil_wrap_text(draw, text: str, font, max_width: int) -> list:
+    """Word-wrap *text* into lines that fit within *max_width* pixels."""
+    words = text.split()
+    lines = []
+    current: list = []
+    for word in words:
+        test = " ".join(current + [word])
+        try:
+            bbox = draw.textbbox((0, 0), test, font=font)
+            w = bbox[2] - bbox[0]
+        except Exception:
+            w = len(test) * (font.size if hasattr(font, 'size') else 10)
+        if w <= max_width or not current:
+            current.append(word)
+        else:
+            lines.append(" ".join(current))
+            current = [word]
+    if current:
+        lines.append(" ".join(current))
+    return lines
 
 
 def _hex_to_0x(color: str) -> str:
@@ -77,15 +129,16 @@ def _escape_drawtext_content(text: str) -> str:
     Filter-graph-level delimiters (;  [ ] = { } #) are NOT escaped here
     because the filter parser never sees textfile content.
     """
-    text = text.replace("\\", "\\\\")            # backslash  (must be first)
-    text = text.replace(":", "\\:")               # colon  (drawtext key separator)
-    # --- quote handling ------------------------------------------------
-    text = text.replace("'", "\u2019")            # ASCII apostrophe
-    text = text.replace("\u2018", "\u2019")        # LEFT  single curly quote
-    text = text.replace('"', "\u201C")             # ASCII double quote
-    text = text.replace("\u201D", "\u201C")        # RIGHT double curly quote
-    # --- end quote handling -------------------------------------------
-    text = text.replace("%", "%%")                # percent (strftime expansion)
+    # Normalize Unicode quotes to ASCII first so downstream escaping is uniform
+    text = text.replace("\u2018", "'")             # LEFT  single curly quote
+    text = text.replace("\u2019", "'")             # RIGHT single curly quote
+    text = text.replace("\u201C", '"')             # LEFT  double curly quote
+    text = text.replace("\u201D", '"')             # RIGHT double curly quote
+    text = text.replace("\u2014", "-")             # em dash
+    text = text.replace("\u2013", "-")             # en dash
+    text = text.replace("\\", "\\\\")             # backslash  (must be first)
+    text = text.replace(":", "\\:")                # colon  (drawtext key separator)
+    text = text.replace("%", "%%")                 # percent (strftime expansion)
     text = text.replace("\n", " ")
     text = text.replace("\r", "")
     if len(text) > 120:
@@ -96,12 +149,16 @@ def _escape_drawtext_content(text: str) -> str:
 def _escape_drawtext(text: str) -> str:
     """Escape text for use inside an inline ffmpeg drawtext  text='…'  value.
 
-    This applies drawtext-content escaping *plus* filter-graph-level escaping
-    for characters that the filter parser would otherwise interpret as
-    delimiters (; [ ] = { } #).  Use this only for inline text='…' values;
-    prefer _escape_drawtext_content + textfile= for robustness.
+    Normalises Unicode punctuation to ASCII, then escapes all characters that
+    would confuse either the drawtext option parser or the outer filter-graph
+    parser.  The caller wraps the result in  text='…'  single quotes, so a
+    literal apostrophe must be written as \\' (backslash + single quote).
     """
     text = _escape_drawtext_content(text)
+    # Escape single quotes for inline text='...' — must come before other
+    # filter-graph escapes so the backslash isn't double-escaped.
+    text = text.replace("'", "\\'")               # apostrophe ends text='...'
+    text = text.replace('"', '\\"')               # double quote (safety)
     # Additional filter-parser-level escapes (not needed for textfile=)
     text = text.replace(";", "\\;")               # semicolon (filter separator)
     text = text.replace("[", "\\[")               # bracket
@@ -151,63 +208,84 @@ def _get_duration(path: str) -> float:
     return 5.0
 
 
+def _write_textfile(text: str, path: str) -> str:
+    """Write text to a file (kept for compatibility). Returns the path."""
+    content = text.replace("\\", "\\\\").replace(":", "\\:").replace("%", "%%")
+    content = content.replace("\n", " ").replace("\r", "")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
+
+
 def _build_intro_slate(
     channel_name: str,
     video_title: str,
     tmpdir: str,
     accent_color: str = "#C8A96E",
 ) -> str:
-    out = os.path.join(tmpdir, "intro_slate.mp4")
-    accent_color = _hex_to_0x(accent_color)
-    title_escaped = _escape_drawtext(video_title)
-    channel_escaped = _escape_drawtext(channel_name)
-    # Font file argument — fallback to fontsize-only if font doesn't exist
-    font_arg = f":fontfile={DRAWTEXT_FONT}" if os.path.isfile(DRAWTEXT_FONT) else ""
-    font_arg_light = f":fontfile={DRAWTEXT_FONT_LIGHT}" if os.path.isfile(DRAWTEXT_FONT_LIGHT) else ""
+    """Render a 6-second intro slate using Pillow (no drawtext / libfreetype needed)."""
+    from PIL import Image, ImageDraw
 
+    W, H = 1920, 1080
+    ar, ag, ab, _ = _hex_to_rgba(accent_color)
+    accent_rgba = (ar, ag, ab, 255)
+
+    img = Image.new("RGB", (W, H), (0, 0, 0))
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Bottom-third accent gradient (fades from transparent to accent@~10%)
+    for row in range(360):
+        alpha = int(25 * (row / 360))
+        draw.line([(0, H - 360 + row), (W, H - 360 + row)], fill=(ar, ag, ab, alpha))
+
+    # Letterbox bars
+    draw.rectangle([(0, 0), (W, 80)], fill=(0, 0, 0, 230))
+    draw.rectangle([(0, H - 80), (W, H)], fill=(0, 0, 0, 230))
+
+    # Channel name — centered at y ≈ H/2 - 120
+    font_ch = _pil_load_font(DRAWTEXT_FONT, 52)
+    try:
+        bbox_ch = draw.textbbox((0, 0), channel_name, font=font_ch)
+        tw = bbox_ch[2] - bbox_ch[0]
+    except Exception:
+        tw = len(channel_name) * 30
+    draw.text(((W - tw) // 2, H // 2 - 120), channel_name, font=font_ch, fill=accent_rgba)
+
+    # Decorative accent line
+    lx = (W - 400) // 2
+    draw.rectangle([(lx, 462), (lx + 400, 464)], fill=(ar, ag, ab, 200))
+
+    # Title — centered at y ≈ H/2 + 20, word-wrapped
+    font_ti = _pil_load_font(DRAWTEXT_FONT_LIGHT, 38)
+    lines = _pil_wrap_text(draw, video_title, font_ti, 1400)
+    y_title = H // 2 + 20
+    for line in lines[:4]:
+        try:
+            bbox_t = draw.textbbox((0, 0), line, font=font_ti)
+            lw = bbox_t[2] - bbox_t[0]
+        except Exception:
+            lw = len(line) * 22
+        draw.text(((W - lw) // 2, y_title), line, font=font_ti, fill=(255, 255, 255, 255))
+        y_title += 52
+
+    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    png_path = os.path.join(tmpdir, "intro_slate.png")
+    img.save(png_path)
+
+    out = os.path.join(tmpdir, "intro_slate.mp4")
     cmd = [
         FFMPEG_BIN, "-y",
-        "-f", "lavfi",
-        "-i", "color=c=black:size=1920x1080:duration=6:rate=30",
-        "-f", "lavfi",
-        "-i", f"color=c={accent_color}@0.15:size=1920x4:duration=6:rate=30",
-        "-filter_complex", (
-            # Gradient line overlay at bottom third
-            "[1:v]scale=1920:360[grad];"
-            "[0:v][grad]overlay=0:H-360:format=auto[base];"
-            # Cinematic letterbox bars
-            "[base]drawbox=y=0:w=iw:h=80:color=black@0.9:t=fill,"
-            "drawbox=y=ih-80:w=iw:h=80:color=black@0.9:t=fill,"
-            # Subtle vignette
-            "vignette=angle=PI/3:mode=backward,"
-            # Channel name — fade in from top
-            f"drawtext=text='{channel_escaped}'"
-            f"{font_arg}"
-            f":fontcolor={accent_color}:fontsize=52:x=(w-text_w)/2"
-            f":y='if(lt(t\\,0.8)\\,h/2-120+40*(0.8-t)\\,h/2-120)'"
-            f":alpha='if(lt(t\\,0.3)\\,0\\,if(lt(t\\,1.0)\\,(t-0.3)/0.7\\,if(lt(t\\,5.0)\\,1\\,(6.0-t))))',"
-            # Decorative accent line under channel name
-            f"drawbox=x=(1920-400)/2:y=462:w=400:h=2:color={accent_color}@0.8:t=fill,"
-            # Video title — fade in slightly after channel name
-            f"drawtext=text='{title_escaped}'"
-            f"{font_arg_light}"
-            f":fontcolor=white:fontsize=38:x=(w-text_w)/2"
-            f":y='if(lt(t\\,1.2)\\,h/2+20+30*(1.2-t)\\,h/2+20)'"
-            f":alpha='if(lt(t\\,0.8)\\,0\\,if(lt(t\\,1.5)\\,(t-0.8)/0.7\\,if(lt(t\\,5.0)\\,1\\,(6.0-t))))'"
-            # Global fade-in / fade-out
-            ",fade=t=in:st=0:d=0.5,fade=t=out:st=5.5:d=0.5[out]"
-        ),
-        "-map", "[out]",
+        "-loop", "1", "-i", png_path,
+        "-vf", "fade=t=in:st=0:d=0.5,fade=t=out:st=5.5:d=0.5",
         "-c:v", "libx264", "-preset", "medium", "-crf", "16",
-        "-pix_fmt", "yuv420p",
-        "-t", "6", out,
+        "-pix_fmt", "yuv420p", "-t", "6", out,
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as exc:
         stderr_msg = exc.stderr.decode("utf-8", errors="replace")[-1500:] if exc.stderr else "no stderr"
         log.error("Intro slate FFmpeg failed (exit %d):\n%s", exc.returncode, stderr_msg)
-        log.error("Intro slate cmd: %s", " ".join(cmd))
         raise
     return out
 
@@ -218,104 +296,139 @@ def _build_outro_slate(
     tmpdir: str,
     accent_color: str = "#C8A96E",
 ) -> str:
-    out = os.path.join(tmpdir, "outro_slate.mp4")
-    accent_color = _hex_to_0x(accent_color)
-    channel_escaped = _escape_drawtext(channel_name)
-    social_escaped = _escape_drawtext(social_handle)
-    thanks_escaped = _escape_drawtext("Thanks for watching")
-    subscribe_escaped = _escape_drawtext("SUBSCRIBE for more")
-    font_arg = f":fontfile={DRAWTEXT_FONT}" if os.path.isfile(DRAWTEXT_FONT) else ""
-    font_arg_light = f":fontfile={DRAWTEXT_FONT_LIGHT}" if os.path.isfile(DRAWTEXT_FONT_LIGHT) else ""
+    """Render a 10-second outro slate using Pillow (no drawtext / libfreetype needed)."""
+    from PIL import Image, ImageDraw
 
+    W, H = 1920, 1080
+    ar, ag, ab, _ = _hex_to_rgba(accent_color)
+    accent_rgba = (ar, ag, ab, 255)
+
+    img = Image.new("RGB", (W, H), (0, 0, 0))
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Letterbox bars
+    draw.rectangle([(0, 0), (W, 80)], fill=(0, 0, 0, 230))
+    draw.rectangle([(0, H - 80), (W, H)], fill=(0, 0, 0, 230))
+
+    font_bold = _pil_load_font(DRAWTEXT_FONT, 60)
+    font_bold_sm = _pil_load_font(DRAWTEXT_FONT, 44)
+    font_light = _pil_load_font(DRAWTEXT_FONT_LIGHT, 30)
+    font_cta = _pil_load_font(DRAWTEXT_FONT, 36)
+
+    def draw_centered(text, font, fill, y):
+        try:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw = bbox[2] - bbox[0]
+        except Exception:
+            tw = len(text) * 25
+        draw.text(((W - tw) // 2, y), text, font=font, fill=fill)
+
+    # "Thanks for watching"
+    draw_centered("Thanks for watching", font_bold, (255, 255, 255, 255), H // 2 - 140)
+
+    # Accent line
+    lx = (W - 500) // 2
+    draw.rectangle([(lx, H // 2 - 60), (lx + 500, H // 2 - 57)], fill=(ar, ag, ab, 204))
+
+    # Channel name
+    draw_centered(channel_name, font_bold_sm, accent_rgba, H // 2 - 40)
+
+    # Social handle
+    draw_centered(social_handle, font_light, (170, 170, 170, 255), H // 2 + 30)
+
+    # Subscribe CTA
+    draw_centered("SUBSCRIBE for more", font_cta, accent_rgba, H // 2 + 110)
+
+    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    png_path = os.path.join(tmpdir, "outro_slate.png")
+    img.save(png_path)
+
+    out = os.path.join(tmpdir, "outro_slate.mp4")
     cmd = [
         FFMPEG_BIN, "-y",
-        "-f", "lavfi",
-        "-i", "color=c=black:size=1920x1080:duration=10:rate=30",
-        "-vf", (
-            # Cinematic letterbox bars
-            "drawbox=y=0:w=iw:h=80:color=black@0.9:t=fill,"
-            "drawbox=y=ih-80:w=iw:h=80:color=black@0.9:t=fill,"
-            # Vignette
-            "vignette=angle=PI/3:mode=backward,"
-            # "Thanks for watching" — primary CTA
-            f"drawtext=text='{thanks_escaped}'"
-            f"{font_arg}"
-            f":fontcolor=white:fontsize=60:x=(w-text_w)/2"
-            f":y='if(lt(t\\,0.5)\\,h/2-140+40*(0.5-t)\\,h/2-140)'"
-            f":alpha='if(lt(t\\,0.3)\\,0\\,if(lt(t\\,1.0)\\,(t-0.3)/0.7\\,if(lt(t\\,8.5)\\,1\\,(10.0-t)/1.5)))',"
-            # Accent line
-            f"drawbox=x=(1920-500)/2:y=416:w=500:h=3:color={accent_color}@0.8:t=fill,"
-            # Channel name
-            f"drawtext=text='{channel_escaped}'"
-            f"{font_arg}"
-            f":fontcolor={accent_color}:fontsize=44:x=(w-text_w)/2"
-            f":y=h/2-40"
-            f":alpha='if(lt(t\\,0.8)\\,0\\,if(lt(t\\,1.5)\\,(t-0.8)/0.7\\,if(lt(t\\,8.5)\\,1\\,(10.0-t)/1.5)))',"
-            # Social handle
-            f"drawtext=text='{social_escaped}'"
-            f"{font_arg_light}"
-            f":fontcolor=0xAAAAAA:fontsize=30:x=(w-text_w)/2"
-            f":y=h/2+30"
-            f":alpha='if(lt(t\\,1.2)\\,0\\,if(lt(t\\,2.0)\\,(t-1.2)/0.8\\,if(lt(t\\,8.5)\\,1\\,(10.0-t)/1.5)))',"
-            # Subscribe CTA — pulsing accent color
-            f"drawtext=text='{subscribe_escaped}'"
-            f"{font_arg}"
-            f":fontcolor={accent_color}:fontsize=36:x=(w-text_w)/2"
-            f":y=h/2+110"
-            f":alpha='if(lt(t\\,2.0)\\,0\\,if(lt(t\\,2.8)\\,(t-2.0)/0.8\\,"
-            f"if(lt(t\\,8.5)\\,0.7+0.3*sin(t*3)\\,max(0\\,(10.0-t)/1.5))))'"
-            # Fade in/out
-            ",fade=t=in:st=0:d=0.8,fade=t=out:st=9.0:d=1.0"
-        ),
+        "-loop", "1", "-i", png_path,
+        "-vf", "fade=t=in:st=0:d=0.8,fade=t=out:st=9.0:d=1.0",
         "-c:v", "libx264", "-preset", "medium", "-crf", "16",
-        "-pix_fmt", "yuv420p",
-        "-t", "10", out,
+        "-pix_fmt", "yuv420p", "-t", "10", out,
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as exc:
         stderr_msg = exc.stderr.decode("utf-8", errors="replace")[-1500:] if exc.stderr else "no stderr"
         log.error("Outro slate FFmpeg failed (exit %d):\n%s", exc.returncode, stderr_msg)
-        log.error("Outro slate cmd: %s", " ".join(cmd))
         raise
     return out
 
 
-def _build_overlay_filter(overlay_type: str, overlay_text: str, accent_color: str) -> str:
-    accent_color = _hex_to_0x(accent_color)
+def _build_overlay_filter(overlay_type: str, overlay_text: str, accent_color: str,
+                          tmpdir: str = "/mnt/scratch") -> str:
+    """Render a text overlay PNG with Pillow and return an ffmpeg -vf filtergraph
+    string that composites it via the 'movie=' source filter (no libfreetype needed)."""
+    from PIL import Image, ImageDraw
+
+    ar, ag, ab, _ = _hex_to_rgba(accent_color)
+    W, H = 1920, 1080
 
     if overlay_type == "lower_third" and overlay_text:
-        text_esc = _escape_drawtext(overlay_text[:60])
-        font_arg = f":fontfile={DRAWTEXT_FONT}" if os.path.isfile(DRAWTEXT_FONT) else ""
-        return (
-            f"drawbox=y=ih-110:color=black@0.75:width=iw:height=110:t=fill,"
-            f"drawbox=y=ih-110:color={accent_color}@0.9:width=6:height=110:t=fill,"
-            f"drawtext=text='{text_esc}'{font_arg}:fontcolor=white:fontsize=36"
-            f":x=50:y=ih-82:shadowcolor=black@0.6:shadowx=2:shadowy=2"
-        )
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        # Black bar + accent stripe
+        draw.rectangle([(0, H - 110), (W, H)], fill=(0, 0, 0, 191))
+        draw.rectangle([(0, H - 110), (6, H)], fill=(ar, ag, ab, 229))
+        # Text
+        font = _pil_load_font(DRAWTEXT_FONT, 36)
+        draw.text((50, H - 82), overlay_text[:60], font=font, fill=(255, 255, 255, 255))
+        png_path = os.path.join(tmpdir, "ov_lower.png")
+        img.save(png_path)
+        return f"movie={png_path}:loop=0,setpts=PTS-STARTPTS[_ovrl];[in][_ovrl]overlay=0:0"
+
     elif overlay_type == "stat_counter" and overlay_text:
-        text_esc = _escape_drawtext(overlay_text[:45])
-        font_arg = f":fontfile={DRAWTEXT_FONT}" if os.path.isfile(DRAWTEXT_FONT) else ""
-        return (
-            f"drawbox=x=(iw-600)/2:y=(ih-120)/2:w=600:h=120:color=black@0.5:t=fill,"
-            f"drawtext=text='{text_esc}'{font_arg}:fontcolor=white:fontsize=80"
-            f":x=(w-text_w)/2:y=(h-text_h)/2"
-            f":shadowcolor=black@0.8:shadowx=4:shadowy=4"
-        )
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        # Semi-transparent bg box
+        bx, by, bw, bh = (W - 600) // 2, (H - 120) // 2, 600, 120
+        draw.rectangle([(bx, by), (bx + bw, by + bh)], fill=(0, 0, 0, 128))
+        # Big stat text — centered
+        font = _pil_load_font(DRAWTEXT_FONT, 80)
+        text = overlay_text[:45]
+        try:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th = len(text) * 48, 80
+        draw.text(((W - tw) // 2, (H - th) // 2), text, font=font, fill=(255, 255, 255, 255))
+        png_path = os.path.join(tmpdir, "ov_stat.png")
+        img.save(png_path)
+        return f"movie={png_path}:loop=0,setpts=PTS-STARTPTS[_ovrl];[in][_ovrl]overlay=0:0"
+
     elif overlay_type == "quote_card" and overlay_text:
-        text_esc = _escape_drawtext(overlay_text[:80])
-        font_arg_light = f":fontfile={DRAWTEXT_FONT_LIGHT}" if os.path.isfile(DRAWTEXT_FONT_LIGHT) else ""
-        return (
-            f"drawbox=x=(iw-900)/2:y=(ih-200)/2:width=900:height=200"
-            f":color=black@0.7:t=fill,"
-            f"drawbox=x=(iw-900)/2:y=(ih-200)/2:width=900:height=4"
-            f":color={accent_color}@0.8:t=fill,"
-            f"drawbox=x=(iw-900)/2:y=(ih+200)/2-4:width=900:height=4"
-            f":color={accent_color}@0.8:t=fill,"
-            f"drawtext=text='{text_esc}'{font_arg_light}:fontcolor=white:fontsize=32"
-            f":x=(w-text_w)/2:y=(h-text_h)/2"
-        )
-    return ""
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        bx, by, bw, bh = (W - 900) // 2, (H - 200) // 2, 900, 200
+        # Card bg
+        draw.rectangle([(bx, by), (bx + bw, by + bh)], fill=(0, 0, 0, 178))
+        # Top accent line
+        draw.rectangle([(bx, by), (bx + bw, by + 4)], fill=(ar, ag, ab, 204))
+        # Bottom accent line
+        draw.rectangle([(bx, by + bh - 4), (bx + bw, by + bh)], fill=(ar, ag, ab, 204))
+        # Quote text — centered, wrapped
+        font = _pil_load_font(DRAWTEXT_FONT_LIGHT, 32)
+        lines = _pil_wrap_text(draw, overlay_text[:120], font, bw - 60)
+        total_h = len(lines) * 42
+        y_txt = by + (bh - total_h) // 2
+        for line in lines:
+            try:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                lw = bbox[2] - bbox[0]
+            except Exception:
+                lw = len(line) * 20
+            draw.text(((W - lw) // 2, y_txt), line, font=font, fill=(255, 255, 255, 255))
+            y_txt += 42
+        png_path = os.path.join(tmpdir, "ov_quote.png")
+        img.save(png_path)
+        return f"movie={png_path}:loop=0,setpts=PTS-STARTPTS[_ovrl];[in][_ovrl]overlay=0:0"
+
 
 
 def _loop_clip_to_duration(clip_path: str, target_duration: float, tmpdir: str, idx: int) -> str:
@@ -681,7 +794,7 @@ def lambda_handler(event: dict, context) -> dict:
                 # Apply overlay if configured
                 if overlay_type != "none" and overlay_text:
                     overlay_filter = _build_overlay_filter(
-                        overlay_type, overlay_text, accent_color
+                        overlay_type, overlay_text, accent_color, tmpdir
                     )
                     if overlay_filter:
                         overlaid = os.path.join(
@@ -785,6 +898,33 @@ def lambda_handler(event: dict, context) -> dict:
 
             log.info("Final mux: merging video + audio")
             final_local = os.path.join(tmpdir, "final_video.mp4")
+
+            # Ensure the assembled video is at least as long as the audio track.
+            # If clips don't cover the full narration, loop the last clip to fill the gap.
+            audio_dur = _get_duration(audio_local)
+            video_dur_before_mux = _get_duration(assembled)
+            if audio_dur > video_dur_before_mux + 1.0 and clip_paths:
+                log.info(
+                    "Audio (%.1fs) longer than video (%.1fs) — extending visual track",
+                    audio_dur, video_dur_before_mux,
+                )
+                gap = audio_dur - video_dur_before_mux
+                extended = _loop_clip_to_duration(
+                    clip_paths[-1], _get_duration(clip_paths[-1]) + gap, tmpdir, 9999
+                )
+                final_concat = os.path.join(tmpdir, "final_extended_concat.txt")
+                with open(final_concat, "w") as f:
+                    f.write(f"file '{assembled}'\n")
+                    f.write(f"file '{extended}'\n")
+                assembled_extended = os.path.join(tmpdir, "assembled_extended.mp4")
+                subprocess.run(
+                    [FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
+                     "-i", final_concat, "-c", "copy", assembled_extended],
+                    check=True, capture_output=True,
+                )
+                assembled = assembled_extended
+                log.info("Extended assembled video to %.1fs", _get_duration(assembled))
+
             try:
                 subprocess.run(
                     [
@@ -798,7 +938,6 @@ def lambda_handler(event: dict, context) -> dict:
                         "-c:a", "aac", "-b:a", "192k",
                         "-map_metadata", "-1",
                         "-movflags", "+faststart",
-                        "-shortest",
                         final_local,
                     ],
                     check=True, capture_output=True,
@@ -856,3 +995,10 @@ def lambda_handler(event: dict, context) -> dict:
         log.error("Editor step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "editor", exc)
         raise
+
+
+if __name__ == "__main__":
+    import sys
+    result = lambda_handler({}, None)
+    print(json.dumps(result, default=str))
+    sys.exit(0)

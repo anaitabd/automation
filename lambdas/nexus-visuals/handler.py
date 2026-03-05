@@ -231,77 +231,6 @@ def _archive_org_best_mp4_url(identifier: str) -> str | None:
         return None
 
 
-_RUNWAY_BLANK_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg=="
-)
-_RUNWAY_API_BASE = os.environ.get("RUNWAY_API_BASE", "https://api.dev.runwayml.com/v1")
-_RUNWAY_VERSION = "2024-11-06"
-
-
-def _runway_generate(prompt: str, tmpdir: str, runway_key: str, clip_idx: int = 0) -> str | None:
-    headers = {
-        "Authorization": f"Bearer {runway_key}",
-        "Content-Type": "application/json",
-        "X-Runway-Version": _RUNWAY_VERSION,
-    }
-    body = json.dumps({
-        "promptImage": f"data:image/png;base64,{_RUNWAY_BLANK_PNG_B64}",
-        "promptText": prompt[:500],
-        "model": "gen3a_turbo",
-        "duration": 5,
-        "ratio": "1280:768",
-        "watermark": False,
-    }).encode()
-    try:
-        log.info("Runway: generating clip for prompt=%r", prompt[:80])
-        req = urllib.request.Request(
-            f"{_RUNWAY_API_BASE}/image_to_video",
-            data=body,
-            headers=headers,
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            task = json.loads(resp.read())
-        task_id = task.get("id")
-        if not task_id:
-            log.warning("Runway: no task ID in response: %s", task)
-            return None
-        poll_headers = {
-            "Authorization": f"Bearer {runway_key}",
-            "X-Runway-Version": _RUNWAY_VERSION,
-        }
-        for _ in range(60):
-            time.sleep(5)
-            status_req = urllib.request.Request(
-                f"{_RUNWAY_API_BASE}/tasks/{task_id}",
-                headers=poll_headers,
-            )
-            with urllib.request.urlopen(status_req, timeout=15) as resp:
-                status = json.loads(resp.read())
-            task_status = status.get("status")
-            if task_status == "SUCCEEDED":
-                outputs = status.get("output") or []
-                if not outputs:
-                    log.warning("Runway task %s succeeded but no output", task_id)
-                    return None
-                out_path = os.path.join(tmpdir, f"runway_{clip_idx}.mp4")
-                dl_req = urllib.request.Request(
-                    outputs[0], headers={"User-Agent": "NexusCloud/1.0"}
-                )
-                with urllib.request.urlopen(dl_req, timeout=120) as resp:
-                    with open(out_path, "wb") as f:
-                        f.write(resp.read())
-                log.info("Runway: clip saved to %s", out_path)
-                return out_path
-            if task_status in ("FAILED", "CANCELLED"):
-                log.warning("Runway task %s ended with status %s", task_id, task_status)
-                return None
-        log.warning("Runway task %s timed out after polling", task_id)
-    except Exception as exc:
-        log.warning("Runway generate error: %s", exc)
-    return None
-
-
 def _download_video(url: str, tmpdir: str, idx: int | str, pexels_key: str | None = None) -> str | None:
     headers = {"User-Agent": "NexusCloud/1.0", "Accept": "video/*"}
     netloc = urllib.parse.urlparse(url).netloc.lower()
@@ -553,7 +482,6 @@ def _source_and_process_section(
     s3,
     run_id: str,
     pexels_key: str,
-    runway_key: str | None = None,
 ) -> dict | None:
     visual_cue = section.get("visual_cue", {})
     queries = visual_cue.get("search_queries", [section.get("title", "nature landscape")])
@@ -605,16 +533,6 @@ def _source_and_process_section(
 
     # Take the top N clips over threshold
     selected = [clip for clip in scored if clip[0] >= threshold][:clips_needed]
-
-    if len(selected) < clips_needed and "runway_generate" in archive_enabled and runway_key:
-        still_needed = clips_needed - len(selected)
-        log.info("Section %d: %d clip(s) short — generating %d via Runway ML",
-                 section_idx, still_needed, still_needed)
-        query_for_runway = queries[0] if queries else "cinematic nature landscape"
-        for ri in range(still_needed):
-            runway_path = _runway_generate(query_for_runway, tmpdir, runway_key, clip_idx=ri)
-            if runway_path:
-                selected.append((threshold, runway_path))
 
     if not selected:
         return None
@@ -740,14 +658,6 @@ def lambda_handler(event: dict, context) -> dict:
 
         pexels_key = get_secret("nexus/pexels_api_key")["api_key"]
 
-        source_priority = profile.get("visuals", {}).get("source_priority", [])
-        runway_key: str | None = None
-        if "runway_generate" in source_priority:
-            try:
-                runway_key = get_secret("nexus/runway_api_key")["api_key"]
-            except Exception as exc:
-                log.warning("Runway API key not found — runway_generate disabled: %s", exc)
-
         color_grade_default = profile.get("visuals", {}).get("color_grade_default", "cinematic_warm")
 
         with tempfile.TemporaryDirectory(dir=SCRATCH_DIR if os.path.isdir(SCRATCH_DIR) else None) as tmpdir:
@@ -776,7 +686,6 @@ def lambda_handler(event: dict, context) -> dict:
                     s3=thread_s3,
                     run_id=run_id,
                     pexels_key=pexels_key,
-                    runway_key=runway_key,
                 )
                 elapsed = time.time() - section_start
                 log.info("Section %d/%d done in %.1fs (success=%s)",
@@ -851,3 +760,9 @@ def lambda_handler(event: dict, context) -> dict:
         log.error("Visuals step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "visuals", exc)
         raise
+
+if __name__ == "__main__":
+    import sys
+    result = lambda_handler({}, None)
+    print(json.dumps(result, default=str))
+    sys.exit(0)

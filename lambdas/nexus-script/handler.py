@@ -292,9 +292,9 @@ SCRIPT_JSON_SCHEMA = """{
   "hook_emotion": "tense|excited|curious|dramatic",
   "sections": [{
     "title": "string",
-    "content": "string with [PAUSE]/[BEAT]/[BREATH] markers. Use [NEEDS SOURCE] for unverifiable claims and [UNVERIFIED: claim] for uncertain facts. 6-10 substantial sentences per section.",
+    "content": "string — MINIMUM 150 words of narration per section. Use [PAUSE]/[BEAT]/[BREATH] markers for pacing. Use [NEEDS SOURCE] for unverifiable claims and [UNVERIFIED: claim] for uncertain facts. 6-10 substantial sentences per section (never bullet points).",
     "emotion": "neutral|tense|dramatic|somber|excited|confident",
-    "duration_estimate_sec": 0,
+    "duration_estimate_sec": 90,
     "source_notes": "brief note on factual basis for this section (e.g. 'well-documented historical event' or 'common knowledge' or 'requires verification')",
     "visual_cue": {
       "search_queries": ["5 specific, diverse stock footage search terms for rich B-roll"],
@@ -303,11 +303,11 @@ SCRIPT_JSON_SCHEMA = """{
       "transition_in": "crossfade|cut|zoom_punch|whip|dissolve|fade_black|wipeleft",
       "overlay_type": "none|lower_third|stat_counter|quote_card",
       "overlay_text": "max 60 chars",
-      "clips_needed": 2
+      "clips_needed": 4
     }
   }],
   "cta": "string",
-  "total_duration_estimate": 0,
+  "total_duration_estimate": 900,
   "mood": "string",
   "factual_confidence": "high|medium|low — overall assessment of factual reliability"
 }"""
@@ -383,14 +383,15 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"- Tone: {tone}\n"
         f"- Narrative style: {narrative}\n"
         f"- STRUCTURE: Create 8-14 richly detailed sections (NOT fewer)\n"
-        f"- Each section MUST contain 6-10 substantial sentences (NOT bullet points)\n"
+        f"- Each section MUST contain 150-250 words of narration (6-10 full sentences, NOT bullet points)\n"
         f"- Include [PAUSE], [BEAT], [BREATH] markers for natural pacing\n"
         f"- Use vivid but ACCURATE descriptions — paint scenes the viewer can see\n"
         f"- Build narrative tension across sections — each should flow into the next\n"
         f"- Include specific details that demonstrate depth (names, places, mechanisms)\n"
         f"- Write content that sounds authoritative and cinematic when read aloud by a narrator\n"
-        f"- Each section's duration_estimate_sec should be realistic (typically 40-120 seconds each)\n"
-        f"- The sum of all section durations should equal total_duration_estimate\n\n"
+        f"- duration_estimate_sec = round(word_count_in_this_section / 130 * 60). A 150-word section = 69s. NEVER output 0.\n"
+        f"- clips_needed = ceil(duration_estimate_sec / 20). A 90s section needs 4-5 clips.\n"
+        f"- total_duration_estimate = sum of all section duration_estimate_sec values\n\n"
 
         f"═══ CINEMATIC QUALITY GUIDELINES ═══\n"
         f"- Open with a cold open / dramatic hook — drop the viewer into the most compelling moment\n"
@@ -759,6 +760,7 @@ def lambda_handler(event: dict, context) -> dict:
                             "transition_in": "dissolve",
                             "overlay_type": "none",
                             "overlay_text": "",
+                            "clips_needed": 2,
                         },
                     }
                 ],
@@ -789,7 +791,20 @@ def lambda_handler(event: dict, context) -> dict:
 
             confidence = script.get("factual_confidence", "unknown")
             log.info("Script complete — factual_confidence=%s", confidence)
-
+        # ── Ensure duration fields are always populated ──────────────────────
+        # If the LLM failed to calculate durations, derive them from word counts.
+        sections = script.get("sections", [])
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            if not section.get("duration_estimate_sec"):
+                words = len(section.get("content", "").split())
+                section["duration_estimate_sec"] = max(30, int(words / 130 * 60))
+        total_dur = script.get("total_duration_estimate") or 0
+        if not total_dur:
+            total_dur = sum(float(s.get("duration_estimate_sec", 0) if isinstance(s, dict) else 0) for s in sections)
+        script["total_duration_estimate"] = int(total_dur)
+        log.info("Duration: %d sections, total_duration_estimate=%ds", len(sections), int(total_dur))
         script["run_id"] = run_id
         log.info("Saving script to S3")
         s3_key = _save_to_s3(run_id, script)

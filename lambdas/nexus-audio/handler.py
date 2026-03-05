@@ -26,7 +26,7 @@ def get_secret(name: str) -> dict:
 S3_ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
-ELEVENLABS_MODEL = "eleven_turbo_v2_5"
+ELEVENLABS_MODEL = "eleven_multilingual_v2"
 
 PACING_MAP = {
     "[PAUSE]": "...",
@@ -199,14 +199,7 @@ def _generate_voiceover(script: dict, profile: dict, api_key: str, tmpdir: str) 
             sent = sent.strip()
             if not sent:
                 continue
-            comma_parts = sent.split(", ")
-            for i, cp in enumerate(comma_parts):
-                cp = cp.strip()
-                if not cp:
-                    continue
-                is_last = (i == len(comma_parts) - 1)
-                silence_label = "600ms" if is_last else "300ms"
-                sentences.append((cp, default_emotion, silence_label))
+            sentences.append((sent, default_emotion, "600ms"))
 
     TTS_WORKERS = int(os.environ.get("TTS_PARALLELISM", "5"))
 
@@ -258,9 +251,9 @@ def _apply_audio_processing(
     if profile_name == "documentary":
         af = (
             "equalizer=f=200:width_type=o:width=2:g=3,"
+            "equalizer=f=3000:width_type=o:width=2:g=1.5,"
             "equalizer=f=8000:width_type=o:width=2:g=-2,"
-            "aecho=0.8:0.88:60:0.4,"
-            "acompressor=threshold=-18dB:ratio=3:attack=5:release=50,"
+            "acompressor=threshold=-18dB:ratio=3:attack=5:release=80,"
             "loudnorm=I=-16:TP=-1.5:LRA=11"
         )
     elif profile_name == "finance":
@@ -291,20 +284,28 @@ def _fetch_pixabay_music(mood_keyword: str, api_key: str, tmpdir: str) -> str | 
         log.warning("No Pixabay API key — skipping background music")
         return None
     query = urllib.parse.quote(MUSIC_MOOD_KEYWORDS.get(mood_keyword, mood_keyword))
-    # Pixabay Music API — /api/ is the correct endpoint (not /api/videos/music/)
-    url = f"https://pixabay.com/api/?key={api_key}&q={query}&per_page=5&category=music"
+    # Pixabay Music API endpoint — separate from image API
+    url = f"https://pixabay.com/api/music/?key={api_key}&q={query}&per_page=5"
     try:
         data = json.loads(_http_get(url))
         hits = data.get("hits", [])
         if not hits:
-            log.info("Pixabay returned 0 music results for query=%r", query)
+            log.info("Pixabay music API returned 0 results for query=%r", query)
             return None
-        # Pixabay audio results include a previewURL for audio
-        music_url = hits[0].get("previewURL") or hits[0].get("webformatURL", "")
-        if not music_url:
-            log.warning("Pixabay hit has no usable audio URL")
+        # Music API returns audio field with quality levels, or a direct audio URL
+        hit = hits[0]
+        audio_field = hit.get("audio") or {}
+        music_url = (
+            (audio_field.get("128") or audio_field.get("64") or audio_field.get("32"))
+            if isinstance(audio_field, dict) else None
+        ) or hit.get("previewURL") or hit.get("url", "")
+        if not music_url or not str(music_url).startswith("http"):
+            log.warning("Pixabay music hit has no usable audio URL: %s", hit.keys())
             return None
         music_bytes = _http_get(music_url)
+        if len(music_bytes) < 5000:
+            log.warning("Music download suspiciously small (%d bytes) — skipping", len(music_bytes))
+            return None
         music_path = os.path.join(tmpdir, "background_music.mp3")
         with open(music_path, "wb") as f:
             f.write(music_bytes)
@@ -335,30 +336,82 @@ def _mix_audio(
 
     vol_factor_narration = 10 ** (music_vol_narration / 20)
 
+    # Loop music to cover the full voiceover duration (handles short preview clips)
+    looped_music = os.path.join(tmpdir, "background_music_looped.wav")
+    try:
+        # Get voiceover duration so we know how long to loop music
+        probe = subprocess.run(
+            [FFMPEG_BIN.replace("ffmpeg", "ffprobe") if os.path.isfile(FFMPEG_BIN.replace("ffmpeg", "ffprobe")) else "ffprobe",
+             "-v", "quiet", "-print_format", "json", "-show_format", voiceover_path],
+            capture_output=True, check=True,
+        )
+        vo_duration = float(json.loads(probe.stdout).get("format", {}).get("duration", 600))
+        subprocess.run(
+            [FFMPEG_BIN, "-y", "-stream_loop", "-1", "-i", music_path,
+             "-filter_complex", "[0:a]aformat=sample_rates=44100:channel_layouts=stereo[music_fmt]",
+             "-map", "[music_fmt]",
+             "-t", str(vo_duration + 10),
+             looped_music],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        log.warning("Music loop failed (stderr=%s), using original music", exc.stderr[-500:] if exc.stderr else "")
+        looped_music = music_path  # fallback to original
+    except Exception as exc:
+        log.warning("Music loop failed: %s — using original music", exc)
+        looped_music = music_path
+
     music_af = (
         f"afade=t=in:st=0:d=2,"
         f"volume={vol_factor_narration:.4f},"
         f"afade=t=out:d=3"
     )
-    af_complex = (
-        f"[0:a]asplit=2[sc][vo];"
-        f"[1:a]{music_af}[music_raw];"
-        f"[sc][music_raw]sidechaincompress=threshold=0.02:ratio=4:attack=200:release=1000[ducked];"
-        f"[vo][ducked]amix=inputs=2:duration=first:dropout_transition=3[out]"
-    )
 
-    subprocess.run(
-        [
-            FFMPEG_BIN, "-y",
-            "-i", voiceover_path,
-            "-i", music_path,
-            "-filter_complex", af_complex,
-            "-map", "[out]",
-            output_path,
-        ],
-        check=True,
-        capture_output=True,
-    )
+    # Try with sidechain compression first; fall back to simple mix if unsupported
+    def _run_complex_mix() -> None:
+        af_complex = (
+            f"[0:a]asplit=2[sc][vo];"
+            f"[1:a]{music_af}[music_raw];"
+            f"[sc][music_raw]sidechaincompress=threshold=0.02:ratio=4:attack=200:release=1000[ducked];"
+            f"[vo][ducked]amix=inputs=2:duration=first:dropout_transition=3[out]"
+        )
+        subprocess.run(
+            [FFMPEG_BIN, "-y", "-i", voiceover_path, "-i", looped_music,
+             "-filter_complex", af_complex, "-map", "[out]", output_path],
+            check=True,
+            capture_output=True,
+        )
+
+    def _run_simple_mix() -> None:
+        af_complex = (
+            f"[1:a]{music_af}[music_raw];"
+            f"[0:a][music_raw]amix=inputs=2:duration=first:dropout_transition=3[out]"
+        )
+        subprocess.run(
+            [FFMPEG_BIN, "-y", "-i", voiceover_path, "-i", looped_music,
+             "-filter_complex", af_complex, "-map", "[out]", output_path],
+            check=True,
+            capture_output=True,
+        )
+
+    try:
+        _run_complex_mix()
+    except subprocess.CalledProcessError as exc:
+        stderr_tail = (exc.stderr or b"")[-600:].decode("utf-8", errors="replace")
+        log.warning("sidechaincompress mix failed (exit=%d, stderr=%s); retrying with simple mix",
+                    exc.returncode, stderr_tail)
+        try:
+            _run_simple_mix()
+        except subprocess.CalledProcessError as exc2:
+            stderr_tail2 = (exc2.stderr or b"")[-600:].decode("utf-8", errors="replace")
+            log.warning("Simple mix failed (exit=%d, stderr=%s); using voiceover only",
+                        exc2.returncode, stderr_tail2)
+            subprocess.run(
+                [FFMPEG_BIN, "-y", "-i", voiceover_path, output_path],
+                check=True, capture_output=True,
+            )
+
     return output_path
 
 
@@ -534,3 +587,15 @@ def lambda_handler(event: dict, context) -> dict:
         log.error("Audio step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "audio", exc)
         raise
+
+
+if __name__ == "__main__":
+    import sys
+    result = lambda_handler({}, None)
+    print(json.dumps(result, default=str))
+    sys.exit(0)
+if __name__ == "__main__":
+    import sys
+    result = lambda_handler({}, None)
+    print(json.dumps(result, default=str))
+    sys.exit(0)

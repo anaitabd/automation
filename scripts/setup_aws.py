@@ -297,8 +297,8 @@ def create_secrets() -> None:
         "api_key": _env("PEXELS_API_KEY"),
         "pixabay_key": _env("PIXABAY_API_KEY"),
     })
-    _upsert_secret("nexus/runway_api_key", {
-        "api_key": _env("RUNWAY_API_KEY"),
+    _upsert_secret("nexus/freesound_api_key", {
+        "api_key": _env("FREESOUND_API_KEY"),
     })
     _upsert_secret("nexus/youtube_credentials", {
         "client_id": _env("YOUTUBE_CLIENT_ID"),

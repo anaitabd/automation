@@ -26,6 +26,13 @@ S3_ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
 
+# NVIDIA NIM — takes priority over Bedrock when set
+NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+# Vision model for frame scoring; text model for concept generation
+NVIDIA_VISION_MODEL = os.environ.get("NVIDIA_VISION_MODEL", "microsoft/phi-3.5-vision-instruct")
+NVIDIA_TEXT_MODEL = os.environ.get("NVIDIA_TEXT_MODEL", "meta/llama-3.1-70b-instruct")
+
 
 def _find_bin(name: str) -> str:
     """Locate a binary (ffmpeg / ffprobe) across Lambda-layer and system paths."""
@@ -103,7 +110,97 @@ def _extract_keyframes(video_path: str, tmpdir: str, n: int = 6) -> list[str]:
     return frame_paths
 
 
+# ---------------------------------------------------------------------------
+# NVIDIA NIM helpers
+# ---------------------------------------------------------------------------
+
+def _nvidia_chat(messages: list, model: str, max_tokens: int = 1024) -> str:
+    """Call NVIDIA NIM OpenAI-compatible chat endpoint. Returns response text."""
+    body = json.dumps({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.7,
+    }).encode()
+    req = urllib.request.Request(
+        NVIDIA_BASE_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {NVIDIA_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = json.loads(resp.read())
+    return data["choices"][0]["message"]["content"]
+
+
+def _score_frame_nvidia(frame_path: str) -> float:
+    """Score a video frame for thumbnail quality using NVIDIA vision model."""
+    with open(frame_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    messages = [{
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "Rate this YouTube thumbnail frame on a scale of 0.0 to 1.0 based on: "
+                    "contrast, subject clarity, emotional impact, and legibility at small size. "
+                    "Respond with ONLY a JSON object: {\"score\": 0.0}"
+                ),
+            },
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            },
+        ],
+    }]
+    try:
+        raw = _nvidia_chat(messages, NVIDIA_VISION_MODEL, max_tokens=64)
+        raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        return float(json.loads(raw).get("score", 0.5))
+    except Exception as exc:
+        log.warning("NVIDIA vision score failed: %s", exc)
+        return 0.5
+
+
+def _generate_thumbnail_concepts_nvidia(title: str, mood: str, accent_color: str) -> list[dict]:
+    """Generate 3 thumbnail concepts using NVIDIA NIM text model."""
+    prompt = (
+        f"You are a YouTube thumbnail strategist. Create 3 distinct thumbnail concepts for:\n"
+        f"Title: {title}\nMood: {mood}\nAccent color: {accent_color}\n\n"
+        "For each concept provide:\n"
+        "- top_text: max 4 words, ALL CAPS, high-impact\n"
+        "- sub_text: max 6 words, title case\n"
+        "- emotion_trigger: one word (fear/curiosity/excitement/awe/shock)\n"
+        "- color_scheme: one of (dark_dramatic/bright_energetic/cinematic_cold/warm_epic)\n\n"
+        "Return ONLY a JSON array of 3 objects with these exact keys. No markdown."
+    )
+    for attempt in range(3):
+        try:
+            raw = _nvidia_chat([{"role": "user", "content": prompt}], NVIDIA_TEXT_MODEL, max_tokens=1024)
+            raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+            concepts = json.loads(raw)
+            return concepts[:3]
+        except Exception as exc:
+            log.warning("NVIDIA concept gen attempt %d failed: %s", attempt + 1, exc)
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Bedrock helpers (fallback when NVIDIA_API_KEY is not set)
+# ---------------------------------------------------------------------------
+
 def _score_frame_bedrock(frame_path: str) -> float:
+    """Score a frame using AWS Bedrock Claude vision. Falls back to 0.5 on error."""
+    if NVIDIA_API_KEY:
+        return _score_frame_nvidia(frame_path)
+
     with open(frame_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
 
@@ -155,6 +252,14 @@ def _score_frame_bedrock(frame_path: str) -> float:
 def _generate_thumbnail_concepts(
     title: str, mood: str, accent_color: str
 ) -> list[dict]:
+    """Generate thumbnail concepts. Uses NVIDIA NIM if NVIDIA_API_KEY is set, else Bedrock."""
+    if NVIDIA_API_KEY:
+        concepts = _generate_thumbnail_concepts_nvidia(title, mood, accent_color)
+        if concepts:
+            log.info("Thumbnail concepts generated via NVIDIA NIM (%s)", NVIDIA_TEXT_MODEL)
+            return concepts
+        log.warning("NVIDIA concept generation returned empty — falling back to Bedrock")
+
     client = boto3.client("bedrock-runtime")
     prompt = (
         f"You are a YouTube thumbnail strategist. Create 3 distinct thumbnail concepts for:\n"
@@ -204,8 +309,18 @@ def _hex_to_0x(color: str) -> str:
     return color
 
 
+def _hex_to_rgba(color: str, alpha: int = 255) -> tuple:
+    """Convert '#RRGGBB' or '0xRRGGBB' to (R, G, B, A) tuple."""
+    color = color.strip()
+    if color.startswith("#"):
+        color = color[1:]
+    elif color.lower().startswith("0x"):
+        color = color[2:]
+    return (int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16), alpha)
+
+
 def _find_font(name: str) -> str:
-    """Search common font directories for a font file."""
+    """Search common font directories for a TTF font file."""
     candidates = [
         f"/usr/share/fonts/dejavu-sans-fonts/{name}",
         f"/usr/share/fonts/dejavu/{name}",
@@ -219,24 +334,69 @@ def _find_font(name: str) -> str:
 
 
 THUMBNAIL_FONT = _find_font("DejaVuSans-Bold.ttf")
+THUMBNAIL_FONT_LIGHT = _find_font("DejaVuSans.ttf")
 
 
-def _escape_thumbnail_text(text: str) -> str:
-    """Escape text for ffmpeg drawtext inline text='…' values."""
-    text = text.replace("\\", "\\\\")
-    text = text.replace(":", "\\:")
-    text = text.replace("'", "\u2019")
-    text = text.replace('"', "\u201C")
-    text = text.replace("%", "%%")
-    text = text.replace(";", "\\;")
-    text = text.replace("[", "\\[")
-    text = text.replace("]", "\\]")
-    text = text.replace("=", "\\=")
-    text = text.replace("{", "\\{")
-    text = text.replace("}", "\\}")
-    text = text.replace("#", "\\#")
-    text = text.replace("\n", " ")
-    return text
+def _ensure_pillow() -> bool:
+    """Ensure Pillow is importable, installing it to /tmp/pillow_deps if necessary."""
+    import sys
+    try:
+        from PIL import Image  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    # Add /tmp/pillow_deps to path and retry (warm Lambda reuse of a prior install)
+    deps_dir = "/tmp/pillow_deps"
+    if deps_dir not in sys.path:
+        sys.path.insert(0, deps_dir)
+    try:
+        from PIL import Image  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    # Attempt runtime install into /tmp (fallback when layer is missing Pillow)
+    try:
+        log.info("Pillow not found — installing to /tmp/pillow_deps...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "Pillow",
+             "--target", deps_dir, "-q", "--no-cache-dir"],
+            check=True, capture_output=True,
+        )
+        # Verify the install actually made Pillow importable
+        from PIL import Image  # noqa: F401
+        return True
+    except Exception as exc:
+        log.warning("Could not install or import Pillow: %s", exc)
+        return False
+
+
+def _pil_load_font(font_path: str, size: int):
+    """Load PIL ImageFont, falling back to default."""
+    try:
+        from PIL import ImageFont
+        if font_path and os.path.isfile(font_path):
+            return ImageFont.truetype(font_path, size)
+    except Exception:
+        pass
+    try:
+        from PIL import ImageFont
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _pil_draw_text_centered(draw, text: str, font, y: int, img_w: int,
+                             fill: tuple, shadow: tuple = None, shadow_offset: int = 3):
+    """Draw centered text with optional shadow."""
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+    except Exception:
+        tw = len(text) * (getattr(font, "size", 20))
+    x = (img_w - tw) // 2
+    if shadow:
+        draw.text((x + shadow_offset, y + shadow_offset), text, font=font, fill=shadow)
+    draw.text((x, y), text, font=font, fill=fill)
 
 
 def _render_thumbnail(
@@ -246,55 +406,79 @@ def _render_thumbnail(
     tmpdir: str,
     idx: int,
 ) -> str:
+    """Render a YouTube thumbnail by compositing text overlays with Pillow.
+    Falls back to eq-only ffmpeg output if Pillow is unavailable."""
     out_path = os.path.join(tmpdir, f"thumbnail_{idx}.jpg")
-    accent_color = _hex_to_0x(profile.get("thumbnail", {}).get("accent_color", "#C8A96E"))
-    channel_name = _escape_thumbnail_text(profile.get("name", "Nexus").upper())
+    accent_raw = profile.get("thumbnail", {}).get("accent_color", "#C8A96E")
+    channel_name = profile.get("name", "Nexus").upper()
+    top_text = concept.get("top_text", "")[:45]
+    sub_text = concept.get("sub_text", "")[:45]
 
-    top_text = _escape_thumbnail_text(concept.get("top_text", "")[:45])
-    sub_text = _escape_thumbnail_text(concept.get("sub_text", "")[:45])
+    # Step 1: apply eq (image quality) with ffmpeg — no drawtext needed
+    eq_path = os.path.join(tmpdir, f"eq_{idx}.jpg")
+    subprocess.run(
+        [FFMPEG_BIN, "-y", "-i", frame_path,
+         "-vf", "eq=contrast=1.15:saturation=1.25:brightness=0.02",
+         "-vframes", "1", "-q:v", "2", eq_path],
+        check=True, capture_output=True,
+    )
 
-    font_arg = f":fontfile={THUMBNAIL_FONT}" if os.path.isfile(THUMBNAIL_FONT) else ""
+    # Step 2: PIL text overlays
+    if not _ensure_pillow():
+        # Pillow unavailable — return eq result without text
+        import shutil
+        shutil.copy(eq_path, out_path)
+        return out_path
 
-    vf_parts = [
-        "eq=contrast=1.15:saturation=1.25:brightness=0.02",
-        (
-            "drawbox=x=0:y=ih*0.55:width=iw:height=ih*0.45"
-            ":color=black@0.75:t=fill"
-        ),
-        (
-            f"drawtext=text='{top_text}'"
-            f"{font_arg}"
-            f":fontcolor=white:fontsize=88"
-            ":x=(w-text_w)/2:y=40"
-            ":shadowcolor=black@0.9:shadowx=3:shadowy=3"
-            ":bordercolor=black:borderw=2"
-        ),
-        (
-            f"drawtext=text='{sub_text}'"
-            f"{font_arg}"
-            f":fontcolor=0xDDDDDD:fontsize=52"
-            ":x=(w-text_w)/2:y=ih*0.60"
-            ":shadowcolor=black@0.9:shadowx=2:shadowy=2"
-        ),
-        (
-            f"drawbox=x=iw-280:y=10:width=270:height=60"
-            f":color={accent_color}@0.9:t=fill,"
-            f"drawtext=text='{channel_name}'"
-            f"{font_arg}"
-            ":fontcolor=white:fontsize=24"
-            ":x=iw-270:y=28"
-        ),
-    ]
+    from PIL import Image, ImageDraw
 
-    cmd = [
-        FFMPEG_BIN, "-y",
-        "-i", frame_path,
-        "-vf", ",".join(vf_parts),
-        "-vframes", "1",
-        "-q:v", "2",
-        out_path,
-    ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    ar, ag, ab, _ = _hex_to_rgba(accent_raw)
+    accent_rgba = (ar, ag, ab, 255)
+
+    img = Image.open(eq_path).convert("RGBA")
+    W, H = img.size
+
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Dark gradient box over bottom 45%
+    box_top = int(H * 0.55)
+    for row in range(H - box_top):
+        alpha = int(191 * (row / (H - box_top)))
+        draw.line([(0, box_top + row), (W, box_top + row)], fill=(0, 0, 0, alpha))
+
+    # top_text — large, centered at y=40, white with black shadow
+    font_top = _pil_load_font(THUMBNAIL_FONT, 88)
+    _pil_draw_text_centered(
+        draw, top_text, font_top, y=40, img_w=W,
+        fill=(255, 255, 255, 255),
+        shadow=(0, 0, 0, 230),
+        shadow_offset=3,
+    )
+
+    # sub_text — medium, centered at y=60% height, light gray with shadow
+    font_sub = _pil_load_font(THUMBNAIL_FONT_LIGHT, 52)
+    _pil_draw_text_centered(
+        draw, sub_text, font_sub, y=int(H * 0.60), img_w=W,
+        fill=(221, 221, 221, 255),
+        shadow=(0, 0, 0, 200),
+        shadow_offset=2,
+    )
+
+    # Channel badge — accent-colored box top-right with channel name
+    badge_x = W - 280
+    draw.rectangle([(badge_x, 10), (W - 10, 70)], fill=(ar, ag, ab, 229))
+    font_badge = _pil_load_font(THUMBNAIL_FONT, 24)
+    try:
+        bbox_b = draw.textbbox((0, 0), channel_name, font=font_badge)
+        bw = bbox_b[2] - bbox_b[0]
+    except Exception:
+        bw = len(channel_name) * 14
+    bx = badge_x + ((270 - bw) // 2)
+    draw.text((bx, 28), channel_name, font=font_badge, fill=(255, 255, 255, 255))
+
+    img = Image.alpha_composite(img, overlay).convert("RGB")
+    img.save(out_path, "JPEG", quality=92)
     return out_path
 
 

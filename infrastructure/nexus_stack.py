@@ -17,11 +17,15 @@ from aws_cdk import (
     aws_logs as logs,
     aws_ecs as ecs,
     aws_ecr as ecr,
+    aws_ecr_assets as ecr_assets,
     aws_efs as efs,
     aws_ec2 as ec2,
 )
 from constructs import Construct
 import json
+import pathlib
+
+_PROJECT_ROOT = str(pathlib.Path(__file__).parent.parent)
 
 
 class NexusStack(Stack):
@@ -135,10 +139,24 @@ class NexusStack(Stack):
             vpc=vpc,
         )
 
+        scratch_fs_sg = ec2.SecurityGroup(
+            self, "NexusScratchFSSG",
+            vpc=vpc,
+            description="Allow NFS from Fargate tasks",
+            allow_all_outbound=True,
+        )
+        scratch_fs_sg.add_ingress_rule(
+            ec2.Peer.ipv4("0.0.0.0/0"),
+            ec2.Port.tcp(2049),
+            "NFSv4 from VPC",
+        )
+
         scratch_fs = efs.FileSystem(
             self, "NexusScratchFS",
             file_system_name="nexus-scratch",
             vpc=vpc,
+            encrypted=False,
+            security_group=scratch_fs_sg,
             removal_policy=RemovalPolicy.DESTROY,
         )
 
@@ -173,6 +191,7 @@ class NexusStack(Stack):
         )
         assets_bucket.grant_read_write(ecs_task_role)
         outputs_bucket.grant_read_write(ecs_task_role)
+        config_bucket.grant_read(ecs_task_role)
         ecs_task_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["secretsmanager:GetSecretValue"],
@@ -202,10 +221,27 @@ class NexusStack(Stack):
         }
 
         def _make_fargate_task(task_id: str, fn_name: str, extra_env: dict | None = None) -> ecs.FargateTaskDefinition:
-            repo = ecr.Repository(
-                self, f"{task_id}Repo",
-                repository_name=fn_name,
-                removal_policy=RemovalPolicy.DESTROY,
+            # Build the Docker image from the project root so Dockerfiles can
+            # COPY lambdas/nexus_pipeline_utils.py and lambdas/<fn>/handler.py
+            #
+            # Exclude .venv, cdk.out and caches from the build context to avoid
+            # ENAMETOOLONG (CDK stages assets into cdk.out/asset.HASH/; if those
+            # directories are included the paths recurse infinitely).
+            image = ecs.ContainerImage.from_asset(
+                _PROJECT_ROOT,
+                file=f"lambdas/{fn_name}/Dockerfile",
+                platform=ecr_assets.Platform.LINUX_ARM64,
+                exclude=[
+                    "infrastructure/.venv",
+                    "infrastructure/cdk.out",
+                    "infrastructure/__pycache__",
+                    "**/__pycache__",
+                    "**/*.pyc",
+                    "**/*.pyo",
+                    ".git",
+                    ".env",
+                    "node_modules",
+                ],
             )
             task_def = ecs.FargateTaskDefinition(
                 self, f"{task_id}Task",
@@ -215,11 +251,17 @@ class NexusStack(Stack):
                 execution_role=ecs_task_execution_role,
                 task_role=ecs_task_role,
                 volumes=[efs_volume],
+                # Must match the Docker image platform (LINUX_ARM64) to avoid
+                # "exec format error" — Fargate defaults to X86_64 otherwise.
+                runtime_platform=ecs.RuntimePlatform(
+                    cpu_architecture=ecs.CpuArchitecture.ARM64,
+                    operating_system_family=ecs.OperatingSystemFamily.LINUX,
+                ),
             )
             container = task_def.add_container(
                 fn_name,
                 container_name=fn_name,
-                image=ecs.ContainerImage.from_ecr_repository(repo),
+                image=image,
                 environment={**fargate_common_env, **(extra_env or {})},
                 logging=ecs.LogDrivers.aws_logs(
                     stream_prefix=fn_name,
@@ -434,6 +476,33 @@ class NexusStack(Stack):
             )
         )
 
+        # Required for ecs:runTask.sync — SFN creates EventBridge managed rules
+        # to track ECS task completion
+        sfn_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "events:PutTargets",
+                    "events:PutRule",
+                    "events:DescribeRule",
+                ],
+                resources=[
+                    f"arn:aws:events:{self.region}:{self.account}:rule/StepFunctionsGetEventsForECSTaskRule",
+                    f"arn:aws:events:{self.region}:{self.account}:rule/StepFunctionsGetEventsForStepFunctionsExecutionRule",
+                ],
+            )
+        )
+
+        # Required to poll and stop ECS tasks in .sync integrations
+        sfn_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "ecs:DescribeTasks",
+                    "ecs:StopTask",
+                ],
+                resources=["*"],
+            )
+        )
+
         state_machine = sfn.CfnStateMachine(
             self, "NexusPipeline",
             state_machine_name="nexus-pipeline",
@@ -510,6 +579,12 @@ class NexusStack(Stack):
 
         run_resource = api.root.add_resource("run")
         run_resource.add_method(
+            "POST",
+            apigw.LambdaIntegration(fn_api),
+        )
+
+        resume_resource = api.root.add_resource("resume")
+        resume_resource.add_method(
             "POST",
             apigw.LambdaIntegration(fn_api),
         )

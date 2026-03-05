@@ -1,7 +1,56 @@
 {
   "Comment": "Nexus Cloud — serverless YouTube automation pipeline",
-  "StartAt": "Research",
+  "StartAt": "Initialize",
   "States": {
+
+    "Initialize": {
+      "Type": "Pass",
+      "Comment": "Pass-through: run_id is always provided by the API or resume handler in the execution input.",
+      "Next": "ResumeRouter"
+    },
+
+    "ResumeRouter": {
+      "Type": "Choice",
+      "Comment": "Route to the correct step when resume_from is set; default to Research for new runs.",
+      "Choices": [
+        {
+          "And": [
+            { "Variable": "$.resume_from", "IsPresent": true },
+            { "Variable": "$.resume_from", "StringEquals": "Script" }
+          ],
+          "Next": "Script"
+        },
+        {
+          "And": [
+            { "Variable": "$.resume_from", "IsPresent": true },
+            { "Variable": "$.resume_from", "StringEquals": "AudioVisuals" }
+          ],
+          "Next": "AudioVisuals"
+        },
+        {
+          "And": [
+            { "Variable": "$.resume_from", "IsPresent": true },
+            { "Variable": "$.resume_from", "StringEquals": "Editor" }
+          ],
+          "Next": "Editor"
+        },
+        {
+          "And": [
+            { "Variable": "$.resume_from", "IsPresent": true },
+            { "Variable": "$.resume_from", "StringEquals": "Thumbnail" }
+          ],
+          "Next": "Thumbnail"
+        },
+        {
+          "And": [
+            { "Variable": "$.resume_from", "IsPresent": true },
+            { "Variable": "$.resume_from", "StringEquals": "Notify" }
+          ],
+          "Next": "Notify"
+        }
+      ],
+      "Default": "Research"
+    },
 
     "Research": {
       "Type": "Task",

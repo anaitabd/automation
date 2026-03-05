@@ -6,6 +6,7 @@ import boto3
 
 STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
 OUTPUTS_BUCKET = os.environ["OUTPUTS_BUCKET"]
+ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets-670294435884")
 ECS_SUBNETS = json.loads(os.environ.get("ECS_SUBNETS", "[]"))
 
 sfn = boto3.client("stepfunctions")
@@ -310,6 +311,129 @@ def _handle_outputs(run_id: str) -> dict:
     return _response(200, {"run_id": run_id, "urls": presigned_urls, "error_logs": error_logs})
 
 
+def _handle_resume(body: dict) -> dict:
+    run_id = body.get("run_id", "").strip()
+    resume_from = body.get("resume_from") or None  # None = auto-detect
+    dry_run = bool(body.get("dry_run", False))
+
+    if not run_id:
+        return _response(400, {"error": "run_id is required"})
+
+    STEP_ORDER = ["Research", "Script", "AudioVisuals", "Editor", "Thumbnail", "Notify"]
+    VALID_STEPS = set(STEP_ORDER)
+    if resume_from and resume_from not in VALID_STEPS:
+        return _response(400, {"error": f"resume_from must be one of {STEP_ORDER}"})
+
+    def s3_exists(bucket, key):
+        try:
+            s3.head_object(Bucket=bucket, Key=key)
+            return True
+        except Exception:
+            return False
+
+    # Detect which steps have already produced S3 artifacts
+    # research/script/visuals → OUTPUTS_BUCKET, audio → ASSETS_BUCKET
+    artifact_checks = [
+        ("Research",     OUTPUTS_BUCKET, f"{run_id}/research.json"),
+        ("Script",       OUTPUTS_BUCKET, f"{run_id}/script.json"),
+        ("AudioVisuals", ASSETS_BUCKET,  f"{run_id}/audio/mixed_audio.wav"),
+        ("Editor",       OUTPUTS_BUCKET, f"{run_id}/review/final_video.mp4"),
+        ("Thumbnail",    OUTPUTS_BUCKET, f"{run_id}/review/thumbnail_0.jpg"),
+    ]
+    completed = [step for step, bucket, key in artifact_checks if s3_exists(bucket, key)]
+
+    if resume_from is None:
+        for step in STEP_ORDER:
+            if step not in completed:
+                resume_from = step
+                break
+        if resume_from is None:
+            return _response(400, {"error": "All steps appear complete — nothing to resume"})
+
+    # Read script metadata
+    script_meta = {}
+    try:
+        resp = s3.get_object(Bucket=OUTPUTS_BUCKET, Key=f"{run_id}/script.json")
+        sd = json.loads(resp["Body"].read())
+        script_meta = {
+            "script_s3_key": f"{run_id}/script.json",
+            "title": sd.get("title", ""),
+            "section_count": sd.get("section_count", len(sd.get("sections", []))),
+            "total_duration_estimate": sd.get("total_duration_estimate", 600),
+            "niche": sd.get("niche", ""),
+            "profile": sd.get("profile", "documentary"),
+        }
+    except Exception:
+        pass
+
+    # Read research metadata
+    research_meta = {}
+    try:
+        resp = s3.get_object(Bucket=OUTPUTS_BUCKET, Key=f"{run_id}/research.json")
+        rd = json.loads(resp["Body"].read())
+        research_meta = {
+            "research_s3_key": f"{run_id}/research.json",
+            "selected_topic": rd.get("selected_topic", ""),
+            "angle": rd.get("angle", ""),
+            "trending_context": rd.get("trending_context", ""),
+        }
+    except Exception:
+        pass
+
+    niche = script_meta.get("niche") or body.get("niche", "")
+    profile = script_meta.get("profile") or body.get("profile", "documentary")
+
+    payload = {
+        "run_id": run_id,
+        "niche": niche,
+        "profile": profile,
+        "dry_run": dry_run,
+        "subnets": ECS_SUBNETS,
+        "resume_from": resume_from,
+    }
+
+    if resume_from == "Script":
+        payload.update(research_meta)
+    elif resume_from == "AudioVisuals":
+        payload.update(research_meta)
+        payload.update(script_meta)
+    elif resume_from == "Editor":
+        payload.update(script_meta)
+        payload["mixed_audio_s3_key"] = f"{run_id}/audio/mixed_audio.wav"
+    elif resume_from == "Thumbnail":
+        payload.update(script_meta)
+        payload["final_video_s3_key"] = f"{run_id}/review/final_video.mp4"
+        payload["video_duration_sec"] = script_meta.get("total_duration_estimate", 600)
+    elif resume_from == "Notify":
+        payload.update(script_meta)
+        payload["final_video_s3_key"] = f"{run_id}/review/final_video.mp4"
+        payload["video_duration_sec"] = script_meta.get("total_duration_estimate", 600)
+        thumb_keys = [
+            f"{run_id}/review/thumbnail_{i}.jpg"
+            for i in range(3)
+            if s3_exists(OUTPUTS_BUCKET, f"{run_id}/review/thumbnail_{i}.jpg")
+        ]
+        payload["thumbnail_s3_keys"] = thumb_keys
+        payload["primary_thumbnail_s3_key"] = thumb_keys[0] if thumb_keys else ""
+
+    exec_name = f"resume-{run_id[:8]}-{str(uuid.uuid4())[:8]}"
+    try:
+        execution = sfn.start_execution(
+            stateMachineArn=STATE_MACHINE_ARN,
+            name=exec_name,
+            input=json.dumps(payload),
+        )
+        return _response(200, {
+            "run_id": exec_name,
+            "original_run_id": run_id,
+            "resume_from": resume_from,
+            "completed_steps": completed,
+            "execution_arn": execution["executionArn"],
+        })
+    except Exception as exc:
+        return _response(500, {"error": str(exc)})
+
+
 def _handle_health() -> dict:
     checks = {}
 
@@ -347,6 +471,10 @@ def lambda_handler(event: dict, context) -> dict:
     if method == "POST" and path == "/run":
         body = json.loads(event.get("body") or "{}")
         return _handle_run(body)
+
+    elif method == "POST" and path == "/resume":
+        body = json.loads(event.get("body") or "{}")
+        return _handle_resume(body)
 
     elif method == "GET" and "/status/" in path:
         run_id = path_params.get("run_id", path.split("/status/")[-1])
