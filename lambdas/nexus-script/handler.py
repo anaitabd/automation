@@ -279,7 +279,7 @@ def get_secret(name: str) -> dict:
 
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
-BEDROCK_MODEL_ID_DEFAULT = "anthropic.claude-3-sonnet-20240229-v1:0"
+BEDROCK_MODEL_ID_DEFAULT = "anthropic.claude-3-5-sonnet-20241022-v2:0"
 
 # Set dynamically per-invocation from the profile's llm.script_model
 _active_model_id: str = BEDROCK_MODEL_ID_DEFAULT
@@ -370,28 +370,46 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
     tone = profile.get("script", {}).get("tone", "authoritative_compelling")
     narrative = profile.get("script", {}).get("narrative_style", "third_person_omniscient")
 
+    # Human YouTuber persona prompt — writes for ears, not eyes
     prompt = (
-        f"You are an elite YouTube scriptwriter and documentary filmmaker known for deeply researched, "
-        f"factually rigorous, cinematic content that keeps viewers watching till the end.\n\n"
+        f"You are a human YouTube creator with 10 million subscribers. You write the way you talk. "
+        f"Short sentences. Fragments. Rhythm. You never sound like an AI.\n\n"
+        f"BANNED PHRASES — never use these words or phrases under any circumstances:\n"
+        f"\"In conclusion\", \"It's worth noting\", \"Delve\", \"Fascinating\", \"Moreover\", "
+        f"\"Certainly\", \"Absolutely\"\n\n"
         f"═══ ASSIGNMENT ═══\n"
         f"Topic: {topic}\n"
         f"Angle: {angle}\n"
         f"Research context: {context}\n\n"
 
-        f"═══ FORMAT & STYLE ═══\n"
+        f"═══ VOICE & STYLE — WRITE FOR EARS, NOT EYES ═══\n"
         f"- Target duration: {target_min}-{target_max} minutes of narrated content\n"
         f"- Tone: {tone}\n"
         f"- Narrative style: {narrative}\n"
+        f"- Write fragments. One idea per sentence. Never write like a textbook.\n"
+        f"- Short punchy sentences land harder than long complex ones.\n"
+        f"- Use contractions. Use rhetorical questions. Sound human.\n"
         f"- STRUCTURE: Create 8-14 richly detailed sections (NOT fewer)\n"
-        f"- Each section MUST contain 150-250 words of narration (6-10 full sentences, NOT bullet points)\n"
-        f"- Include [PAUSE], [BEAT], [BREATH] markers for natural pacing\n"
-        f"- Use vivid but ACCURATE descriptions — paint scenes the viewer can see\n"
+        f"- Each section MUST contain 150-250 words of narration (6-10 punchy lines, NOT bullet points)\n"
+        f"- Use [PAUSE], [BEAT], [BREATH], [CUT TO] markers for natural pacing\n"
+        f"- [PAUSE] = a full stop beat for emphasis\n"
+        f"- [BEAT] = a quick pause between ideas\n"
+        f"- [BREATH] = a natural breath point\n"
+        f"- [CUT TO] = signals a hard visual cut to new footage\n"
+        f"- Use vivid but ACCURATE descriptions — paint scenes the listener can see\n"
         f"- Build narrative tension across sections — each should flow into the next\n"
         f"- Include specific details that demonstrate depth (names, places, mechanisms)\n"
-        f"- Write content that sounds authoritative and cinematic when read aloud by a narrator\n"
         f"- duration_estimate_sec = round(word_count_in_this_section / 130 * 60). A 150-word section = 69s. NEVER output 0.\n"
         f"- clips_needed = ceil(duration_estimate_sec / 20). A 90s section needs 4-5 clips.\n"
         f"- total_duration_estimate = sum of all section duration_estimate_sec values\n\n"
+
+        f"═══ RE-HOOK EVERY 90 SECONDS ═══\n"
+        f"Every ~90 seconds of content (approximately every 1-2 sections) you MUST drop a re-hook:\n"
+        f"- A re-hook resets viewer attention and prevents drop-off\n"
+        f"- It teases what's coming next: 'And what happens next? Nobody saw it coming.'\n"
+        f"- Or it reframes what just happened: 'Think about that for a second. [PAUSE] That changes everything.'\n"
+        f"- Or it asks a direct question to the viewer: 'So why did nobody stop this? Keep watching.'\n"
+        f"- Place re-hooks at the END of sections where duration_estimate_sec >= 90, or after every 2nd section\n\n"
 
         f"═══ CINEMATIC QUALITY GUIDELINES ═══\n"
         f"- Open with a cold open / dramatic hook — drop the viewer into the most compelling moment\n"
@@ -400,7 +418,7 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"- Each section should have its own mini arc: setup → tension → revelation\n"
         f"- Use sensory language: what does the scene look, sound, feel like?\n"
         f"- Include moments of silence/breathing room for emotional impact ([BEAT] [PAUSE])\n"
-        f"- The final section should deliver a powerful conclusion that reframes everything\n"
+        f"- The final section should deliver a gut-punch ending that reframes everything\n"
         f"- Write MULTIPLE visual_cue search_queries per section (5 specific queries) for rich B-roll\n"
         f"- Consider visual variety: wide establishing shots, close-ups, archival, motion graphics\n\n"
 
@@ -435,6 +453,7 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"2. Are there any details I \"filled in\" or assumed that I should not have?\n"
         f"3. Would this script hold up to basic fact-checking by a journalist?\n"
         f"4. Did I attribute any quotes, actions, or events to the wrong person/time?\n"
+        f"5. Did I accidentally use any banned phrases (In conclusion, Delve, Fascinating, Moreover, Certainly, Absolutely, It's worth noting)?\n"
         f"If the answer to #3 is NO — rewrite those sections before responding.\n\n"
 
         f"═══ CONTENT DEPTH GUIDELINES ═══\n"
@@ -443,7 +462,7 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"- Use concrete examples instead of vague generalizations\n"
         f"- Include cause-and-effect reasoning: explain WHY things happened, not just WHAT\n"
         f"- Add context that helps viewers understand significance\n"
-        f"- End with a thought-provoking conclusion that ties back to the hook\n"
+        f"- End with a thought-provoking line that ties back to the hook\n"
         f"- Populate \"source_notes\" for each section to indicate factual basis\n"
         f"- Set \"factual_confidence\" to honestly reflect your certainty level\n\n"
 

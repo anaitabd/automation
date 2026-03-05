@@ -33,6 +33,12 @@ NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 NVIDIA_VISION_MODEL = os.environ.get("NVIDIA_VISION_MODEL", "microsoft/phi-3.5-vision-instruct")
 NVIDIA_TEXT_MODEL = os.environ.get("NVIDIA_TEXT_MODEL", "meta/llama-3.1-70b-instruct")
 
+# Stability AI — optional background image generation for thumbnails
+# Set STABILITY_API_KEY env var or store in Secrets Manager under "nexus/stability_api_key"
+STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY", "")
+STABILITY_API_URL = "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image"
+# TODO: configure STABILITY_API_KEY in Secrets Manager ("nexus/stability_api_key") to enable AI backgrounds
+
 
 def _find_bin(name: str) -> str:
     """Locate a binary (ffmpeg / ffprobe) across Lambda-layer and system paths."""
@@ -48,7 +54,7 @@ def _find_bin(name: str) -> str:
 
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN") or _find_bin("ffmpeg")
 FFPROBE_BIN = os.environ.get("FFPROBE_BIN") or _find_bin("ffprobe")
-BEDROCK_MODEL_ID_DEFAULT = "anthropic.claude-3-sonnet-20240229-v1:0"
+BEDROCK_MODEL_ID_DEFAULT = "anthropic.claude-3-5-sonnet-20241022-v2:0"
 
 # Set dynamically per-invocation from the loaded profile
 _active_model_id: str = BEDROCK_MODEL_ID_DEFAULT
@@ -399,6 +405,56 @@ def _pil_draw_text_centered(draw, text: str, font, y: int, img_w: int,
     draw.text((x, y), text, font=font, fill=fill)
 
 
+def _generate_stability_background(concept_text: str, out_path: str) -> bool:
+    # Generate a 1280x720 background image using Stability AI from the thumbnail concept string.
+    # Returns True if successful, False if Stability AI is not configured or the call fails.
+    # Falls back gracefully — the caller uses the video frame instead.
+    api_key = STABILITY_API_KEY
+    if not api_key:
+        try:
+            api_key = get_secret("nexus/stability_api_key").get("api_key", "")
+        except Exception:
+            pass
+    if not api_key:
+        # TODO: set STABILITY_API_KEY env var or store under "nexus/stability_api_key" to enable AI backgrounds
+        return False
+    try:
+        import urllib.request as _req
+        body = json.dumps({
+            "text_prompts": [
+                {"text": f"YouTube thumbnail background, cinematic, {concept_text}, 4K, no text, no watermark", "weight": 1.0},
+                {"text": "text, watermark, logo, blurry, low quality", "weight": -1.0},
+            ],
+            "cfg_scale": 7,
+            "width": 1280,
+            "height": 720,
+            "steps": 30,
+            "samples": 1,
+        }).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        req = _req.Request(STABILITY_API_URL, data=body, headers=headers, method="POST")
+        with _req.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read())
+        artifacts = result.get("artifacts", [])
+        if not artifacts:
+            log.warning("Stability AI returned no artifacts")
+            return False
+        img_b64 = artifacts[0].get("base64", "")
+        if not img_b64:
+            return False
+        with open(out_path, "wb") as f:
+            f.write(base64.b64decode(img_b64))
+        log.info("Stability AI background generated: %s", out_path)
+        return True
+    except Exception as exc:
+        log.warning("Stability AI background generation failed: %s — using video frame", exc)
+        return False
+
+
 def _render_thumbnail(
     frame_path: str,
     concept: dict,
@@ -407,25 +463,39 @@ def _render_thumbnail(
     idx: int,
 ) -> str:
     """Render a YouTube thumbnail by compositing text overlays with Pillow.
-    Falls back to eq-only ffmpeg output if Pillow is unavailable."""
+    Uses a Stability AI-generated background when available; falls back to video frame."""
     out_path = os.path.join(tmpdir, f"thumbnail_{idx}.jpg")
     accent_raw = profile.get("thumbnail", {}).get("accent_color", "#C8A96E")
     channel_name = profile.get("name", "Nexus").upper()
     top_text = concept.get("top_text", "")[:45]
     sub_text = concept.get("sub_text", "")[:45]
 
-    # Step 1: apply eq (image quality) with ffmpeg — no drawtext needed
-    eq_path = os.path.join(tmpdir, f"eq_{idx}.jpg")
-    subprocess.run(
-        [FFMPEG_BIN, "-y", "-i", frame_path,
-         "-vf", "eq=contrast=1.15:saturation=1.25:brightness=0.02",
-         "-vframes", "1", "-q:v", "2", eq_path],
-        check=True, capture_output=True,
-    )
+    # Step 1: Try Stability AI background; fall back to video frame with eq enhancement
+    stability_bg = os.path.join(tmpdir, f"thumb_bg_{idx}.jpg")
+    concept_desc = f"{concept.get('emotion_trigger', '')} {concept.get('color_scheme', '')} {top_text} {sub_text}".strip()
+    used_ai_bg = _generate_stability_background(concept_desc, stability_bg)
 
-    # Step 2: PIL text overlays
+    eq_path = os.path.join(tmpdir, f"eq_{idx}.jpg")
+    if used_ai_bg:
+        # Resize AI background to 1280x720 with ffmpeg to ensure correct dimensions
+        subprocess.run(
+            [FFMPEG_BIN, "-y", "-i", stability_bg,
+             "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+             "-q:v", "2", eq_path],
+            check=True, capture_output=True,
+        )
+    else:
+        # Use video frame with color enhancement (original fallback behavior)
+        subprocess.run(
+            [FFMPEG_BIN, "-y", "-i", frame_path,
+             "-vf", "eq=contrast=1.15:saturation=1.25:brightness=0.02",
+             "-vframes", "1", "-q:v", "2", eq_path],
+            check=True, capture_output=True,
+        )
+
+    # Step 2: PIL text overlays (stroke/borderw=4 equivalent via shadow_offset)
     if not _ensure_pillow():
-        # Pillow unavailable — return eq result without text
+        # Pillow unavailable — return base image without text
         import shutil
         shutil.copy(eq_path, out_path)
         return out_path
@@ -447,22 +517,22 @@ def _render_thumbnail(
         alpha = int(191 * (row / (H - box_top)))
         draw.line([(0, box_top + row), (W, box_top + row)], fill=(0, 0, 0, alpha))
 
-    # top_text — large, centered at y=40, white with black shadow
+    # top_text — large, centered at y=40, white with 4px stroke effect (shadow_offset=4)
     font_top = _pil_load_font(THUMBNAIL_FONT, 88)
     _pil_draw_text_centered(
         draw, top_text, font_top, y=40, img_w=W,
         fill=(255, 255, 255, 255),
         shadow=(0, 0, 0, 230),
-        shadow_offset=3,
+        shadow_offset=4,
     )
 
-    # sub_text — medium, centered at y=60% height, light gray with shadow
+    # sub_text — medium, centered at y=60% height, light gray with 4px stroke effect
     font_sub = _pil_load_font(THUMBNAIL_FONT_LIGHT, 52)
     _pil_draw_text_centered(
         draw, sub_text, font_sub, y=int(H * 0.60), img_w=W,
         fill=(221, 221, 221, 255),
         shadow=(0, 0, 0, 200),
-        shadow_offset=2,
+        shadow_offset=4,
     )
 
     # Channel badge — accent-colored box top-right with channel name

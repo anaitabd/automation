@@ -1,0 +1,33 @@
+# CDK build artefacts — MUST be excluded to prevent ENAMETOOLONG
+# (CDK stages the entire project root into cdk.out/asset.HASH/; if .venv or
+#  cdk.out are included, the paths recurse infinitely and exceed OS limits)
+infrastructure/.venv
+infrastructure/cdk.out
+infrastructure/__pycache__
+
+# Python caches
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache
+**/*.egg-info
+
+# Git
+.git
+.gitignore
+
+# Secrets / local config
+.env
+*.env.local
+
+# Editor
+.vscode
+.idea
+
+# macOS
+.DS_Store
+
+# Node / CDK CLI
+node_modules
+cdk.out
