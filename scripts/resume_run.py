@@ -296,7 +296,7 @@ def main() -> None:
         print(f"❌ Failed to build payload: {e}")
         sys.exit(1)
 
-    print(f"   Payload preview:")
+    print("   Payload preview:")
     preview = {k: (v if not isinstance(v, list) or len(str(v)) < 80 else f"[{len(v)} items]")
                for k, v in payload.items()}
     for k, v in preview.items():
@@ -318,10 +318,10 @@ def main() -> None:
         )
         exec_arn = resp["executionArn"]
         print(f"✅ Started: {exec_arn}")
-        print(f"\n   Monitor with:")
-        print(f"   aws stepfunctions get-execution-history \\")
+        print("\n   Monitor with:")
+        print("   aws stepfunctions get-execution-history \\")
         print(f"     --execution-arn '{exec_arn}' \\")
-        print(f"     --reverse-order --max-items 5 --no-cli-pager")
+        print("     --reverse-order --max-items 5 --no-cli-pager")
     except Exception as e:
         print(f"❌ Failed to start execution: {e}")
         sys.exit(1)

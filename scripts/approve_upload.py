@@ -175,10 +175,10 @@ def main() -> None:
         _upload_thumbnail(video_id, thumb_local, access_token)
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    print(f"\n✅ Upload complete!")
+    print("\n✅ Upload complete!")
     print(f"   Video ID:  {video_id}")
     print(f"   URL:       {video_url}")
-    print(f"   Status:    private (change to public in YouTube Studio)")
+    print("   Status:    private (change to public in YouTube Studio)")
 
     # Update pending metadata in S3
     pending["status"] = "uploaded"

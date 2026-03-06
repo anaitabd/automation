@@ -33,7 +33,6 @@ def _send_discord_error(
     # Try to parse structured error from cause
     error_type = error_obj
     error_msg = cause_raw[:500]
-    failed_step = "Unknown"
     stack_trace = ""
     try:
         cause_json = json.loads(cause_raw)
@@ -45,7 +44,6 @@ def _send_discord_error(
             # Try to extract step name from stack trace
             for trace_line in traces:
                 if "/var/task/handler.py" in trace_line and "lambda_handler" in trace_line:
-                    failed_step = "Lambda Handler"
                     break
     except (json.JSONDecodeError, TypeError, AttributeError):
         pass
@@ -238,12 +236,11 @@ def lambda_handler(event: dict, context) -> dict:
     final_video_s3_key: str = event.get("final_video_s3_key", "")
     title: str = event.get("title", "")
     niche: str = event.get("niche", "")
-    thumbnail_s3_keys: list = event.get("thumbnail_s3_keys", [])
     primary_thumbnail_s3_key: str = event.get("primary_thumbnail_s3_key", "")
     video_duration_sec: float = float(event.get("video_duration_sec", 0))
     execution_start_raw = event.get("execution_start_time", time.time())
     if isinstance(execution_start_raw, str):
-        from datetime import datetime, timezone
+        from datetime import datetime
         try:
             dt = datetime.fromisoformat(execution_start_raw.replace("Z", "+00:00"))
             execution_start = dt.timestamp()

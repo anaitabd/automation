@@ -436,7 +436,6 @@ def _inject_sfx(
     if not sfx_map:
         return mixed_path
 
-    sfx_inputs = []
     sfx_local: dict[str, str] = {}
 
     for overlay_type, s3_key in sfx_map.items():

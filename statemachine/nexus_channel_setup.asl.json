@@ -1,0 +1,54 @@
+{
+  "Comment": "Nexus Cloud — channel onboarding: generate branding assets and store in DB",
+  "StartAt": "ChannelSetup",
+  "States": {
+
+    "ChannelSetup": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${NexusChannelSetupArn}",
+        "Payload": {
+          "channel_id.$": "$.channel_id",
+          "channel_name.$": "$.channel_name",
+          "niche.$": "$.niche",
+          "profile.$": "$.profile"
+        }
+      },
+      "ResultSelector": {
+        "channel_id.$": "$.Payload.channel_id",
+        "logo_s3_url.$": "$.Payload.logo_s3_url",
+        "banner_s3_url.$": "$.Payload.banner_s3_url",
+        "intro_video_s3_url.$": "$.Payload.intro_video_s3_url",
+        "outro_video_s3_url.$": "$.Payload.outro_video_s3_url",
+        "color_palette.$": "$.Payload.color_palette",
+        "font_style.$": "$.Payload.font_style",
+        "status.$": "$.Payload.status"
+      },
+      "ResultPath": "$",
+      "TimeoutSeconds": 3600,
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "SetupFailed"
+        }
+      ],
+      "End": true
+    },
+
+    "SetupFailed": {
+      "Type": "Fail",
+      "Error": "ChannelSetupFailed",
+      "Cause": "Channel branding generation failed. Check CloudWatch logs for details."
+    }
+  }
+}

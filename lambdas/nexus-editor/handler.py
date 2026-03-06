@@ -5,7 +5,6 @@ import random
 import subprocess
 import tempfile
 import time
-import urllib.request
 import boto3
 from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
 
@@ -174,7 +173,6 @@ def _escape_drawtext(text: str) -> str:
 def _detect_beats(audio_path: str) -> list[float]:
     try:
         import librosa
-        import numpy as np
         y, sr = librosa.load(audio_path, sr=22050, mono=True)
         tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
         beat_times = librosa.frames_to_time(beat_frames, sr=sr).tolist()
@@ -717,10 +715,6 @@ def lambda_handler(event: dict, context) -> dict:
         profile: dict = json.loads(profile_obj["Body"].read())
 
         editing_cfg = profile.get("editing", {})
-        j_cut_enabled = editing_cfg.get("j_cut_enabled", False)
-        l_cut_enabled = editing_cfg.get("l_cut_enabled", False)
-        j_cut_overlap = editing_cfg.get("j_cut_overlap_sec", 0.8)
-        l_cut_overlap = editing_cfg.get("l_cut_overlap_sec", 1.0)
         default_transition = editing_cfg.get("default_transition", "dissolve")
         transition_dur = editing_cfg.get("transition_duration_sec", 1.0)
         beat_sync = editing_cfg.get("beat_sync_cuts", True)

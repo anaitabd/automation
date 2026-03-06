@@ -224,7 +224,7 @@ def _expand_queries_with_claude(segment_text: str, base_queries: list[str]) -> l
     return base_queries[:4]
 
 
-
+def _search_archive_org(query: str, per_page: int = 10) -> list[str]:
     log.info("Archive.org search: query=%r", query)
     encoded = urllib.parse.quote(query)
     url = (

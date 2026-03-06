@@ -556,7 +556,6 @@ def _render_thumbnail(
     from PIL import Image, ImageDraw
 
     ar, ag, ab, _ = _hex_to_rgba(accent_raw)
-    accent_rgba = (ar, ag, ab, 255)
 
     img = Image.open(eq_path).convert("RGBA")
     W, H = img.size
