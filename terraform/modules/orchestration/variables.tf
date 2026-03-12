@@ -1,0 +1,13 @@
+variable "project_root"         { type = string }
+variable "sfn_role_arn"         { type = string }
+variable "research_arn"         { type = string }
+variable "script_arn"           { type = string }
+variable "audio_task_def_arn"   { type = string }
+variable "visuals_task_def_arn" { type = string }
+variable "editor_task_def_arn"  { type = string }
+variable "shorts_task_def_arn"  { type = string }
+variable "ecs_cluster_arn"      { type = string }
+variable "thumbnail_arn"        { type = string }
+variable "upload_arn"           { type = string }
+variable "notify_arn"           { type = string }
+variable "notify_error_arn"     { type = string }

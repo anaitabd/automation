@@ -1,0 +1,31 @@
+# Copy to terraform.tfvars and fill in values.
+# Sensitive values can also be set via TF_VAR_<name> env vars.
+
+aws_region          = "us-east-1"
+environment         = "prod"
+project_root        = "/absolute/path/to/automation"
+
+# S3 — must match names created by setup_aws.py or your own buckets
+assets_bucket_name  = "nexus-assets-<ACCOUNT_ID>"
+outputs_bucket_name = "nexus-outputs-<ACCOUNT_ID>"
+config_bucket_name  = "nexus-config-<ACCOUNT_ID>"
+
+# API keys
+perplexity_api_key  = "pplx-..."
+elevenlabs_api_key  = "sk_..."
+pexels_api_key      = "..."
+pixabay_api_key     = "..."
+freesound_api_key   = "..."
+discord_webhook_url = "https://discord.com/api/webhooks/..."
+
+# YouTube (optional — manual approval by default)
+youtube_client_id     = ""
+youtube_client_secret = ""
+youtube_refresh_token = ""
+
+# Database
+db_host     = "your-rds-or-postgres-host"
+db_port     = "5432"
+db_name     = "nexus"
+db_user     = "nexus_user"
+db_password = "changeme"

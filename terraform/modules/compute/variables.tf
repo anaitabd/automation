@@ -1,0 +1,17 @@
+variable "project_root"          { type = string }
+variable "assets_bucket_name"    { type = string }
+variable "outputs_bucket_name"   { type = string }
+variable "config_bucket_name"    { type = string }
+variable "research_role_arn"     { type = string }
+variable "script_role_arn"       { type = string }
+variable "thumbnail_role_arn"    { type = string }
+variable "upload_role_arn"       { type = string }
+variable "notify_role_arn"       { type = string }
+variable "api_role_arn"          { type = string }
+variable "ecs_execution_role_arn" { type = string }
+variable "ecs_task_role_arn"     { type = string }
+variable "mediaconvert_role_arn" { type = string }
+variable "efs_file_system_id"    { type = string }
+variable "efs_access_point_id"   { type = string }
+variable "public_subnet_ids"     { type = list(string) }
+variable "state_machine_arn"     { type = string }
