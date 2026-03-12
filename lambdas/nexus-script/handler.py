@@ -290,20 +290,21 @@ SCRIPT_JSON_SCHEMA = """{
   "tags": ["array of strings"],
   "hook": "string",
   "hook_emotion": "tense|excited|curious|dramatic",
-  "sections": [{
+  "scenes": [{
+    "scene_id": "integer starting at 1",
     "title": "string",
-    "content": "string — MINIMUM 150 words of narration per section. Use [PAUSE]/[BEAT]/[BREATH] markers for pacing. Use [NEEDS SOURCE] for unverifiable claims and [UNVERIFIED: claim] for uncertain facts. 6-10 substantial sentences per section (never bullet points).",
+    "narration_text": "string — MINIMUM 150 words of narration per scene. Use [PAUSE]/[BEAT]/[BREATH] markers for pacing. Use [NEEDS SOURCE] for unverifiable claims and [UNVERIFIED: claim] for uncertain facts. 6-10 substantial sentences per scene (never bullet points).",
+    "nova_canvas_prompt": "string — detailed text-to-image prompt for Amazon Nova Canvas describing the base image: subject, setting, lighting, style. Example: 'Cinematic aerial photograph of ancient Roman ruins at golden hour, dramatic shadows, photorealistic, high detail'",
+    "nova_reel_prompt": "string — camera movement and motion description for Amazon Nova Reel. Example: 'Slow cinematic push-in toward the ruins, subtle parallax depth, golden-hour lighting shifts, 3D ease in/out'",
+    "text_overlay": "string — short typewriter-effect text to animate on screen, max 80 chars. Leave empty string if none.",
+    "estimated_duration": 90,
     "emotion": "neutral|tense|dramatic|somber|excited|confident",
-    "duration_estimate_sec": 90,
-    "source_notes": "brief note on factual basis for this section (e.g. 'well-documented historical event' or 'common knowledge' or 'requires verification')",
+    "source_notes": "brief note on factual basis for this scene (e.g. 'well-documented historical event' or 'common knowledge' or 'requires verification')",
     "visual_cue": {
-      "search_queries": ["5 specific, diverse stock footage search terms for rich B-roll"],
-      "camera_style": "ken_burns_in|ken_burns_out|pan_left|pan_right|static",
+      "camera_style": "ken_burns_in|ken_burns_out|pan_left|pan_right|static|slow_drift|dolly_in",
       "color_grade": "cinematic_warm|cold_blue|vintage_sepia|high_contrast|clean_corporate|punchy_vibrant",
       "transition_in": "crossfade|cut|zoom_punch|whip|dissolve|fade_black|wipeleft",
-      "overlay_type": "none|lower_third|stat_counter|quote_card",
-      "overlay_text": "max 60 chars",
-      "clips_needed": 4
+      "overlay_type": "none|lower_third|stat_counter|quote_card"
     }
   }],
   "cta": "string",
@@ -311,6 +312,34 @@ SCRIPT_JSON_SCHEMA = """{
   "mood": "string",
   "factual_confidence": "high|medium|low — overall assessment of factual reliability"
 }"""
+
+EDL_REQUIRED_SCENE_FIELDS = [
+    "scene_id",
+    "narration_text",
+    "nova_canvas_prompt",
+    "nova_reel_prompt",
+    "text_overlay",
+    "estimated_duration",
+]
+
+
+def _validate_edl_schema(script: dict) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(script.get("scenes"), list) or not script["scenes"]:
+        errors.append("'scenes' must be a non-empty list")
+        return errors
+    for i, scene in enumerate(script["scenes"]):
+        if not isinstance(scene, dict):
+            errors.append(f"scenes[{i}] is not a dict")
+            continue
+        for field in EDL_REQUIRED_SCENE_FIELDS:
+            if field not in scene:
+                errors.append(f"scenes[{i}] missing required field '{field}'")
+        if not isinstance(scene.get("estimated_duration"), (int, float)) or scene.get("estimated_duration", 0) <= 0:
+            errors.append(f"scenes[{i}].estimated_duration must be a positive number")
+        if not isinstance(scene.get("scene_id"), int):
+            errors.append(f"scenes[{i}].scene_id must be an integer")
+    return errors
 
 
 def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
@@ -389,19 +418,21 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"- Write fragments. One idea per sentence. Never write like a textbook.\n"
         f"- Short punchy sentences land harder than long complex ones.\n"
         f"- Use contractions. Use rhetorical questions. Sound human.\n"
-        f"- STRUCTURE: Create 8-14 richly detailed sections (NOT fewer)\n"
-        f"- Each section MUST contain 150-250 words of narration (6-10 punchy lines, NOT bullet points)\n"
+        f"- STRUCTURE: Create 8-14 richly detailed scenes (NOT fewer)\n"
+        f"- Each scene MUST contain 150-250 words of narration in 'narration_text' (6-10 punchy lines, NOT bullet points)\n"
         f"- Use [PAUSE], [BEAT], [BREATH], [CUT TO] markers for natural pacing\n"
         f"- [PAUSE] = a full stop beat for emphasis\n"
         f"- [BEAT] = a quick pause between ideas\n"
         f"- [BREATH] = a natural breath point\n"
         f"- [CUT TO] = signals a hard visual cut to new footage\n"
         f"- Use vivid but ACCURATE descriptions — paint scenes the listener can see\n"
-        f"- Build narrative tension across sections — each should flow into the next\n"
+        f"- Build narrative tension across scenes — each should flow into the next\n"
         f"- Include specific details that demonstrate depth (names, places, mechanisms)\n"
-        f"- duration_estimate_sec = round(word_count_in_this_section / 130 * 60). A 150-word section = 69s. NEVER output 0.\n"
-        f"- clips_needed = ceil(duration_estimate_sec / 20). A 90s section needs 4-5 clips.\n"
-        f"- total_duration_estimate = sum of all section duration_estimate_sec values\n\n"
+        f"- estimated_duration = round(word_count_in_narration_text / 130 * 60). A 150-word scene = 69s. NEVER output 0.\n"
+        f"- total_duration_estimate = sum of all scene estimated_duration values\n"
+        f"- nova_canvas_prompt: write a richly descriptive text-to-image prompt for Amazon Nova Canvas. Include subject, setting, lighting quality, photographic style, mood. Be specific and cinematic.\n"
+        f"- nova_reel_prompt: describe the camera motion and animation for Amazon Nova Reel. Use terms like 'slow push-in', 'parallax drift', 'orbital pan', '3D ease in/out', 'crane shot rising'. Match the scene's emotion.\n"
+        f"- text_overlay: short punchy phrase (max 80 chars) that appears as a typewriter animation. Can be a key quote, stat, or scene title. Leave empty string if not applicable.\n\n"
 
         f"═══ RE-HOOK EVERY 90 SECONDS ═══\n"
         f"Every ~90 seconds of content (approximately every 1-2 sections) you MUST drop a re-hook:\n"
@@ -419,8 +450,8 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"- Use sensory language: what does the scene look, sound, feel like?\n"
         f"- Include moments of silence/breathing room for emotional impact ([BEAT] [PAUSE])\n"
         f"- The final section should deliver a gut-punch ending that reframes everything\n"
-        f"- Write MULTIPLE visual_cue search_queries per section (5 specific queries) for rich B-roll\n"
-        f"- Consider visual variety: wide establishing shots, close-ups, archival, motion graphics\n\n"
+        f"- Write MULTIPLE nova_canvas_prompt descriptions per scene — one vivid, cinematic image prompt\n"
+        f"- Consider visual variety: wide establishing shots, close-ups, archival style, maps/documents, aerial\n"
 
         f"═══ RETENTION ARCHITECTURE — OPEN LOOPS ═══\n"
         f"To prevent viewer drop-off, you MUST embed 'Open Loops' every 2-3 sections:\n"
@@ -463,21 +494,33 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"- Include cause-and-effect reasoning: explain WHY things happened, not just WHAT\n"
         f"- Add context that helps viewers understand significance\n"
         f"- End with a thought-provoking line that ties back to the hook\n"
-        f"- Populate \"source_notes\" for each section to indicate factual basis\n"
+        f"- Populate \"source_notes\" for each scene to indicate factual basis\n"
         f"- Set \"factual_confidence\" to honestly reflect your certainty level\n\n"
 
         f"═══ OUTPUT FORMAT ═══\n"
         f"Return ONLY valid JSON matching this schema (no markdown, no extra text):\n{SCRIPT_JSON_SCHEMA}\n\n"
-        f"IMPORTANT: visual_cue.search_queries should contain 5 specific, diverse stock footage search terms.\n"
+        f"IMPORTANT: Each scene must have a unique integer scene_id starting at 1, a nova_canvas_prompt, a nova_reel_prompt, and a text_overlay (empty string if none).\n"
         f"CRITICAL: You MUST output complete, valid JSON with all brackets and braces properly closed. "
-        f"If the script is getting long, reduce the number of sections rather than leaving JSON incomplete. "
+        f"If the script is getting long, reduce the number of scenes rather than leaving JSON incomplete. "
         f"Always close every {{ with }} and every [ with ]. Double-check your JSON is valid before finishing."
     )
     last_err = None
     for attempt in range(max_attempts):
         raw = _bedrock_call(prompt, max_tokens=32768)
         try:
-            return _extract_json(raw)
+            result = _extract_json(raw)
+            edl_errors = _validate_edl_schema(result)
+            if edl_errors:
+                print(
+                    f"[WARN] _pass1_structure EDL validation failed (attempt {attempt + 1}/{max_attempts}): "
+                    f"{edl_errors}"
+                )
+                last_err = json.JSONDecodeError(
+                    f"EDL schema invalid: {edl_errors}", raw, 0
+                )
+                time.sleep(2 ** attempt)
+                continue
+            return result
         except json.JSONDecodeError as exc:
             last_err = exc
             print(
@@ -527,9 +570,9 @@ def _pass_fact_integrity(script: dict) -> dict:
         "the following YouTube script and ensure EVERY factual claim is accurate.\n\n"
 
         "═══ YOUR TASK ═══\n"
-        "Go through each section's content line by line and:\n"
+        "Go through each scene's narration_text line by line and:\n"
         "1. REMOVE any fact, statistic, date, name, or event you are not 100% certain is accurate\n"
-        "2. Replace removed claims with [NEEDS SOURCE] if the section needs that info to make sense\n"
+        "2. Replace removed claims with [NEEDS SOURCE] if the scene needs that info to make sense\n"
         "3. Flag uncertain claims as [UNVERIFIED: \"the claim\"] — do NOT delete them silently\n"
         "4. Fix any dates, numbers, or names you KNOW are wrong\n"
         "5. Remove any embellishment or dramatization that goes beyond documented facts\n"
@@ -548,8 +591,8 @@ def _pass_fact_integrity(script: dict) -> dict:
         "- Do NOT add new content or expand the script\n"
         "- Do NOT change the tone, style, or structure\n"
         "- Do NOT modify visual_cue fields\n"
-        "- ONLY modify \"content\", \"source_notes\", and \"factual_confidence\" fields\n"
-        "- Update \"source_notes\" for each section to reflect your assessment\n"
+        "- ONLY modify \"narration_text\", \"source_notes\", and \"factual_confidence\" fields\n"
+        "- Update \"source_notes\" for each scene to reflect your assessment\n"
         "- Set the top-level \"factual_confidence\" to \"high\", \"medium\", or \"low\"\n"
         "- Keep [PAUSE], [BEAT], [BREATH] markers exactly where they are\n"
         "- Return the COMPLETE script as valid JSON, same schema\n\n"
@@ -560,26 +603,23 @@ def _pass_fact_integrity(script: dict) -> dict:
     raw = _bedrock_call(prompt, max_tokens=32768)
     try:
         audited = _extract_json(raw)
-        # Preserve structural fields the LLM should not have touched
         audited.setdefault("factual_confidence", "medium")
-        # Validate sections: if the LLM mangled them, keep the originals
-        orig_sections = script.get("sections", [])
-        new_sections = audited.get("sections", [])
+        orig_scenes = script.get("scenes", [])
+        new_scenes = audited.get("scenes", [])
         if (
-            not new_sections
-            or not isinstance(new_sections, list)
-            or not all(isinstance(s, dict) for s in new_sections)
+            not new_scenes
+            or not isinstance(new_scenes, list)
+            or not all(isinstance(s, dict) for s in new_scenes)
         ):
             print(
-                f"[WARN] _pass_fact_integrity: sections corrupted "
-                f"(got {type(new_sections).__name__} with "
-                f"{sum(1 for s in new_sections if not isinstance(s, dict)) if isinstance(new_sections, list) else '?'} "
-                f"non-dict items) — keeping original {len(orig_sections)} sections"
+                f"[WARN] _pass_fact_integrity: scenes corrupted "
+                f"(got {type(new_scenes).__name__} with "
+                f"{sum(1 for s in new_scenes if not isinstance(s, dict)) if isinstance(new_scenes, list) else '?'} "
+                f"non-dict items) — keeping original {len(orig_scenes)} scenes"
             )
-            audited["sections"] = orig_sections
+            audited["scenes"] = orig_scenes
         return audited
     except json.JSONDecodeError:
-        # If parsing fails, return original script with a warning note
         script.setdefault("factual_confidence", "unaudited")
         return script
 
@@ -588,79 +628,69 @@ def _pass3_visual_cues(script: dict, profile: dict) -> dict:
     color_grade = profile.get("visuals", {}).get("color_grade_default", "cinematic_warm")
     transition = profile.get("editing", {}).get("default_transition", "dissolve")
 
-    for i, section in enumerate(script.get("sections", [])):
-        # Guard: LLM / json_repair can return sections as strings instead of dicts
-        if not isinstance(section, dict):
-            print(f"[WARN] _pass3_visual_cues: section {i} is {type(section).__name__}, skipping")
+    for i, scene in enumerate(script.get("scenes", [])):
+        if not isinstance(scene, dict):
+            print(f"[WARN] _pass3_visual_cues: scene {i} is {type(scene).__name__}, skipping")
             continue
         prompt = (
-            f"Generate precise visual cue metadata for this YouTube script section.\n"
-            f"Section title: {section['title']}\n"
-            f"Content excerpt: {section['content'][:500]}\n"
-            f"Emotion: {section.get('emotion', 'neutral')}\n"
-            f"Section duration: {section.get('duration_estimate_sec', 60)}s\n"
+            f"Generate precise visual cue metadata for this documentary scene.\n"
+            f"Scene title: {scene.get('title', '')}\n"
+            f"Narration excerpt: {scene.get('narration_text', '')[:500]}\n"
+            f"Emotion: {scene.get('emotion', 'neutral')}\n"
+            f"Scene duration: {scene.get('estimated_duration', 60)}s\n"
+            f"Nova Canvas prompt (base image): {scene.get('nova_canvas_prompt', '')}\n"
+            f"Nova Reel prompt (camera motion): {scene.get('nova_reel_prompt', '')}\n"
             f"Default color grade: {color_grade}\n"
             f"Default transition: {transition}\n\n"
-            "Think about visual VARIETY: wide establishing shots, close-ups, archival footage, "
-            "abstract textures, time-lapses, aerial views. Each search query should find a DIFFERENT "
-            "type of footage to create visual richness.\n\n"
             "Return ONLY valid JSON (no markdown) with this structure:\n"
             "{\n"
-            '  "search_queries": ["term1", "term2", "term3", "term4", "term5"],\n'
             '  "camera_style": "ken_burns_in|ken_burns_out|pan_left|pan_right|static|slow_drift|dolly_in",\n'
             f'  "color_grade": "{color_grade}",\n'
             '  "transition_in": "crossfade|cut|zoom_punch|whip|dissolve|fade_black|wipeleft",\n'
-            '  "overlay_type": "none|lower_third|stat_counter|quote_card",\n'
-            '  "overlay_text": "max 60 chars",\n'
-            '  "clips_needed": 2\n'
+            '  "overlay_type": "none|lower_third|stat_counter|quote_card"\n'
             "}\n"
-            "clips_needed should be 2-4 depending on section length (1 per ~15-20s of content)."
         )
-        raw = _bedrock_call(prompt, max_tokens=512)
+        raw = _bedrock_call(prompt, max_tokens=256)
         try:
             cue = _extract_json(raw)
         except json.JSONDecodeError:
             cue = {
-                "search_queries": [section["title"]],
                 "camera_style": "static",
                 "color_grade": color_grade,
                 "transition_in": transition,
                 "overlay_type": "none",
-                "overlay_text": "",
-                "clips_needed": 2,
             }
-        script["sections"][i]["visual_cue"] = cue
+        script["scenes"][i]["visual_cue"] = cue
     return script
 
 
 def _pass4_pacing(script: dict, profile: dict) -> dict:
     cpm = profile.get("editing", {}).get("cuts_per_minute_target", 8)
     prompt = (
-        f"Polish the pacing of this YouTube script for {cpm} cuts per minute. "
+        f"Polish the pacing of this YouTube documentary script for {cpm} cuts per minute. "
         "Adjust [PAUSE], [BEAT], [BREATH] markers, tighten sentences, and update "
-        "duration_estimate_sec for each section. Return the full script JSON "
+        "estimated_duration for each scene. Return the full script JSON "
         "(same schema, no markdown changes, only values updated).\n\n"
         "RULES:\n"
         "- Do NOT add new factual claims, statistics, or details that weren't in the original\n"
         "- Do NOT remove [NEEDS SOURCE] or [UNVERIFIED] markers\n"
         "- Do NOT change the meaning of any sentence — only tighten the wording\n"
-        "- Preserve source_notes and factual_confidence fields unchanged\n"
+        "- Preserve source_notes, factual_confidence, nova_canvas_prompt, nova_reel_prompt, text_overlay fields unchanged\n"
         "- CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
         f"{json.dumps(script, indent=2)}"
     )
     raw = _bedrock_call(prompt, max_tokens=32768)
     try:
         paced = _extract_json(raw)
-        # Validate sections structure
-        orig_sections = script.get("sections", [])
-        new_sections = paced.get("sections", [])
+        orig_scenes = script.get("scenes", [])
+        new_scenes = paced.get("scenes", [])
         if (
-            not new_sections
-            or not isinstance(new_sections, list)
-            or not all(isinstance(s, dict) for s in new_sections)
+            not new_scenes
+            or not isinstance(new_scenes, list)
+            or not all(isinstance(s, dict) for s in new_scenes)
         ):
-            print("[WARN] _pass4_pacing: sections corrupted — keeping originals")
-            paced["sections"] = orig_sections
+            print("[WARN] _pass4_pacing: scenes corrupted — keeping originals")
+            paced["scenes"] = orig_scenes
         return paced
     except json.JSONDecodeError:
         return script
@@ -682,7 +712,7 @@ def _pass5_fact_check(script: dict, perplexity_key: str) -> dict:
                     "FOR EACH CLAIM:\n"
                     "- If VERIFIED: keep it and update source_notes with your source\n"
                     "- If INCORRECT: fix it with the correct data and note the correction in source_notes\n"
-                    "- If UNVERIFIABLE: mark it as [UNVERIFIED: \"the claim\"] in the content\n"
+                    "- If UNVERIFIABLE: mark it as [UNVERIFIED: \"the claim\"] in the narration_text\n"
                     "- If FABRICATED (no evidence it ever happened): REMOVE it entirely and replace with [NEEDS SOURCE]\n\n"
                     "RULES:\n"
                     "- Do NOT add new fabricated facts to replace removed ones\n"
@@ -766,20 +796,21 @@ def lambda_handler(event: dict, context) -> dict:
                 "tags": ["dry_run"],
                 "hook": "This is a dry run.",
                 "hook_emotion": "neutral",
-                "sections": [
+                "scenes": [
                     {
-                        "title": "Section 1",
-                        "content": "Dry run content. [PAUSE]",
+                        "scene_id": 1,
+                        "title": "Scene 1",
+                        "narration_text": "Dry run content. [PAUSE]",
+                        "nova_canvas_prompt": "Cinematic wide shot of an empty studio, neutral lighting",
+                        "nova_reel_prompt": "Slow push-in, static camera, subtle depth of field",
+                        "text_overlay": "",
+                        "estimated_duration": 60,
                         "emotion": "neutral",
-                        "duration_estimate_sec": 60,
                         "visual_cue": {
-                            "search_queries": ["test footage"],
                             "camera_style": "static",
                             "color_grade": "cinematic_warm",
                             "transition_in": "dissolve",
                             "overlay_type": "none",
-                            "overlay_text": "",
-                            "clips_needed": 2,
                         },
                     }
                 ],
@@ -810,20 +841,18 @@ def lambda_handler(event: dict, context) -> dict:
 
             confidence = script.get("factual_confidence", "unknown")
             log.info("Script complete — factual_confidence=%s", confidence)
-        # ── Ensure duration fields are always populated ──────────────────────
-        # If the LLM failed to calculate durations, derive them from word counts.
-        sections = script.get("sections", [])
-        for section in sections:
-            if not isinstance(section, dict):
+        scenes = script.get("scenes", [])
+        for scene in scenes:
+            if not isinstance(scene, dict):
                 continue
-            if not section.get("duration_estimate_sec"):
-                words = len(section.get("content", "").split())
-                section["duration_estimate_sec"] = max(30, int(words / 130 * 60))
+            if not scene.get("estimated_duration"):
+                words = len(scene.get("narration_text", "").split())
+                scene["estimated_duration"] = max(30, int(words / 130 * 60))
         total_dur = script.get("total_duration_estimate") or 0
         if not total_dur:
-            total_dur = sum(float(s.get("duration_estimate_sec", 0) if isinstance(s, dict) else 0) for s in sections)
+            total_dur = sum(float(s.get("estimated_duration", 0) if isinstance(s, dict) else 0) for s in scenes)
         script["total_duration_estimate"] = int(total_dur)
-        log.info("Duration: %d sections, total_duration_estimate=%ds", len(sections), int(total_dur))
+        log.info("Duration: %d scenes, total_duration_estimate=%ds", len(scenes), int(total_dur))
         script["run_id"] = run_id
         log.info("Saving script to S3")
         s3_key = _save_to_s3(run_id, script)
@@ -831,7 +860,7 @@ def lambda_handler(event: dict, context) -> dict:
         elapsed = time.time() - step_start
         notify_step_complete("script", run_id, [
             {"name": "Title", "value": script["title"][:100], "inline": False},
-            {"name": "Sections", "value": str(len(script.get("sections", []))), "inline": True},
+            {"name": "Scenes", "value": str(len(script.get("scenes", []))), "inline": True},
             {"name": "Est. Duration", "value": f"{script.get('total_duration_estimate', 0)}s", "inline": True},
             {"name": "Profile", "value": profile_name, "inline": True},
             {"name": "Fact Confidence", "value": script.get("factual_confidence", "N/A"), "inline": True},
@@ -846,7 +875,7 @@ def lambda_handler(event: dict, context) -> dict:
             "description": script.get("description", ""),
             "tags": script.get("tags", []),
             "total_duration_estimate": script.get("total_duration_estimate", 0),
-            "section_count": len(script.get("sections", [])),
+            "scene_count": len(script.get("scenes", [])),
             "factual_confidence": script.get("factual_confidence", "unknown"),
         }
 

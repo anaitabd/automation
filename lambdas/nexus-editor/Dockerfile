@@ -1,35 +1,45 @@
-FROM public.ecr.aws/lambda/python:3.12
+FROM node:20-slim
 
-RUN dnf install -y tar gzip xz \
-        freetype fontconfig fontconfig-devel \
-        dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts && \
-    fc-cache -fv && \
-    ARCH=$(uname -m) && \
-    if [ "$ARCH" = "aarch64" ]; then \
-      curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz \
-      | tar -xJ --strip-components=1 -C /usr/local/bin/ --wildcards '*/ffmpeg' '*/ffprobe'; \
-    else \
-      curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
-      | tar -xJ --strip-components=1 -C /usr/local/bin/ --wildcards '*/ffmpeg' '*/ffprobe'; \
-    fi && \
-    ffmpeg -version && \
-    dnf clean all
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        python3 \
+        python3-pip \
+        python3-boto3 \
+        fonts-dejavu-core \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libcups2 \
+        libdrm2 \
+        libxkbcommon0 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxfixes3 \
+        libxrandr2 \
+        libgbm1 \
+        libasound2 \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libnss3 \
+        libnspr4 \
+        libx11-6 \
+        libx11-xcb1 \
+        libxcb1 \
+        libxext6 \
+        && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-    requests boto3 psycopg2-binary python-dotenv json-repair \
-    librosa numpy scipy scikit-learn Pillow \
-    --extra-index-url https://pypi.org/simple/
+WORKDIR /app
+
+COPY lambdas/nexus-editor/package.json ./
+RUN npm install --omit=dev
+
+COPY lambdas/nexus-editor/render.js ./
+COPY lambdas/nexus-editor/src ./src
+COPY lambdas/nexus_pipeline_utils.py ./nexus_pipeline_utils.py
+
+ENV TMPDIR=/mnt/scratch
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
 
 RUN mkdir -p /mnt/scratch
 
-COPY lambdas/nexus_pipeline_utils.py ${LAMBDA_TASK_ROOT}/nexus_pipeline_utils.py
-COPY lambdas/nexus-editor/handler.py ${LAMBDA_TASK_ROOT}/handler.py
-
-ENV TMPDIR=/mnt/scratch
-
-# Override the Lambda RIC entrypoint — run as a standalone Python script.
-# Step Functions passes inputs via ECS ContainerOverrides environment variables;
-# lambda_handler() already reads them with os.environ fallbacks.
-ENTRYPOINT ["python"]
-CMD ["/var/task/handler.py"]
-
+ENTRYPOINT ["node", "render.js"]
