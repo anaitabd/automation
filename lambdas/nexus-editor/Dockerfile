@@ -24,6 +24,7 @@ RUN mkdir -p /mnt/scratch
 
 COPY lambdas/nexus_pipeline_utils.py ${LAMBDA_TASK_ROOT}/nexus_pipeline_utils.py
 COPY lambdas/nexus-editor/handler.py ${LAMBDA_TASK_ROOT}/handler.py
+COPY lambdas/shared/nova_canvas.py ${LAMBDA_TASK_ROOT}/nova_canvas.py
 
 ENV TMPDIR=/mnt/scratch
 

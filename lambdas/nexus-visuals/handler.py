@@ -519,6 +519,7 @@ def _source_and_process_section(
     s3,
     run_id: str,
     pexels_key: str,
+    nova_reel_s3_uri: str | None = None,
 ) -> dict | None:
     visual_cue = section.get("visual_cue", {})
     queries = visual_cue.get("search_queries", [section.get("title", "nature landscape")])
@@ -569,10 +570,23 @@ def _source_and_process_section(
 
     # Sort descending by score
     scored.sort(key=lambda x: x[0], reverse=True)
+
+    # If Nova Reel clip available, download from S3 and inject as top-score candidate
+    if nova_reel_s3_uri:
+        try:
+            reel_parts = nova_reel_s3_uri.replace("s3://", "").split("/", 1)
+            reel_bucket, reel_key = reel_parts[0], reel_parts[1]
+            reel_local = os.path.join(tmpdir, f"nova_reel_{section_idx:03d}.mp4")
+            s3.download_file(reel_bucket, reel_key, reel_local)
+            scored.insert(0, (0.92, reel_local))
+            log.info("Section %d: Nova Reel AI clip injected (score=0.92)", section_idx)
+        except Exception as _reel_err:
+            log.warning("Section %d: Nova Reel clip injection failed: %s", section_idx, _reel_err)
+
     log.info("Section %d: %d clips scored, best=%.2f, threshold=%.2f",
              section_idx, len(scored), scored[0][0] if scored else 0, threshold)
 
-    # Take the top N clips over threshold
+    # Take the top N clips over threshold (Nova Reel clip has score 0.92, always passes)
     selected = [clip for clip in scored if clip[0] >= threshold][:clips_needed]
 
     if not selected:
@@ -704,6 +718,43 @@ def lambda_handler(event: dict, context) -> dict:
         with tempfile.TemporaryDirectory(dir=SCRATCH_DIR if os.path.isdir(SCRATCH_DIR) else None) as tmpdir:
             lut_local_path = _download_lut(color_grade_default, tmpdir, s3)
 
+            # ── Nova Reel: submit AI clip jobs for ALL sections before Pexels processing ──
+            nova_reel_max = int(os.environ.get("NOVA_REEL_MAX_CLIPS", str(len(sections))))
+            if nova_reel_max > 0:
+                try:
+                    from nova_reel import submit_and_poll_batch  # type: ignore
+                    reel_output_prefix = f"s3://{S3_ASSETS_BUCKET}/{run_id}/reel/"
+                    niche_hint = niche or profile_name
+                    reel_jobs: list[dict] = []
+                    for idx, sec in enumerate(sections[:nova_reel_max]):
+                        cue = sec.get("visual_cue", {})
+                        queries = cue.get("search_queries", [])
+                        sec_title = sec.get("title", "")
+                        query_hint = queries[0] if queries else sec_title
+                        hero_prompt = (
+                            f"Cinematic 6-second documentary video clip: {query_hint}, "
+                            f"{niche_hint} style, dark atmospheric lighting, "
+                            f"smooth professional camera movement, high quality cinematography, "
+                            f"no text overlay, dramatic shadows"
+                        )
+                        reel_jobs.append({"section_idx": idx, "prompt": hero_prompt})
+                    if reel_jobs:
+                        log.info("Nova Reel: submitting %d AI clip jobs", len(reel_jobs))
+                        nova_reel_results = submit_and_poll_batch(
+                            jobs=reel_jobs,
+                            output_s3_prefix=reel_output_prefix,
+                            timeout_sec=600,
+                            max_clips=nova_reel_max,
+                        )
+                        reel_ok = sum(1 for v in nova_reel_results.values() if v)
+                        log.info("Nova Reel: %d/%d AI clips ready", reel_ok, len(reel_jobs))
+                        for idx, reel_uri in nova_reel_results.items():
+                            if reel_uri and idx < len(sections):
+                                sections[idx]["nova_reel_s3_uri"] = reel_uri
+                except Exception as _reel_submit_err:
+                    log.warning("Nova Reel submission failed (continuing with Pexels only): %s",
+                                _reel_submit_err)
+
             # ── Process sections in parallel to stay within the 15-min timeout ──
             max_workers = min(len(sections), int(os.environ.get("VISUALS_PARALLELISM", 4)))
             processed_sections: list[dict] = []
@@ -727,6 +778,7 @@ def lambda_handler(event: dict, context) -> dict:
                     s3=thread_s3,
                     run_id=run_id,
                     pexels_key=pexels_key,
+                    nova_reel_s3_uri=section.get("nova_reel_s3_uri"),
                 )
                 elapsed = time.time() - section_start
                 log.info("Section %d/%d done in %.1fs (success=%s)",

@@ -8,15 +8,15 @@
     "script_passes": ["structure", "depth", "hook_polish", "fact_integrity", "pacing"]
   },
   "voice": {
-    "model_id": "eleven_multilingual_v2",
+    "model_id": "eleven_turbo_v2_5",
     "voice_id": "21m00Tcm4TlvDq8ikWAM",
-    "stability": 0.45,
+    "stability": 0.22,
     "similarity_boost": 0.80,
-    "style": 0.68,
+    "style": 0.82,
     "emotion_mapping": {
-      "tense": {"stability": 0.32, "style": 0.80},
-      "dramatic": {"stability": 0.30, "style": 0.88},
-      "somber": {"stability": 0.55, "style": 0.55}
+      "tense": {"stability": 0.18, "style": 0.90},
+      "dramatic": {"stability": 0.15, "style": 0.95},
+      "somber": {"stability": 0.38, "style": 0.60}
     }
   },
   "sound_design": {

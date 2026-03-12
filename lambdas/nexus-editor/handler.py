@@ -235,14 +235,30 @@ def _build_intro_slate(
     tmpdir: str,
     accent_color: str = "#C8A96E",
 ) -> str:
-    """Render a 6-second intro slate using Pillow (no drawtext / libfreetype needed)."""
+    """Render a 6-second intro slate. Uses Nova Canvas AI background when available."""
     from PIL import Image, ImageDraw
 
     W, H = 1920, 1080
     ar, ag, ab, _ = _hex_to_rgba(accent_color)
     accent_rgba = (ar, ag, ab, 255)
 
-    img = Image.new("RGB", (W, H), (0, 0, 0))
+    # Try Nova Canvas for cinematic AI background
+    bg_img = None
+    try:
+        from nova_canvas import generate_image  # type: ignore
+        from io import BytesIO as _BytesIO
+        nc_prompt = (
+            f"Cinematic wide shot background, documentary film, dark atmospheric ancient history, "
+            f"dramatic volumetric lighting, deep shadows, moody atmosphere, no text, no titles, "
+            f"4K cinematic quality, {channel_name} style"
+        )
+        png_bytes = generate_image(nc_prompt, width=1280, height=720, quality="premium")
+        bg_img = Image.open(_BytesIO(png_bytes)).resize((W, H), Image.LANCZOS)
+        log.info("Nova Canvas intro background generated successfully")
+    except Exception as _nc_err:
+        log.warning("Nova Canvas intro background failed (using solid black): %s", _nc_err)
+
+    img = bg_img.convert("RGB") if bg_img else Image.new("RGB", (W, H), (0, 0, 0))
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
@@ -308,14 +324,29 @@ def _build_outro_slate(
     tmpdir: str,
     accent_color: str = "#C8A96E",
 ) -> str:
-    """Render a 10-second outro slate using Pillow (no drawtext / libfreetype needed)."""
+    """Render a 10-second outro slate. Uses Nova Canvas AI background when available."""
     from PIL import Image, ImageDraw
 
     W, H = 1920, 1080
     ar, ag, ab, _ = _hex_to_rgba(accent_color)
     accent_rgba = (ar, ag, ab, 255)
 
-    img = Image.new("RGB", (W, H), (0, 0, 0))
+    # Try Nova Canvas for cinematic AI background
+    bg_img = None
+    try:
+        from nova_canvas import generate_image  # type: ignore
+        from io import BytesIO as _BytesIO
+        nc_prompt = (
+            f"Cinematic dark background for video outro, deep space or ancient temple atmosphere, "
+            f"moody dramatic lighting, no text, no titles, fade to black ambiance, 4K quality"
+        )
+        png_bytes = generate_image(nc_prompt, width=1280, height=720, quality="premium")
+        bg_img = Image.open(_BytesIO(png_bytes)).resize((W, H), Image.LANCZOS)
+        log.info("Nova Canvas outro background generated successfully")
+    except Exception as _nc_err:
+        log.warning("Nova Canvas outro background failed (using solid black): %s", _nc_err)
+
+    img = bg_img.convert("RGB") if bg_img else Image.new("RGB", (W, H), (0, 0, 0))
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
@@ -451,7 +482,8 @@ def _loop_clip_to_duration(clip_path: str, target_duration: float, tmpdir: str, 
         out = os.path.join(tmpdir, f"looped_{idx:03d}.mp4")
         subprocess.run(
             [FFMPEG_BIN, "-y", "-i", clip_path, "-t", str(target_duration),
-             "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-an", out],
+             "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+             "-pix_fmt", "yuv420p", "-an", out],
             check=True, capture_output=True,
         )
         return out
@@ -466,7 +498,8 @@ def _loop_clip_to_duration(clip_path: str, target_duration: float, tmpdir: str, 
     subprocess.run(
         [FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0", "-i", list_file,
          "-t", str(target_duration),
-         "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-an",
+         "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+         "-pix_fmt", "yuv420p", "-an",
          looped_raw],
         check=True, capture_output=True,
     )
@@ -530,6 +563,22 @@ def _apply_l_cut(
         return video_b
 
 
+def _normalize_for_xfade(src: str, tag: str, idx: int, tmpdir: str, w: int = 1920, h: int = 1080) -> str:
+    """Re-encode a clip to a fixed resolution/pixel-format so xfade never gets EINVAL."""
+    dst = os.path.join(tmpdir, f"norm_{tag}_{idx:03d}.mp4")
+    subprocess.run(
+        [
+            FFMPEG_BIN, "-y", "-i", src,
+            "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-pix_fmt", "yuv420p", "-an",
+            dst,
+        ],
+        check=True, capture_output=True,
+    )
+    return dst
+
+
 def _apply_transition(
     clip_a: str,
     clip_b: str,
@@ -566,19 +615,47 @@ def _apply_transition(
             check=True, capture_output=True,
         )
     else:
-        subprocess.run(
-            [
-                FFMPEG_BIN, "-y",
-                "-i", clip_a, "-i", clip_b,
-                "-filter_complex",
-                f"[0][1]xfade=transition={xfade_name}:duration={duration}:offset={offset}[v]",
-                "-map", "[v]",
-                "-c:v", "libx264", "-preset", "medium", "-crf", "16",
-                "-pix_fmt", "yuv420p",
-                out,
-            ],
-            check=True, capture_output=True,
+        # Build an inline filter_complex that normalises resolution + fps
+        # for BOTH inputs before xfade → avoids EINVAL (-22) on dimension/fps mismatch.
+        # Also subtract 0.1 s safety margin from offset to prevent timestamp
+        # precision edge case where offset+duration slightly exceeds clip duration.
+        offset = max(0.0, dur_a - duration - 0.1)
+        scale_crop = (
+            "scale=1920:1080:force_original_aspect_ratio=increase,"
+            "crop=1920:1080,setsar=1,fps=30"
         )
+        filt = (
+            f"[0:v]{scale_crop}[va];"
+            f"[1:v]{scale_crop}[vb];"
+            f"[va][vb]xfade=transition={xfade_name}:"
+            f"duration={duration}:offset={offset}[v]"
+        )
+        try:
+            subprocess.run(
+                [
+                    FFMPEG_BIN, "-y",
+                    "-i", clip_a, "-i", clip_b,
+                    "-filter_complex", filt,
+                    "-map", "[v]",
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+                    "-pix_fmt", "yuv420p",
+                    out,
+                ],
+                check=True, capture_output=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr_msg = exc.stderr.decode("utf-8", errors="replace")[-2000:] if exc.stderr else "no stderr"
+            log.error("xfade transition=%s failed (exit %d):\n%s", xfade_name, exc.returncode, stderr_msg)
+            # Fallback: plain concat cut
+            list_file = os.path.join(tmpdir, f"concat_fb_{idx}.txt")
+            with open(list_file, "w") as f:
+                f.write(f"file '{clip_a}'\n")
+                f.write(f"file '{clip_b}'\n")
+            subprocess.run(
+                [FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0", "-i", list_file,
+                 "-c", "copy", out],
+                check=True, capture_output=True,
+            )
     return out
 
 

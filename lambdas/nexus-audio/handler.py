@@ -26,7 +26,7 @@ def get_secret(name: str) -> dict:
 S3_ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
-ELEVENLABS_MODEL = "eleven_multilingual_v2"
+ELEVENLABS_MODEL = "eleven_turbo_v2_5"
 
 PACING_MAP = {
     "[PAUSE]": "...",
