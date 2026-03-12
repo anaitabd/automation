@@ -504,7 +504,7 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"If the script is getting long, reduce the number of scenes rather than leaving JSON incomplete. "
         f"Always close every {{ with }} and every [ with ]. Double-check your JSON is valid before finishing."
     )
-    last_err = None
+    last_err: Exception | None = None
     for attempt in range(max_attempts):
         raw = _bedrock_call(prompt, max_tokens=32768)
         try:
@@ -515,9 +515,7 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
                     f"[WARN] _pass1_structure EDL validation failed (attempt {attempt + 1}/{max_attempts}): "
                     f"{edl_errors}"
                 )
-                last_err = json.JSONDecodeError(
-                    f"EDL schema invalid: {edl_errors}", raw, 0
-                )
+                last_err = ValueError(f"EDL schema invalid: {edl_errors}")
                 time.sleep(2 ** attempt)
                 continue
             return result

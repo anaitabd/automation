@@ -42,6 +42,8 @@ interface DocumentaryCompositionProps {
     title?: string;
 }
 
+const CURSOR_BLINK_FRAMES = 15;
+
 interface TypewriterTextProps {
     text: string;
     startFrame: number;
@@ -81,7 +83,7 @@ const TypewriterText: React.FC<TypewriterTextProps> = ({
         >
             {visible}
             {charsToShow < text.length && (
-                <span style={{ opacity: Math.floor(elapsed / 15) % 2 === 0 ? 1 : 0 }}>
+                <span style={{ opacity: Math.floor(elapsed / CURSOR_BLINK_FRAMES) % 2 === 0 ? 1 : 0 }}>
                     |
                 </span>
             )}
@@ -229,7 +231,7 @@ export const DocumentaryComposition: React.FC<DocumentaryCompositionProps> = ({
     let cumulativeFrame = 0;
     const sceneSequences = scenes.map((scene) => {
         const durationInFrames = Math.max(
-            fps,
+            1,
             Math.round(scene.estimated_duration * fps)
         );
         const fromFrame = cumulativeFrame;

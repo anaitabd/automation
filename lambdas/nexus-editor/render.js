@@ -74,10 +74,10 @@ async function downloadSceneAssets(scenes, tmpDir) {
 
 async function main() {
     if (!RUN_ID) {
-        throw new Error("RUN_ID environment variable is required");
+        throw new Error("[nexus-editor] RUN_ID environment variable is required");
     }
     if (!EDL_S3_KEY) {
-        throw new Error("EDL_S3_KEY environment variable is required");
+        throw new Error("[nexus-editor] EDL_S3_KEY environment variable is required");
     }
 
     const tmpDir = fs.mkdtempSync(path.join(SCRATCH_DIR, "nexus-render-"));

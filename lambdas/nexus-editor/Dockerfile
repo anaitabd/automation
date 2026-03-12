@@ -38,7 +38,6 @@ COPY lambdas/nexus-editor/src ./src
 COPY lambdas/nexus_pipeline_utils.py ./nexus_pipeline_utils.py
 
 ENV TMPDIR=/mnt/scratch
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
 
 RUN mkdir -p /mnt/scratch
 

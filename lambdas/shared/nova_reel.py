@@ -139,7 +139,27 @@ def generate_and_upload_video(
     s3 = boto3.client("s3")
     completed_bucket = completed_uri.replace("s3://", "").split("/")[0]
     completed_key = "/".join(completed_uri.replace("s3://", "").split("/")[1:])
-    video_s3_key = completed_key.rstrip("/") + "/output.mp4" if not completed_key.endswith(".mp4") else completed_key
+    if completed_key.endswith(".mp4"):
+        video_s3_key = completed_key
+    else:
+        video_s3_key = completed_key.rstrip("/") + "/output.mp4"
+    try:
+        s3.head_object(Bucket=completed_bucket, Key=video_s3_key)
+    except Exception:
+        paginator = s3.get_paginator("list_objects_v2")
+        found = None
+        for page in paginator.paginate(Bucket=completed_bucket, Prefix=completed_key.rstrip("/")):
+            for obj in page.get("Contents", []):
+                if obj["Key"].endswith(".mp4"):
+                    found = obj["Key"]
+                    break
+            if found:
+                break
+        if not found:
+            raise RuntimeError(
+                f"Nova Reel output .mp4 not found under s3://{completed_bucket}/{completed_key}"
+            )
+        video_s3_key = found
     final_s3_key = output_s3_key if output_s3_key.endswith(".mp4") else output_s3_key + ".mp4"
     copy_source = {"Bucket": completed_bucket, "Key": video_s3_key}
     s3.copy(copy_source, output_s3_bucket, final_s3_key)

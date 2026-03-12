@@ -51,9 +51,10 @@ def generate_image(
             if not images:
                 raise RuntimeError("Nova Canvas returned no images")
             return base64.b64decode(images[0])
-        except Exception:
+        except Exception as exc:
             if attempt == retries - 1:
                 raise
+            print(f"[WARN] nova_canvas.generate_image attempt {attempt + 1}/{retries} failed: {exc}")
             time.sleep(2 ** attempt)
     raise RuntimeError("Unreachable")
 
