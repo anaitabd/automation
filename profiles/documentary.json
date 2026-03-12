@@ -1,10 +1,11 @@
 {
   "name": "documentary",
   "llm": {
-    "script_model": "anthropic.claude-3-sonnet-20240229-v1:0",
-    "hook_model": "anthropic.claude-3-sonnet-20240229-v1:0",
+    "script_model": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "hook_model": "anthropic.claude-sonnet-4-20250514-v1:0",
     "research_model": "perplexity/sonar-pro",
-    "visual_cue_model": "anthropic.claude-3-sonnet-20240229-v1:0",
+    "visual_cue_model": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "condenser_model": "anthropic.claude-sonnet-4-20250514-v1:0",
     "script_passes": ["structure", "depth", "hook_polish", "fact_integrity", "pacing"]
   },
   "voice": {
@@ -63,5 +64,15 @@
     "target_duration_max": 25,
     "tone": "authoritative_compelling",
     "narrative_style": "third_person_omniscient"
+  },
+  "shorts": {
+    "bpm_estimate": 75,
+    "voice_stability": 0.65,
+    "voice_similarity_boost": 0.75,
+    "voice_style": 0.3,
+    "lut_preset": "teal_orange",
+    "nova_reel_prompt_template": "vertical cinematic 9:16, {subject}, slow dramatic dolly forward, golden hour atmospheric lighting, rich teal and orange grade, continuous smooth camera movement, loop-friendly motion, IMAX quality, 6 second clip",
+    "overlay_style": "kinetic_title",
+    "transition_style": "dissolve"
   }
 }

@@ -1,10 +1,11 @@
 {
   "name": "finance",
   "llm": {
-    "script_model": "anthropic.claude-3-sonnet-20240229-v1:0",
-    "hook_model": "anthropic.claude-3-sonnet-20240229-v1:0",
+    "script_model": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "hook_model": "anthropic.claude-sonnet-4-20250514-v1:0",
     "research_model": "perplexity/sonar-pro",
-    "visual_cue_model": "anthropic.claude-3-sonnet-20240229-v1:0",
+    "visual_cue_model": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "condenser_model": "anthropic.claude-sonnet-4-20250514-v1:0",
     "script_passes": ["structure", "data_enrichment", "accuracy_check", "hook_polish", "pacing"]
   },
   "voice": {
@@ -63,5 +64,15 @@
     "target_duration_max": 20,
     "tone": "authoritative_data_driven",
     "narrative_style": "second_person_direct"
+  },
+  "shorts": {
+    "bpm_estimate": 95,
+    "voice_stability": 0.75,
+    "voice_similarity_boost": 0.80,
+    "voice_style": 0.1,
+    "lut_preset": "cold_blue",
+    "nova_reel_prompt_template": "vertical 9:16 professional, {subject}, smooth tracking shot, clean corporate aesthetic, cool blue tones, sharp depth of field, subtle continuous camera motion, broadcast quality, 6 second clip",
+    "overlay_style": "stat_reveal",
+    "transition_style": "wipeleft"
   }
 }

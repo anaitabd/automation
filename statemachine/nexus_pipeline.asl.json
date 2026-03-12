@@ -30,9 +30,16 @@
         {
           "And": [
             { "Variable": "$.resume_from", "IsPresent": true },
+            { "Variable": "$.resume_from", "StringEquals": "ContentAssembly" }
+          ],
+          "Next": "ContentAssembly"
+        },
+        {
+          "And": [
+            { "Variable": "$.resume_from", "IsPresent": true },
             { "Variable": "$.resume_from", "StringEquals": "Editor" }
           ],
-          "Next": "Editor"
+          "Next": "ContentAssembly"
         },
         {
           "And": [
@@ -71,6 +78,8 @@
         "dry_run.$": "$.Payload.dry_run",
         "niche.$": "$$.Execution.Input.niche",
         "subnets.$": "$$.Execution.Input.subnets",
+        "generate_shorts.$": "$$.Execution.Input.generate_shorts",
+        "shorts_tiers.$": "$$.Execution.Input.shorts_tiers",
         "research_s3_key.$": "$.Payload.research_s3_key",
         "selected_topic.$": "$.Payload.selected_topic",
         "angle.$": "$.Payload.angle",
@@ -117,6 +126,9 @@
         "dry_run.$": "$.Payload.dry_run",
         "niche.$": "$$.Execution.Input.niche",
         "subnets.$": "$$.Execution.Input.subnets",
+        "generate_shorts.$": "$$.Execution.Input.generate_shorts",
+        "shorts_tiers.$": "$$.Execution.Input.shorts_tiers",
+        "channel_id.$": "$$.Execution.Input.channel_id",
         "script_s3_key.$": "$.Payload.script_s3_key",
         "title.$": "$.Payload.title",
         "section_count.$": "$.Payload.section_count",
@@ -196,6 +208,9 @@
                 "dry_run.$": "$.dry_run",
                 "niche.$": "$.niche",
                 "subnets.$": "$.subnets",
+                "generate_shorts.$": "$.generate_shorts",
+                "shorts_tiers.$": "$.shorts_tiers",
+                "channel_id.$": "$.channel_id",
                 "script_s3_key.$": "$.script_s3_key",
                 "title.$": "$.title",
                 "total_duration_estimate.$": "$.total_duration_estimate",
@@ -277,53 +292,173 @@
         "title.$": "$[0].title",
         "total_duration_estimate.$": "$[0].total_duration_estimate",
         "mixed_audio_s3_key.$": "$[0].mixed_audio_s3_key",
-        "subnets.$": "$[0].subnets"
+        "subnets.$": "$[0].subnets",
+        "generate_shorts.$": "$[0].generate_shorts",
+        "shorts_tiers.$": "$[0].shorts_tiers",
+        "channel_id.$": "$[0].channel_id"
       },
       "ResultPath": "$",
-      "Next": "Editor"
+      "Next": "ContentAssembly"
     },
 
-    "Editor": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::ecs:runTask.sync",
-      "TimeoutSeconds": 7200,
-      "Parameters": {
-        "LaunchType": "FARGATE",
-        "Cluster": "${NexusClusterArn}",
-        "TaskDefinition": "${NexusEditorTaskDefArn}",
-        "NetworkConfiguration": {
-          "AwsvpcConfiguration": {
-            "AssignPublicIp": "ENABLED",
-            "Subnets.$": "$.subnets"
+    "ContentAssembly": {
+      "Type": "Parallel",
+      "Comment": "Editor (long-form) and Shorts (short-form) run in parallel.",
+      "Branches": [
+        {
+          "StartAt": "Editor",
+          "States": {
+            "Editor": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::ecs:runTask.sync",
+              "TimeoutSeconds": 7200,
+              "Parameters": {
+                "LaunchType": "FARGATE",
+                "Cluster": "${NexusClusterArn}",
+                "TaskDefinition": "${NexusEditorTaskDefArn}",
+                "NetworkConfiguration": {
+                  "AwsvpcConfiguration": {
+                    "AssignPublicIp": "ENABLED",
+                    "Subnets.$": "$.subnets"
+                  }
+                },
+                "Overrides": {
+                  "ContainerOverrides": [
+                    {
+                      "Name": "nexus-editor",
+                      "Environment": [
+                        { "Name": "RUN_ID", "Value.$": "$.run_id" },
+                        { "Name": "PROFILE", "Value.$": "$.profile" },
+                        { "Name": "DRY_RUN", "Value.$": "States.Format('{}', $.dry_run)" },
+                        { "Name": "NICHE", "Value.$": "$.niche" },
+                        { "Name": "SCRIPT_S3_KEY", "Value.$": "$.script_s3_key" },
+                        { "Name": "MIXED_AUDIO_S3_KEY", "Value.$": "$.mixed_audio_s3_key" },
+                        { "Name": "TITLE", "Value.$": "$.title" },
+                        { "Name": "TOTAL_DURATION_ESTIMATE", "Value.$": "States.Format('{}', $.total_duration_estimate)" }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "ResultPath": null,
+              "Retry": [
+                {
+                  "ErrorEquals": ["ECS.AmazonECSException", "States.TaskFailed"],
+                  "IntervalSeconds": 15,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Next": "SetEditorKeys"
+            },
+            "SetEditorKeys": {
+              "Type": "Pass",
+              "Parameters": {
+                "run_id.$": "$.run_id",
+                "profile.$": "$.profile",
+                "dry_run.$": "$.dry_run",
+                "niche.$": "$.niche",
+                "script_s3_key.$": "$.script_s3_key",
+                "title.$": "$.title",
+                "total_duration_estimate.$": "$.total_duration_estimate",
+                "final_video_s3_key.$": "States.Format('{}/review/final_video.mp4', $.run_id)",
+                "video_duration_sec.$": "$.total_duration_estimate"
+              },
+              "ResultPath": "$",
+              "End": true
+            }
           }
         },
-        "Overrides": {
-          "ContainerOverrides": [
-            {
-              "Name": "nexus-editor",
-              "Environment": [
-                { "Name": "RUN_ID", "Value.$": "$.run_id" },
-                { "Name": "PROFILE", "Value.$": "$.profile" },
-                { "Name": "DRY_RUN", "Value.$": "States.Format('{}', $.dry_run)" },
-                { "Name": "NICHE", "Value.$": "$.niche" },
-                { "Name": "SCRIPT_S3_KEY", "Value.$": "$.script_s3_key" },
-                { "Name": "MIXED_AUDIO_S3_KEY", "Value.$": "$.mixed_audio_s3_key" },
-                { "Name": "TITLE", "Value.$": "$.title" },
-                { "Name": "TOTAL_DURATION_ESTIMATE", "Value.$": "States.Format('{}', $.total_duration_estimate)" }
-              ]
-            }
-          ]
-        }
-      },
-      "ResultPath": null,
-      "Retry": [
         {
-          "ErrorEquals": ["ECS.AmazonECSException", "States.TaskFailed"],
-          "IntervalSeconds": 15,
-          "MaxAttempts": 2,
-          "BackoffRate": 2.0
+          "StartAt": "CheckShortsEnabled",
+          "States": {
+            "CheckShortsEnabled": {
+              "Type": "Choice",
+              "Comment": "Only run Shorts if generate_shorts is true.",
+              "Choices": [
+                {
+                  "Variable": "$.generate_shorts",
+                  "BooleanEquals": true,
+                  "Next": "Shorts"
+                }
+              ],
+              "Default": "ShortsSkipped"
+            },
+            "Shorts": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::ecs:runTask.sync",
+              "TimeoutSeconds": 3600,
+              "Parameters": {
+                "LaunchType": "FARGATE",
+                "Cluster": "${NexusClusterArn}",
+                "TaskDefinition": "${NexusShortsTaskDefArn}",
+                "NetworkConfiguration": {
+                  "AwsvpcConfiguration": {
+                    "AssignPublicIp": "ENABLED",
+                    "Subnets.$": "$.subnets"
+                  }
+                },
+                "Overrides": {
+                  "ContainerOverrides": [
+                    {
+                      "Name": "nexus-shorts",
+                      "Environment": [
+                        { "Name": "RUN_ID", "Value.$": "$.run_id" },
+                        { "Name": "PROFILE", "Value.$": "$.profile" },
+                        { "Name": "DRY_RUN", "Value.$": "States.Format('{}', $.dry_run)" },
+                        { "Name": "NICHE", "Value.$": "$.niche" },
+                        { "Name": "SCRIPT_S3_KEY", "Value.$": "$.script_s3_key" },
+                        { "Name": "MIXED_AUDIO_S3_KEY", "Value.$": "$.mixed_audio_s3_key" },
+                        { "Name": "TITLE", "Value.$": "$.title" },
+                        { "Name": "CHANNEL_ID", "Value.$": "$.channel_id" },
+                        { "Name": "SHORTS_TIERS", "Value.$": "$.shorts_tiers" }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "ResultPath": null,
+              "Retry": [
+                {
+                  "ErrorEquals": ["ECS.AmazonECSException", "States.TaskFailed"],
+                  "IntervalSeconds": 15,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.shorts_error",
+                  "Next": "ShortsSkipped"
+                }
+              ],
+              "Next": "SetShortsKeys"
+            },
+            "SetShortsKeys": {
+              "Type": "Pass",
+              "Parameters": {
+                "run_id.$": "$.run_id",
+                "shorts_manifest_s3_key.$": "States.Format('{}/shorts/manifest.json', $.run_id)",
+                "shorts_status": "completed"
+              },
+              "ResultPath": "$",
+              "End": true
+            },
+            "ShortsSkipped": {
+              "Type": "Pass",
+              "Parameters": {
+                "run_id.$": "$.run_id",
+                "shorts_manifest_s3_key": "",
+                "shorts_status": "skipped"
+              },
+              "ResultPath": "$",
+              "End": true
+            }
+          }
         }
       ],
+      "ResultPath": "$",
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
@@ -331,20 +466,23 @@
           "Next": "NotifyError"
         }
       ],
-      "Next": "SetEditorKeys"
+      "Next": "MergeContentOutputs"
     },
 
-    "SetEditorKeys": {
+    "MergeContentOutputs": {
       "Type": "Pass",
+      "Comment": "Merge editor (branch 0) and shorts (branch 1) outputs.",
       "Parameters": {
-        "run_id.$": "$.run_id",
-        "profile.$": "$.profile",
-        "dry_run.$": "$.dry_run",
-        "niche.$": "$.niche",
-        "script_s3_key.$": "$.script_s3_key",
-        "title.$": "$.title",
-        "final_video_s3_key.$": "States.Format('{}/review/final_video.mp4', $.run_id)",
-        "video_duration_sec.$": "$.total_duration_estimate"
+        "run_id.$": "$[0].run_id",
+        "profile.$": "$[0].profile",
+        "dry_run.$": "$[0].dry_run",
+        "niche.$": "$[0].niche",
+        "script_s3_key.$": "$[0].script_s3_key",
+        "title.$": "$[0].title",
+        "final_video_s3_key.$": "$[0].final_video_s3_key",
+        "video_duration_sec.$": "$[0].video_duration_sec",
+        "shorts_manifest_s3_key.$": "$[1].shorts_manifest_s3_key",
+        "shorts_status.$": "$[1].shorts_status"
       },
       "ResultPath": "$",
       "Next": "Thumbnail"
@@ -412,6 +550,7 @@
           "video_duration_sec.$": "$.video_duration_sec",
           "thumbnail_s3_keys.$": "$.thumbnail_s3_keys",
           "primary_thumbnail_s3_key.$": "$.primary_thumbnail_s3_key",
+          "shorts_manifest_s3_key.$": "States.Format('{}/shorts/manifest.json', $.run_id)",
           "execution_start_time.$": "$$.Execution.StartTime"
         }
       },

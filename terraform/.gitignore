@@ -1,0 +1,18 @@
+# Terraform state and working files
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+.terraform/
+.terraform.lock.hcl
+tfplan
+
+# Build artifacts (layers, lambda zips)
+.build/
+
+# Auto-generated tfvars (contains secrets)
+terraform.tfvars
+
+# Crash logs
+crash.log
+crash.*.log
+

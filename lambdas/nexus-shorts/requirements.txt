@@ -1,0 +1,7 @@
+librosa>=0.10.0
+Pillow>=10.0.0
+boto3>=1.34.0
+requests>=2.31.0
+numpy>=1.26.0
+soundfile>=0.12.0
+

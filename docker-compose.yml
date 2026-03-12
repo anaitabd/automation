@@ -116,6 +116,33 @@ services:
       setup-aws:
         condition: service_completed_successfully
 
+  nexus-shorts:
+    build:
+      context: .
+      dockerfile: lambdas/nexus-shorts/Dockerfile
+    ports:
+      - "9014:8080"
+    env_file: .env
+    environment:
+      - AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
+      - SHORTS_ENABLED=true
+      - SHORTS_TIERS=micro,short,mid,full
+      - NOVA_REEL_SHORTS_BUDGET=6
+      - SHORTS_MAX_WORKERS=3
+    restart: on-failure:3
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+          cpus: "4"
+    volumes:
+      - shorts_scratch:/mnt/scratch
+    depends_on:
+      postgres:
+        condition: service_healthy
+      setup-aws:
+        condition: service_completed_successfully
+
   nexus-thumbnail:
     build:
       context: .
@@ -209,3 +236,4 @@ services:
 
 volumes:
   pg_data:
+  shorts_scratch:

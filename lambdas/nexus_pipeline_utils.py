@@ -12,14 +12,15 @@ import boto3
 
 # ── Step metadata ──
 STEPS = {
-    "research":  {"num": 1, "total": 8, "emoji": "🔍", "label": "Research"},
-    "script":    {"num": 2, "total": 8, "emoji": "📝", "label": "Script"},
-    "audio":     {"num": 3, "total": 8, "emoji": "🎙️", "label": "Audio"},
-    "visuals":   {"num": 4, "total": 8, "emoji": "🎬", "label": "Visuals"},
-    "editor":    {"num": 5, "total": 8, "emoji": "✂️", "label": "Editor"},
-    "thumbnail": {"num": 6, "total": 8, "emoji": "🖼️", "label": "Thumbnail"},
-    "upload":    {"num": 7, "total": 8, "emoji": "🚀", "label": "Upload"},
-    "notify":    {"num": 8, "total": 8, "emoji": "🔔", "label": "Notify"},
+    "research":  {"num": 1, "total": 9, "emoji": "🔍", "label": "Research"},
+    "script":    {"num": 2, "total": 9, "emoji": "📝", "label": "Script"},
+    "audio":     {"num": 3, "total": 9, "emoji": "🎙️", "label": "Audio"},
+    "visuals":   {"num": 4, "total": 9, "emoji": "🎬", "label": "Visuals"},
+    "editor":    {"num": 5, "total": 9, "emoji": "✂️", "label": "Editor"},
+    "shorts":    {"num": 6, "total": 9, "emoji": "📱", "label": "Shorts"},
+    "thumbnail": {"num": 7, "total": 9, "emoji": "🖼️", "label": "Thumbnail"},
+    "upload":    {"num": 8, "total": 9, "emoji": "🚀", "label": "Upload"},
+    "notify":    {"num": 9, "total": 9, "emoji": "🔔", "label": "Notify"},
 }
 
 _secret_cache: dict = {}

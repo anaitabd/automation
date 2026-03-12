@@ -1,10 +1,11 @@
 {
   "name": "entertainment",
   "llm": {
-    "script_model": "anthropic.claude-3-sonnet-20240229-v1:0",
-    "hook_model": "anthropic.claude-3-sonnet-20240229-v1:0",
+    "script_model": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "hook_model": "anthropic.claude-sonnet-4-20250514-v1:0",
     "research_model": "perplexity/sonar-pro",
-    "visual_cue_model": "anthropic.claude-3-sonnet-20240229-v1:0",
+    "visual_cue_model": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "condenser_model": "anthropic.claude-sonnet-4-20250514-v1:0",
     "script_passes": ["structure", "virality_boost", "hook_polish", "retention_optimization", "pacing"]
   },
   "voice": {
@@ -65,5 +66,15 @@
     "target_duration_max": 18,
     "tone": "energetic_conversational",
     "narrative_style": "first_person_casual"
+  },
+  "shorts": {
+    "bpm_estimate": 120,
+    "voice_stability": 0.55,
+    "voice_similarity_boost": 0.70,
+    "voice_style": 0.6,
+    "lut_preset": "dark_cinematic",
+    "nova_reel_prompt_template": "vertical 9:16 dynamic, {subject}, handheld energy, high contrast dramatic lighting, desaturated with accent pops, fast subtle motion, cinematic thriller aesthetic, loop-friendly, 6 second clip",
+    "overlay_style": "quote_scroll",
+    "transition_style": "zoom_punch"
   }
 }

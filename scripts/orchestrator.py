@@ -48,6 +48,7 @@ if MODE == "docker":
         "Audio":     "http://nexus-audio:8080",
         "Visuals":   "http://nexus-visuals:8080",
         "Editor":    "http://nexus-editor:8080",
+        "Shorts":    "http://nexus-shorts:8080",
         "Thumbnail": "http://nexus-thumbnail:8080",
         "Upload":    "http://nexus-upload:8080",
         "Notify":    "http://nexus-notify:8080",
@@ -59,6 +60,7 @@ else:
         "Audio":     "http://localhost:9003",
         "Visuals":   "http://localhost:9004",
         "Editor":    "http://localhost:9005",
+        "Shorts":    "http://localhost:9014",
         "Thumbnail": "http://localhost:9006",
         "Upload":    "http://localhost:9007",
         "Notify":    "http://localhost:9008",
@@ -71,6 +73,7 @@ INVOKE_TIMEOUT = 900  # 15 min — matches AWS Lambda max timeout
 _STEP_TIMEOUTS: dict[str, int] = {
     "Visuals": 1800,  # 30 min — heavy (downloads + CLIP + FFmpeg), parallelised
     "Editor":  900,    # full 15 min — MediaConvert can be slow
+    "Shorts":  1800,   # 30 min — parallel short-form video generation
 }
 
 # Steps that need extra retries
@@ -138,6 +141,18 @@ PIPELINE = [
         ],
     },
     {
+        "name": "Shorts",
+        "input_keys": [
+            "run_id", "profile", "dry_run", "niche",
+            "script_s3_key", "mixed_audio_s3_key",
+            "title", "channel_id", "generate_shorts",
+        ],
+        "merge_keys": [
+            "shorts_manifest_s3_key", "shorts_count",
+        ],
+        "optional": True,
+    },
+    {
         "name": "Thumbnail",
         "input_keys": [
             "run_id", "profile", "dry_run", "niche",
@@ -173,6 +188,7 @@ PIPELINE = [
             "title", "video_id", "video_url",
             "final_video_s3_key", "video_duration_sec",
             "thumbnail_s3_keys", "primary_thumbnail_s3_key",
+            "shorts_manifest_s3_key", "shorts_count",
         ],
         "merge_keys": [],
     },
@@ -196,7 +212,7 @@ def _estimate_step_duration(step_name: str) -> float | None:
     # Default estimates (seconds) for first-run when no history exists
     _DEFAULT_ESTIMATES = {
         "Research": 60, "Script": 120, "Audio": 180, "Visuals": 480,
-        "Editor": 300, "Thumbnail": 90, "Upload": 60, "Notify": 15,
+        "Editor": 300, "Shorts": 600, "Thumbnail": 90, "Upload": 60, "Notify": 15,
     }
     history = _step_durations.get(step_name, [])
     if history:
@@ -302,6 +318,7 @@ def _unsubscribe(run_id: str, q: queue.Queue) -> None:
 # ── Pipeline Execution ────────────────────────────────────────────────────────
 # Steps that run in parallel (indices into PIPELINE array)
 _PARALLEL_GROUP = {"Audio", "Visuals"}  # runs concurrently after Script
+_PARALLEL_CONTENT_GROUP = {"Editor", "Shorts"}  # runs concurrently after AudioVisuals merge
 
 
 def _wait_for_container(step_name: str, max_wait: int = 60) -> None:
@@ -465,12 +482,13 @@ def _exec_step(
 
 
 def _run_pipeline(run_id: str, niche: str, profile: str, dry_run: bool) -> None:
-    """Execute the pipeline — Audio ∥ Visuals run in parallel."""
+    """Execute the pipeline — Audio ∥ Visuals and Editor ∥ Shorts run in parallel."""
     state = {
         "run_id": run_id,
         "niche": niche,
         "profile": profile,
         "dry_run": dry_run,
+        "generate_shorts": True,  # default; can be overridden by API input
     }
 
     run = _runs[run_id]
@@ -481,32 +499,51 @@ def _run_pipeline(run_id: str, niche: str, profile: str, dry_run: bool) -> None:
     total_estimated = sum(
         (_estimate_step_duration(s["name"]) or 0) for s in PIPELINE
     )
-    # For parallel group, ETA = max(Audio, Visuals) instead of sum
+    # For parallel groups, ETA = max within group instead of sum
     audio_est = _estimate_step_duration("Audio") or 0
     visuals_est = _estimate_step_duration("Visuals") or 0
     parallel_saving = (audio_est + visuals_est) - max(audio_est, visuals_est)
-    total_estimated -= parallel_saving
+    editor_est = _estimate_step_duration("Editor") or 0
+    shorts_est = _estimate_step_duration("Shorts") or 0
+    content_saving = (editor_est + shorts_est) - max(editor_est, shorts_est)
+    total_estimated -= (parallel_saving + content_saving)
 
     _publish(run_id, "log", {
         "step": "Pipeline",
-        "message": f"🚀 Pipeline started with {total_steps} steps (Audio ∥ Visuals in parallel). "
+        "message": f"🚀 Pipeline started with {total_steps} steps "
+                   f"(Audio ∥ Visuals, Editor ∥ Shorts in parallel). "
                    f"Estimated total: {int(total_estimated // 60)}m {int(total_estimated % 60)}s",
     })
 
-    # Build ordered execution plan:
-    #   sequential steps before parallel, parallel group, sequential steps after
-    seq_before = []  # (index, step_def)
-    parallel = []    # (index, step_def)
-    seq_after = []   # (index, step_def)
-    past_parallel = False
+    # Build ordered execution plan with two parallel groups
+    all_parallel = _PARALLEL_GROUP | _PARALLEL_CONTENT_GROUP
+    phases: list[list[tuple[int, dict]]] = []  # list of phases, each a list of (idx, step_def)
+    current_seq: list[tuple[int, dict]] = []
+
     for i, step_def in enumerate(PIPELINE):
-        if step_def["name"] in _PARALLEL_GROUP:
-            parallel.append((i, step_def))
-        elif not parallel and not past_parallel:
-            seq_before.append((i, step_def))
+        if step_def["name"] in all_parallel:
+            # Flush any accumulated sequential steps as their own phase
+            if current_seq:
+                phases.append(current_seq)
+                current_seq = []
+            # Check if previous phase is already a parallel group containing this set
+            if phases and all(sd["name"] in all_parallel for _, sd in phases[-1]):
+                # Same parallel group cluster — merge
+                prev_names = {sd["name"] for _, sd in phases[-1]}
+                cur_name = step_def["name"]
+                # Only merge if they belong to the same group
+                for grp in (_PARALLEL_GROUP, _PARALLEL_CONTENT_GROUP):
+                    if cur_name in grp and prev_names & grp:
+                        phases[-1].append((i, step_def))
+                        break
+                else:
+                    phases.append([(i, step_def)])
+            else:
+                phases.append([(i, step_def)])
         else:
-            past_parallel = True
-            seq_after.append((i, step_def))
+            current_seq.append((i, step_def))
+    if current_seq:
+        phases.append(current_seq)
 
     def _fail(step_name: str, i: int, exc: Exception, step_start: float) -> None:
         step_elapsed = time.time() - step_start
@@ -539,61 +576,99 @@ def _run_pipeline(run_id: str, niche: str, profile: str, dry_run: bool) -> None:
             "total_elapsed_sec": round(time.time() - pipeline_start, 1),
         })
 
-    # ── Phase 1: Sequential steps before parallel (Research, Script) ──
-    for i, step_def in seq_before:
-        try:
-            _exec_step(run_id, run, state, i, step_def, pipeline_start, total_steps, niche)
-        except Exception as exc:
-            _fail(step_def["name"], i, exc, time.time())
-            return
+    for phase in phases:
+        is_parallel = len(phase) > 1 and all(
+            sd["name"] in all_parallel for _, sd in phase
+        )
 
-    # ── Phase 2: Parallel group (Audio ∥ Visuals) ──
-    if parallel:
-        par_names = [sd["name"] for _, sd in parallel]
-        _publish(run_id, "log", {
-            "step": "Pipeline",
-            "message": f"⚡ Running {' ∥ '.join(par_names)} in PARALLEL...",
-        })
+        if is_parallel:
+            par_names = [sd["name"] for _, sd in phase]
+            _publish(run_id, "log", {
+                "step": "Pipeline",
+                "message": f"⚡ Running {' ∥ '.join(par_names)} in PARALLEL...",
+            })
 
-        errors: list[tuple[str, int, Exception]] = []
-        par_start = time.time()
+            errors: list[tuple[str, int, Exception, bool]] = []
+            par_start = time.time()
 
-        with ThreadPoolExecutor(max_workers=len(parallel)) as pool:
-            futures = {}
-            for idx, step_def in parallel:
-                fut = pool.submit(
-                    _exec_step,
-                    run_id, run, state, idx, step_def,
-                    pipeline_start, total_steps, niche,
-                )
-                futures[fut] = (idx, step_def)
+            # Check which steps to skip (e.g., Shorts when generate_shorts is false)
+            runnable = []
+            for idx, step_def in phase:
+                if step_def["name"] == "Shorts" and not state.get("generate_shorts", False):
+                    step_info = run["steps"][idx]
+                    step_info["status"] = "done"
+                    step_info["started_at"] = _now()
+                    step_info["finished_at"] = _now()
+                    step_info["elapsed_sec"] = 0
+                    step_info["output_summary"] = {"skipped": True}
+                    _publish(run_id, "step_done", {
+                        "step": "Shorts",
+                        "index": idx,
+                        "total_steps": total_steps,
+                        "message": f"⏭ [{idx + 1}/{total_steps}] Shorts skipped (generate_shorts=false)",
+                        "elapsed_sec": 0,
+                    })
+                    continue
+                runnable.append((idx, step_def))
 
-            for fut in as_completed(futures):
-                idx, step_def = futures[fut]
-                exc = fut.exception()
-                if exc:
-                    errors.append((step_def["name"], idx, exc))
+            with ThreadPoolExecutor(max_workers=max(1, len(runnable))) as pool:
+                futures = {}
+                for idx, step_def in runnable:
+                    fut = pool.submit(
+                        _exec_step,
+                        run_id, run, state, idx, step_def,
+                        pipeline_start, total_steps, niche,
+                    )
+                    futures[fut] = (idx, step_def)
 
-        if errors:
-            # Report first error (use par_start for correct elapsed time)
-            name, idx, exc = errors[0]
-            _fail(name, idx, exc, par_start)
-            return
+                for fut in as_completed(futures):
+                    idx, step_def = futures[fut]
+                    exc = fut.exception()
+                    if exc:
+                        is_optional = step_def.get("optional", False)
+                        errors.append((step_def["name"], idx, exc, is_optional))
 
-        parallel_elapsed = time.time() - pipeline_start
-        _publish(run_id, "log", {
-            "step": "Pipeline",
-            "message": f"✅ Parallel group finished in "
-                       f"{int(parallel_elapsed // 60)}m {int(parallel_elapsed % 60)}s",
-        })
+            # Check for non-optional errors
+            critical_errors = [(n, i, e) for n, i, e, opt in errors if not opt]
+            optional_errors = [(n, i, e) for n, i, e, opt in errors if opt]
 
-    # ── Phase 3: Sequential steps after parallel (Editor, Thumbnail, Upload, Notify) ──
-    for i, step_def in seq_after:
-        try:
-            _exec_step(run_id, run, state, i, step_def, pipeline_start, total_steps, niche)
-        except Exception as exc:
-            _fail(step_def["name"], i, exc, time.time())
-            return
+            # Log optional errors but don't fail pipeline
+            for name, idx, exc in optional_errors:
+                step_elapsed = time.time() - par_start
+                step_info = run["steps"][idx]
+                step_info["status"] = "error"
+                step_info["finished_at"] = _now()
+                step_info["elapsed_sec"] = round(step_elapsed, 1)
+                step_info["error"] = str(exc)
+                _publish(run_id, "step_error", {
+                    "step": name,
+                    "index": idx,
+                    "total_steps": total_steps,
+                    "message": f"⚠️ [{idx + 1}/{total_steps}] {name} failed (optional, continuing): {exc}",
+                    "error": str(exc),
+                    "elapsed_sec": round(step_elapsed, 1),
+                })
+
+            if critical_errors:
+                name, idx, exc = critical_errors[0]
+                _fail(name, idx, exc, par_start)
+                return
+
+            parallel_elapsed = time.time() - pipeline_start
+            _publish(run_id, "log", {
+                "step": "Pipeline",
+                "message": f"✅ Parallel group finished in "
+                           f"{int(parallel_elapsed // 60)}m {int(parallel_elapsed % 60)}s",
+            })
+
+        else:
+            # Sequential phase
+            for i, step_def in phase:
+                try:
+                    _exec_step(run_id, run, state, i, step_def, pipeline_start, total_steps, niche)
+                except Exception as exc:
+                    _fail(step_def["name"], i, exc, time.time())
+                    return
 
     # All steps completed
     total_elapsed = time.time() - pipeline_start
@@ -697,6 +772,8 @@ class Handler(BaseHTTPRequestHandler):
                 "primary_thumbnail_s3_key": state.get("primary_thumbnail_s3_key"),
                 "thumbnail_s3_keys": state.get("thumbnail_s3_keys"),
                 "video_duration_sec": state.get("video_duration_sec"),
+                "shorts_manifest_s3_key": state.get("shorts_manifest_s3_key"),
+                "shorts_count": state.get("shorts_count"),
             }
             self._json_response(200, outputs)
             return
