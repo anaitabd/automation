@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
 
@@ -685,18 +686,26 @@ def lambda_handler(event: dict, context) -> dict:
             if len(concepts) < 3:
                 concepts += [concepts[0]] * (3 - len(concepts))
 
-            log.info("Rendering %d thumbnail variants", len(concepts[:3]))
-            thumbnail_local_paths = []
-            for i, concept in enumerate(concepts[:3]):
-                t_path = _render_thumbnail(best_frame, concept, profile, tmpdir, i)
-                thumbnail_local_paths.append(t_path)
+            log.info("Rendering %d thumbnail variants in parallel", len(concepts[:3]))
+
+            def _render_one(args):
+                i, concept = args
+                return i, _render_thumbnail(best_frame, concept, profile, tmpdir, i)
+
+            thumbnail_local_paths = [None] * 3
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {pool.submit(_render_one, (i, c)): i for i, c in enumerate(concepts[:3])}
+                for fut in as_completed(futures):
+                    i, t_path = fut.result()
+                    thumbnail_local_paths[i] = t_path
 
             log.info("Uploading thumbnails to S3")
             thumbnail_s3_keys = []
             for i, t_path in enumerate(thumbnail_local_paths):
-                key = f"{run_id}/thumbnails/thumbnail_{i}.jpg"
-                s3.upload_file(t_path, S3_OUTPUTS_BUCKET, key)
-                thumbnail_s3_keys.append(key)
+                if t_path:
+                    key = f"{run_id}/thumbnails/thumbnail_{i}.jpg"
+                    s3.upload_file(t_path, S3_OUTPUTS_BUCKET, key)
+                    thumbnail_s3_keys.append(key)
 
         elapsed = time.time() - step_start
         notify_step_complete("thumbnail", run_id, [

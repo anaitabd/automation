@@ -801,6 +801,10 @@ def lambda_handler(event: dict, context) -> dict:
         log.error("Visuals step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "visuals", exc)
         raise
+    finally:
+        import shutil
+        scratch_dir = os.path.join(SCRATCH_DIR, run_id)
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     import sys

@@ -7,11 +7,14 @@ import tempfile
 import time
 import urllib.request
 import boto3
+from boto3.s3.transfer import TransferConfig
 from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
 
 log = get_logger("nexus-editor")
 
 MEDIACONVERT_THRESHOLD_SECONDS = 600
+_S3_MULTIPART_THRESHOLD = 100 * 1024 * 1024
+_S3_TRANSFER_CONFIG = TransferConfig(multipart_threshold=_S3_MULTIPART_THRESHOLD)
 
 _cache: dict = {}
 
@@ -973,14 +976,14 @@ def lambda_handler(event: dict, context) -> dict:
             if video_dur > MEDIACONVERT_THRESHOLD_SECONDS:
                 log.info("Video > %ds — submitting to MediaConvert", MEDIACONVERT_THRESHOLD_SECONDS)
                 raw_s3_key = f"{run_id}/raw_assembled.mp4"
-                s3.upload_file(final_local, S3_OUTPUTS_BUCKET, raw_s3_key)
+                s3.upload_file(final_local, S3_OUTPUTS_BUCKET, raw_s3_key, Config=_S3_TRANSFER_CONFIG)
                 output_prefix = f"s3://{S3_OUTPUTS_BUCKET}/{run_id}/review/"
                 final_s3_key = _submit_mediaconvert_job(
                     f"s3://{S3_OUTPUTS_BUCKET}/{raw_s3_key}", output_prefix, run_id
                 )
             else:
                 log.info("Uploading final video to S3: %s", final_s3_key)
-                s3.upload_file(final_local, S3_OUTPUTS_BUCKET, final_s3_key)
+                s3.upload_file(final_local, S3_OUTPUTS_BUCKET, final_s3_key, Config=_S3_TRANSFER_CONFIG)
 
             log.info("Copying script to metadata: %s/metadata/script.txt", run_id)
             try:
@@ -1014,6 +1017,10 @@ def lambda_handler(event: dict, context) -> dict:
         log.error("Editor step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "editor", exc)
         raise
+    finally:
+        import shutil
+        scratch_dir = os.path.join(SCRATCH_DIR, run_id)
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
