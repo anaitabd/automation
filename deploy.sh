@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+echo "WARNING: CDK deploy is deprecated. Use terraform/scripts/deploy_tf.sh"
+exit 1
 set -euo pipefail
 
 # ╔══════════════════════════════════════════════════════════════╗

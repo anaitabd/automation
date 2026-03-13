@@ -381,15 +381,16 @@ const API_BASE = window.__NEXUS_API_BASE__
 const IS_LOCAL = API_BASE.includes('localhost') || API_BASE.includes('127.0.0.1');
 
 const STEPS = [
-  { key: 'Research',  icon: '🔍', label: 'Research'  },
-  { key: 'Script',    icon: '✍️', label: 'Script'    },
-  { key: 'Audio',     icon: '🎙️', label: 'Audio'     },
-  { key: 'Visuals',   icon: '🎬', label: 'Visuals'   },
-  { key: 'Editor',    icon: '🎞️', label: 'Editor'    },
-  { key: 'Thumbnail', icon: '🖼️', label: 'Thumbnail' },
-  { key: 'Upload',    icon: '📤', label: 'Upload'    },
-  { key: 'Notify',    icon: '🔔', label: 'Notify'    },
+  { key: 'Research',  icon: '🔍', label: 'Research',   parallel: false },
+  { key: 'Script',    icon: '✍️', label: 'Script',     parallel: false },
+  { key: 'Audio',     icon: '🎙️', label: 'Audio',      parallel: true  },
+  { key: 'Visuals',   icon: '🎬', label: 'Visuals',    parallel: true  },
+  { key: 'Editor',    icon: '🎞️', label: 'Editor',     parallel: false },
+  { key: 'Thumbnail', icon: '🖼️', label: 'Thumbnail',  parallel: false },
+  { key: 'Upload',    icon: '📤', label: 'Upload',     parallel: false },
+  { key: 'Notify',    icon: '🔔', label: 'Notify',     parallel: false },
 ];
+const PARALLEL_STEPS = new Set(['Audio', 'Visuals']);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 async function apiPost(path, body) {
@@ -1013,33 +1014,64 @@ function App() {
 
             {/* Steps with mini progress & timing */}
             <div className="steps" style={{marginTop: 16}}>
-              {STEPS.map(s => {
-                const st = stepState(s.key);
-                const timer = stepTimers[s.key];
-                let timeLabel = '';
-                if (st === 'done' && timer?.elapsed != null) {
-                  timeLabel = fmtDuration(timer.elapsed);
-                } else if (st === 'active' && timer?.startedAt) {
-                  // Live counting
-                  const live = Math.floor((Date.now() - timer.startedAt) / 1000);
-                  timeLabel = `${fmtTimer(live)}`;
-                  if (timer?.estimated) timeLabel += ` / ~${fmtDuration(timer.estimated)}`;
-                } else if (timer?.estimated) {
-                  timeLabel = `~${fmtDuration(timer.estimated)}`;
-                }
-                return (
-                  <div key={s.key} className={`step ${st}`}>
-                    <span className="step-icon">{s.icon}</span>
-                    {s.label}
-                    <span className="step-time">{timeLabel}</span>
-                    <div className="step-progress-mini">
-                      <div className="fill" style={{
-                        width: st === 'done' ? '100%' : st === 'active' ? '50%' : '0%'
-                      }} />
-                    </div>
-                  </div>
-                );
-              })}
+              {(() => {
+                let parallelGroupRendered = false;
+                return STEPS.map((s, idx) => {
+                  const st = stepState(s.key);
+                  const timer = stepTimers[s.key];
+                  let timeLabel = '';
+                  if (st === 'done' && timer?.elapsed != null) {
+                    timeLabel = fmtDuration(timer.elapsed);
+                  } else if (st === 'active' && timer?.startedAt) {
+                    const live = Math.floor((Date.now() - timer.startedAt) / 1000);
+                    timeLabel = `${fmtTimer(live)}`;
+                    if (timer?.estimated) timeLabel += ` / ~${fmtDuration(timer.estimated)}`;
+                  } else if (timer?.estimated) {
+                    timeLabel = `~${fmtDuration(timer.estimated)}`;
+                  }
+
+                  const isParallel = PARALLEL_STEPS.has(s.key);
+                  const nextStep = STEPS[idx + 1];
+                  const isFirstParallel = isParallel && (idx === 0 || !PARALLEL_STEPS.has(STEPS[idx - 1]?.key));
+                  const isLastParallel = isParallel && (!nextStep || !PARALLEL_STEPS.has(nextStep.key));
+
+                  const audioSt = stepState('Audio');
+                  const visualsSt = stepState('Visuals');
+                  const bothRunning = isParallel && audioSt === 'active' && visualsSt === 'active';
+
+                  return (
+                    <React.Fragment key={s.key}>
+                      {isFirstParallel && bothRunning && (
+                        <div style={{
+                          fontSize: 10, color: 'var(--accent-fin)', letterSpacing: 1,
+                          textAlign: 'center', padding: '4px 0', textTransform: 'uppercase',
+                          border: '1px dashed var(--accent-fin)', borderBottom: 'none',
+                          borderRadius: '4px 4px 0 0', marginBottom: -1, opacity: 0.8,
+                        }}>
+                          ⚡ running in parallel
+                        </div>
+                      )}
+                      <div className={`step ${st}`} style={isParallel ? {
+                        borderLeft: '2px solid var(--accent-fin)',
+                        marginLeft: 4,
+                      } : {}}>
+                        <span className="step-icon">{s.icon}</span>
+                        {s.label}
+                        {isParallel && <span style={{
+                          fontSize: 9, color: 'var(--accent-fin)', marginLeft: 4,
+                          opacity: 0.7, textTransform: 'uppercase', letterSpacing: 1,
+                        }}>∥</span>}
+                        <span className="step-time">{timeLabel}</span>
+                        <div className="step-progress-mini">
+                          <div className="fill" style={{
+                            width: st === 'done' ? '100%' : st === 'active' ? '50%' : '0%'
+                          }} />
+                        </div>
+                      </div>
+                    </React.Fragment>
+                  );
+                });
+              })()}
             </div>
             {runId && (
               <p style={{marginTop:10,fontSize:11,color:'var(--muted)'}}>

@@ -6,13 +6,23 @@ import boto3
 
 STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
 OUTPUTS_BUCKET = os.environ["OUTPUTS_BUCKET"]
-ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets-670294435884")
+ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
 ECS_SUBNETS = json.loads(os.environ.get("ECS_SUBNETS", "[]"))
+REQUIRE_API_KEY = os.environ.get("REQUIRE_API_KEY", "false").lower() == "true"
 
 sfn = boto3.client("stepfunctions")
 s3 = boto3.client("s3")
 
 PIPELINE_STEPS = ["Research", "Script", "Audio", "Visuals", "Editor", "Thumbnail", "Upload", "Notify"]
+VALID_SHORTS_TIERS = {"micro", "short", "mid", "full"}
+_PARALLEL_CONTAINER_STATES = frozenset(["AudioVisuals"])
+_TRACKABLE_STATES = frozenset(PIPELINE_STEPS) | _PARALLEL_CONTAINER_STATES
+_SKIP_STATE_NAMES = frozenset([
+    "NotifyError", "PipelineFailed", "MergeParallelOutputs",
+    "MergeContentOutputs", "SetAudioKeys", "SetEditorKeys",
+    "ResearchError", "ScriptError", "AudioVisualsError",
+    "EditorError", "ThumbnailError", "UploadError",
+])
 
 
 def _response(status_code: int, body: dict) -> dict:
@@ -21,20 +31,26 @@ def _response(status_code: int, body: dict) -> dict:
         "headers": {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Headers": "Content-Type,x-api-key",
             "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
         },
         "body": json.dumps(body, default=str),
     }
 
 
+def _check_api_key(event: dict) -> bool:
+    if not REQUIRE_API_KEY:
+        return True
+    headers = event.get("headers") or {}
+    key = headers.get("x-api-key") or headers.get("X-Api-Key") or ""
+    return bool(key)
+
+
 def _execution_arn(run_id: str) -> str:
-    """Build execution ARN directly from run_id (which is the execution name)."""
     return f"{STATE_MACHINE_ARN.replace(':stateMachine:', ':execution:')}:{run_id}"
 
 
 def _build_step_history(execution_arn: str) -> list[dict]:
-    """Parse Step Functions execution history into a per-step timeline."""
     events = []
     next_token = None
     while True:
@@ -47,29 +63,30 @@ def _build_step_history(execution_arn: str) -> list[dict]:
         if not next_token:
             break
 
-    # Track step enter/exit times and errors
-    step_data = {}  # stepName -> {entered_at, exited_at, status, error}
-    current_step = None
+    step_data = {}
+    running_steps = set()
 
     for ev in events:
         etype = ev.get("type", "")
         ts = ev.get("timestamp")
         ts_str = ts.isoformat() if ts else None
 
-        if "TaskStateEntered" in etype:
+        if etype in ("TaskStateEntered", "ParallelStateEntered"):
             name = ev.get("stateEnteredEventDetails", {}).get("name", "")
-            if name and name not in ("NotifyError", "PipelineFailed"):
-                step_data[name] = {
-                    "name": name,
-                    "status": "running",
-                    "entered_at": ts_str,
-                    "exited_at": None,
-                    "duration_sec": None,
-                    "error": None,
-                }
-                current_step = name
+            if name and name not in _SKIP_STATE_NAMES:
+                if name in _TRACKABLE_STATES:
+                    step_data[name] = {
+                        "name": name,
+                        "status": "running",
+                        "entered_at": ts_str,
+                        "exited_at": None,
+                        "duration_sec": None,
+                        "error": None,
+                        "parallel": name in ("Audio", "Visuals", "AudioVisuals"),
+                    }
+                    running_steps.add(name)
 
-        elif "TaskStateExited" in etype:
+        elif etype in ("TaskStateExited", "ParallelStateExited"):
             name = ev.get("stateExitedEventDetails", {}).get("name", "")
             if name in step_data and step_data[name]["status"] == "running":
                 step_data[name]["status"] = "done"
@@ -81,12 +98,12 @@ def _build_step_history(execution_arn: str) -> list[dict]:
                         step_data[name]["duration_sec"] = round((ts - entered).total_seconds(), 1)
                     except Exception:
                         pass
+                running_steps.discard(name)
 
-        elif "TaskFailed" in etype:
+        elif etype == "TaskFailed":
             details = ev.get("taskFailedEventDetails", {})
             error_type = details.get("error", "Unknown")
             cause_raw = details.get("cause", "")
-            # Try to parse cause as JSON for structured error info
             error_msg = cause_raw
             stack_trace = ""
             try:
@@ -97,35 +114,28 @@ def _build_step_history(execution_arn: str) -> list[dict]:
             except (json.JSONDecodeError, TypeError):
                 pass
 
-            # Attach error to the current running step
-            if current_step and current_step in step_data:
-                step_data[current_step]["status"] = "error"
-                step_data[current_step]["exited_at"] = ts_str
-                step_data[current_step]["error"] = {
-                    "type": error_type,
-                    "message": error_msg[:500],
-                    "stack_trace": stack_trace[:1000] if stack_trace else None,
-                }
-                if step_data[current_step]["entered_at"] and ts:
-                    from datetime import datetime
-                    try:
-                        entered = datetime.fromisoformat(step_data[current_step]["entered_at"])
-                        step_data[current_step]["duration_sec"] = round((ts - entered).total_seconds(), 1)
-                    except Exception:
-                        pass
+            for step_name in list(running_steps):
+                if step_name in step_data:
+                    step_data[step_name]["status"] = "error"
+                    step_data[step_name]["exited_at"] = ts_str
+                    step_data[step_name]["error"] = {
+                        "type": error_type,
+                        "message": error_msg[:500],
+                        "stack_trace": stack_trace[:1000] if stack_trace else None,
+                    }
+                    if step_data[step_name]["entered_at"] and ts:
+                        from datetime import datetime
+                        try:
+                            entered = datetime.fromisoformat(step_data[step_name]["entered_at"])
+                            step_data[step_name]["duration_sec"] = round((ts - entered).total_seconds(), 1)
+                        except Exception:
+                            pass
 
-        elif etype == "FailStateEntered":
-            name = ev.get("stateEnteredEventDetails", {}).get("name", "")
-            if name == "PipelineFailed":
-                pass  # handled via execution status
-
-    # Build ordered list following pipeline step order
     steps = []
     for step_name in PIPELINE_STEPS:
         if step_name in step_data:
             steps.append(step_data[step_name])
         else:
-            # Step hasn't been reached yet
             steps.append({
                 "name": step_name,
                 "status": "pending",
@@ -133,20 +143,52 @@ def _build_step_history(execution_arn: str) -> list[dict]:
                 "exited_at": None,
                 "duration_sec": None,
                 "error": None,
+                "parallel": step_name in ("Audio", "Visuals"),
             })
 
     return steps
 
 
+def _validate_run_body(body: dict) -> str | None:
+    niche = body.get("niche")
+    if not niche or not isinstance(niche, str) or not niche.strip():
+        return "niche is required and must be a non-empty string"
+    if len(niche) > 200:
+        return "niche must be 200 characters or fewer"
+
+    profile = body.get("profile", "documentary")
+    if profile not in ("documentary", "finance", "entertainment"):
+        return "profile must be one of: documentary, finance, entertainment"
+
+    generate_shorts = body.get("generate_shorts", False)
+    if not isinstance(generate_shorts, bool):
+        return "generate_shorts must be a boolean"
+
+    shorts_tiers = body.get("shorts_tiers", "micro,short,mid,full")
+    if shorts_tiers:
+        tiers = [t.strip() for t in shorts_tiers.split(",") if t.strip()]
+        invalid = [t for t in tiers if t not in VALID_SHORTS_TIERS]
+        if invalid:
+            return f"shorts_tiers contains invalid values: {invalid}. Allowed: {sorted(VALID_SHORTS_TIERS)}"
+
+    channel_id = body.get("channel_id")
+    if channel_id is not None and not isinstance(channel_id, str):
+        return "channel_id must be a string"
+
+    return None
+
+
 def _handle_run(body: dict) -> dict:
-    niche = body.get("niche", "")
+    validation_error = _validate_run_body(body)
+    if validation_error:
+        return _response(400, {"error": validation_error})
+
+    niche = body["niche"].strip()
     profile = body.get("profile", "documentary")
     dry_run = bool(body.get("dry_run", False))
-
-    if not niche:
-        return _response(400, {"error": "niche is required"})
-    if profile not in ("documentary", "finance", "entertainment"):
-        return _response(400, {"error": "profile must be documentary|finance|entertainment"})
+    generate_shorts = bool(body.get("generate_shorts", False))
+    shorts_tiers = body.get("shorts_tiers", "micro,short,mid,full")
+    channel_id = body.get("channel_id") or None
 
     run_id = str(uuid.uuid4())
     execution = sfn.start_execution(
@@ -159,6 +201,9 @@ def _handle_run(body: dict) -> dict:
                 "profile": profile,
                 "dry_run": dry_run,
                 "subnets": ECS_SUBNETS,
+                "generate_shorts": generate_shorts,
+                "shorts_tiers": shorts_tiers,
+                "channel_id": channel_id,
             }
         ),
     )
@@ -461,12 +506,14 @@ def lambda_handler(event: dict, context) -> dict:
     path = event.get("path", "")
     path_params = event.get("pathParameters") or {}
 
-    # Handle CORS preflight
     if method == "OPTIONS":
         return _response(200, {})
 
     if method == "GET" and path == "/health":
         return _handle_health()
+
+    if not _check_api_key(event):
+        return _response(401, {"error": "Missing or invalid x-api-key header"})
 
     if method == "POST" and path == "/run":
         body = json.loads(event.get("body") or "{}")

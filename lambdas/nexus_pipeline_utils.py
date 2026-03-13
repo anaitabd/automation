@@ -1,16 +1,11 @@
-"""Shared pipeline utilities — Discord notifications, logging, timing.
-
-Copied into each Lambda directory at deploy time by deploy.sh.
-"""
-
 import json
 import logging
+import os
 import time
 import urllib.request
 
 import boto3
 
-# ── Step metadata ──
 STEPS = {
     "research":  {"num": 1, "total": 8, "emoji": "🔍", "label": "Research"},
     "script":    {"num": 2, "total": 8, "emoji": "📝", "label": "Script"},
@@ -23,6 +18,23 @@ STEPS = {
 }
 
 _secret_cache: dict = {}
+
+_REQUIRED_ENV_VARS = [
+    "ELEVENLABS_API_KEY",
+    "PERPLEXITY_API_KEY",
+    "PEXELS_API_KEY",
+    "DISCORD_WEBHOOK_URL",
+    "YOUTUBE_CREDENTIALS",
+    "DB_HOST",
+]
+
+
+def validate_secrets() -> None:
+    missing = [k for k in _REQUIRED_ENV_VARS if not os.environ.get(k)]
+    if missing:
+        raise EnvironmentError(
+            f"Missing required environment variable(s): {', '.join(missing)}"
+        )
 
 
 def get_logger(name: str) -> logging.Logger:

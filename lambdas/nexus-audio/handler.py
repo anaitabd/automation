@@ -28,6 +28,8 @@ S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 
+s3 = boto3.client("s3")
+
 PACING_MAP = {
     "[PAUSE]": "...",
     "[BEAT]": ",",
@@ -495,7 +497,6 @@ def _upload_to_s3(s3, local_path: str, run_id: str, filename: str) -> str:
 
 def _write_error(run_id: str, step: str, exc: Exception) -> None:
     try:
-        s3 = boto3.client("s3")
         s3.put_object(
             Bucket=S3_OUTPUTS_BUCKET,
             Key=f"{run_id}/errors/{step}.json",
@@ -522,8 +523,6 @@ def lambda_handler(event: dict, context) -> dict:
     step_start = notify_step_start("audio", run_id, niche=niche, profile=profile_name, dry_run=dry_run)
 
     try:
-        s3 = boto3.client("s3")
-
         log.info("Loading script from S3: %s", script_s3_key)
         script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
         script: dict = json.loads(script_obj["Body"].read())
@@ -597,6 +596,10 @@ def lambda_handler(event: dict, context) -> dict:
         log.error("Audio step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "audio", exc)
         raise
+    finally:
+        import shutil
+        scratch_dir = os.path.join(SCRATCH_DIR, run_id)
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
