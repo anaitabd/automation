@@ -1,8 +1,3 @@
-"""Shared test fixtures for Nexus Cloud Lambda handlers.
-
-Uses importlib to load handlers without real AWS connectivity by patching boto3.
-"""
-
 import importlib.util
 import json
 import os
@@ -14,7 +9,15 @@ import pytest
 REPO_ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 LAMBDAS_DIR = os.path.join(REPO_ROOT, "lambdas")
 
-# Default env vars needed by handlers at import time
+if LAMBDAS_DIR not in sys.path:
+    sys.path.insert(0, LAMBDAS_DIR)
+
+if "psycopg2" not in sys.modules:
+    _pg_mock = MagicMock()
+    sys.modules["psycopg2"] = _pg_mock
+    sys.modules["psycopg2.extras"] = MagicMock()
+    sys.modules["psycopg2.pool"] = MagicMock()
+
 _DEFAULT_ENV = {
     "STATE_MACHINE_ARN": "arn:aws:states:us-east-1:123456789012:stateMachine:nexus-pipeline",
     "OUTPUTS_BUCKET": "test-outputs",
@@ -29,15 +32,19 @@ _DEFAULT_ENV = {
     "BRAND_MODEL_ID": "anthropic.claude-sonnet-4-20250514-v1:0",
     "SHORTS_ENABLED": "true",
     "SHORTS_TIERS": "micro,short,mid,full",
+    "FFMPEG_BIN": "/usr/bin/ffmpeg",
+    "FFPROBE_BIN": "/usr/bin/ffprobe",
 }
 
-# Module cache to avoid re-loading
 _module_cache: dict = {}
 
 
 def _ensure_env():
     for k, v in _DEFAULT_ENV.items():
         os.environ.setdefault(k, v)
+
+
+_ensure_env()
 
 
 def load_handler(lambda_name: str, handler_path: str | None = None):
