@@ -10,10 +10,31 @@ import logging
 import boto3
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
 log = logging.getLogger("nexus-api.db")
 
 _cache: dict = {}
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
+
+
+class _PooledConnection:
+    def __init__(self, pool: psycopg2.pool.ThreadedConnectionPool, conn):
+        self._pool = pool
+        self._conn = conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        return self._conn.__enter__()
+
+    def __exit__(self, *args):
+        result = self._conn.__exit__(*args)
+        return result
+
+    def close(self):
+        self._pool.putconn(self._conn)
 
 CHANNELS_DDL = """
 CREATE TABLE IF NOT EXISTS nexus_channels (
@@ -59,17 +80,25 @@ def _get_db_credentials() -> dict:
 
 
 def get_connection():
-    """Return a psycopg2 connection to the nexus database."""
+    global _pool
     creds = _get_db_credentials()
     dbname = creds.get("dbname") or "nexus"
-    return psycopg2.connect(
-        host=creds["host"],
-        port=creds.get("port", 5432),
-        dbname=dbname,
-        user=creds["user"],
-        password=creds["password"],
-        connect_timeout=10,
-    )
+    if _pool is None:
+        _pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1,
+            maxconn=5,
+            host=creds["host"],
+            port=creds.get("port", 5432),
+            dbname=dbname,
+            user=creds["user"],
+            password=creds["password"],
+            connect_timeout=10,
+        )
+    conn = _pool.getconn()
+    if conn.closed:
+        _pool.putconn(conn, close=True)
+        conn = _pool.getconn()
+    return _PooledConnection(_pool, conn)
 
 
 def bootstrap_schema():

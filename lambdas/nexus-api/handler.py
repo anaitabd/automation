@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 import uuid
@@ -7,6 +8,9 @@ from datetime import datetime
 import boto3
 
 import db
+import preflight
+
+log = logging.getLogger("nexus-api")
 
 STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
 OUTPUTS_BUCKET = os.environ["OUTPUTS_BUCKET"]
@@ -182,6 +186,23 @@ def _validate_run_body(body: dict) -> str | None:
     return None
 
 
+def _load_preflight_secrets() -> dict:
+    sm = boto3.client("secretsmanager")
+
+    def _fetch(name: str) -> dict:
+        try:
+            return json.loads(sm.get_secret_value(SecretId=name)["SecretString"])
+        except Exception:
+            return {}
+
+    return {
+        "perplexity": _fetch("nexus/perplexity_api_key"),
+        "elevenlabs": _fetch("nexus/elevenlabs_api_key"),
+        "pexels": _fetch("nexus/pexels_api_key"),
+        "discord": _fetch("nexus/discord_webhook_url"),
+    }
+
+
 def _handle_run(body: dict) -> dict:
     validation_error = _validate_run_body(body)
     if validation_error:
@@ -193,6 +214,21 @@ def _handle_run(body: dict) -> dict:
     generate_shorts = bool(body.get("generate_shorts", False))
     shorts_tiers = body.get("shorts_tiers", "micro,short,mid,full")
     channel_id = body.get("channel_id") or None
+
+    if not dry_run:
+        try:
+            secrets = _load_preflight_secrets()
+            preflight_result = preflight.run_preflight_checks(secrets)
+            if not preflight_result["ok"]:
+                return _response(
+                    503,
+                    {
+                        "error": "One or more required external services are unavailable",
+                        "preflight": preflight_result["checks"],
+                    },
+                )
+        except Exception as exc:
+            log.warning("Preflight check failed, proceeding anyway: %s", exc)
 
     run_id = str(uuid.uuid4())
     execution = sfn.start_execution(
