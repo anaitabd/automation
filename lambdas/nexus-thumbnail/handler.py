@@ -702,10 +702,9 @@ def lambda_handler(event: dict, context) -> dict:
             log.info("Uploading thumbnails to S3")
             thumbnail_s3_keys = []
             for i, t_path in enumerate(thumbnail_local_paths):
-                if t_path:
-                    key = f"{run_id}/thumbnails/thumbnail_{i}.jpg"
-                    s3.upload_file(t_path, S3_OUTPUTS_BUCKET, key)
-                    thumbnail_s3_keys.append(key)
+                key = f"{run_id}/thumbnails/thumbnail_{i}.jpg"
+                s3.upload_file(t_path, S3_OUTPUTS_BUCKET, key)
+                thumbnail_s3_keys.append(key)
 
         elapsed = time.time() - step_start
         notify_step_complete("thumbnail", run_id, [

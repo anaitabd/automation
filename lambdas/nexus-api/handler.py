@@ -15,9 +15,13 @@ s3 = boto3.client("s3")
 
 PIPELINE_STEPS = ["Research", "Script", "Audio", "Visuals", "Editor", "Thumbnail", "Upload", "Notify"]
 VALID_SHORTS_TIERS = {"micro", "short", "mid", "full"}
+_PARALLEL_CONTAINER_STATES = frozenset(["AudioVisuals"])
+_TRACKABLE_STATES = frozenset(PIPELINE_STEPS) | _PARALLEL_CONTAINER_STATES
 _SKIP_STATE_NAMES = frozenset([
     "NotifyError", "PipelineFailed", "MergeParallelOutputs",
     "MergeContentOutputs", "SetAudioKeys", "SetEditorKeys",
+    "ResearchError", "ScriptError", "AudioVisualsError",
+    "EditorError", "ThumbnailError", "UploadError",
 ])
 
 
@@ -70,7 +74,7 @@ def _build_step_history(execution_arn: str) -> list[dict]:
         if etype in ("TaskStateEntered", "ParallelStateEntered"):
             name = ev.get("stateEnteredEventDetails", {}).get("name", "")
             if name and name not in _SKIP_STATE_NAMES:
-                if name in PIPELINE_STEPS or name == "AudioVisuals":
+                if name in _TRACKABLE_STATES:
                     step_data[name] = {
                         "name": name,
                         "status": "running",
