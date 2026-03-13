@@ -101,6 +101,32 @@ class TestHandleRun:
         data = json.loads((self.sfn_mock.start_execution.call_args.kwargs or self.sfn_mock.start_execution.call_args[1]).get("input", "{}"))
         assert data["dry_run"] is True
 
+    def test_dry_run_skips_preflight(self):
+        with patch.object(self.h.preflight, "run_preflight_checks") as mock_pf:
+            self.h._handle_run({"niche": "test", "profile": "documentary", "dry_run": True})
+        mock_pf.assert_not_called()
+
+    def test_preflight_failure_returns_503(self):
+        with (
+            patch.object(self.h, "_load_preflight_secrets", return_value={}),
+            patch.object(self.h.preflight, "run_preflight_checks", return_value={"ok": False, "checks": {"bedrock": "error"}}),
+        ):
+            resp = self.h._handle_run({"niche": "test", "profile": "documentary"})
+        assert resp["statusCode"] == 503
+
+    def test_preflight_pass_allows_run(self):
+        with (
+            patch.object(self.h, "_load_preflight_secrets", return_value={}),
+            patch.object(self.h.preflight, "run_preflight_checks", return_value={"ok": True, "checks": {}}),
+        ):
+            resp = self.h._handle_run({"niche": "test", "profile": "documentary"})
+        assert resp["statusCode"] == 200
+
+    def test_preflight_exception_does_not_block_run(self):
+        with patch.object(self.h, "_load_preflight_secrets", side_effect=Exception("sm error")):
+            resp = self.h._handle_run({"niche": "test", "profile": "documentary"})
+        assert resp["statusCode"] == 200
+
 
 # ── _handle_status ────────────────────────────────────────────────────────────
 
