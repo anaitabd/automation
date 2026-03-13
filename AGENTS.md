@@ -1,7 +1,9 @@
 # AGENTS.md
 
 ## Big Picture Architecture
-- Cloud entrypoint is API Gateway -> `lambdas/nexus-api/handler.py` (`/run`, `/resume`, `/status/{run_id}`, `/outputs/{run_id}`).
+- Cloud entrypoint is API Gateway -> `lambdas/nexus-api/handler.py` (`/run`, `/resume`, `/status/{run_id}`, `/outputs/{run_id}`, `/health`).
+- Dashboard is a single-file React 18 app at `dashboard/index.html`; locally served by `scripts/orchestrator.py` on port 3000, deployed to CloudFront via `terraform/modules/api/`.
+- Dashboard has **three pipeline modes**: `video` (full-length only), `shorts` (short-form only), `combined` (legacy backward-compat, Editor ∥ Shorts). Each mode has its own step array, generate modal, cost calculation, and visual identity (gradient/icon/badge).
 - Authoritative orchestration is `statemachine/nexus_pipeline.asl.json`, wired by Terraform (`terraform/modules/orchestration/`) using `templatefile()` for ARN injection.
 - Heavy media steps run on ECS Fargate (`nexus-audio`, `nexus-visuals`, `nexus-editor`, `nexus-shorts`) with EFS scratch at `/mnt/scratch`; lighter steps stay Lambda.
 - `nexus-shorts` is an optional Fargate module producing 15s/30s/45s/60s vertical short-form videos in parallel with `nexus-editor`. Enabled per-run via `generate_shorts: true` in pipeline input; failures never block the main video.
@@ -24,6 +26,10 @@
 - Notifications are first-class: start/complete Discord messages come from `notify_step_start` / `notify_step_complete` in `lambdas/nexus_pipeline_utils.py`.
 - Resume behavior is artifact-driven: both API and CLI (`scripts/resume_run.py`) infer next step from existing S3 keys.
 - Shared media helpers live in `lambdas/shared/` (`nova_canvas.py`, `nova_reel.py`, `motion.py`); Fargate Dockerfiles copy them into the image (see `lambdas/nexus-shorts/Dockerfile`).
+- ASL starts with `Initialize → ResumeRouter` (Choice state); `ResumeRouter` branches on `$.resume_from` to skip completed steps. The handler's `_handle_resume` populates `resume_from` based on S3 artifact detection.
+- Dashboard pipeline split: `VIDEO_PIPELINE_STEPS` (Research→Script→AudioVisuals→Editor→Thumbnail→Notify), `SHORTS_PIPELINE_STEPS` (Research→Script→AudioVisuals→Shorts→Notify), `COMBINED_PIPELINE_STEPS` (original with ContentAssembly parallel). `getPipelineType(runData)` infers type from `pipeline_type` field, `generate_shorts`/`generate_video` flags, or step name analysis. `getPipelineSteps(type)` returns the matching step array.
+- Dashboard modals are split: `GenerateVideoModal` sends `pipeline_type: 'video', generate_shorts: false`, `GenerateShortsModal` sends `pipeline_type: 'shorts', generate_shorts: true`. Modal triggers use `setModal('generate-video')` and `setModal('generate-shorts')`.
+- `PIPELINE_TYPE_META` maps each type to icon, label, gradient, badge CSS, and description — used in PipelineMonitor header, OutputsPanel, and sidebar active runs.
 
 ## Terraform Module Map
 - `terraform/modules/storage/` — imports pre-existing S3 buckets, creates dashboard bucket, uploads profiles.
@@ -48,6 +54,9 @@
 - SFN ARN in the API handler Lambda env is a pre-computed string (`arn:aws:states:REGION:ACCOUNT:stateMachine:nexus-pipeline`) to break a Terraform circular dependency — if you rename the state machine, update `main.tf` accordingly.
 - Lambda layers are built in `terraform/.build/layers/` by `deploy_tf.sh` using Docker for arm64 cross-compilation; they must exist before `terraform apply`.
 - ECS images must be pushed to ECR before `terraform apply` — `deploy_tf.sh` handles this automatically.
+- `lambdas/nexus-api/handler.py` `_handle_run` does **not** pass `generate_shorts`, `shorts_tiers`, or `channel_id` to the SFN execution input, but the ASL `ResultSelector` references them via `$$.Execution.Input`. Shorts won't trigger unless the handler is patched to forward these fields from the request body.
+- The handler's `PIPELINE_STEPS` list is a flat `["Research", "Script", "Audio", "Visuals", "Editor", "Thumbnail", "Upload", "Notify"]` used for status parsing; it does not reflect the ASL parallel states (`AudioVisuals`, `ContentAssembly`, `MergeParallelOutputs`, `MergeContentOutputs`). Step history parsing may miss parallel branch events.
+- Channel CRUD routes (`/channel/create`, `/channel/list`, `/channel/{id}`, etc.) are called by the dashboard but are **not yet implemented** in `lambdas/nexus-api/handler.py`. Channel setup Lambdas are now mostly implemented: `nexus-channel-setup` (185 lines, orchestrates brand→logo→intro/outro), `nexus-brand-designer` (184 lines, Claude brand kit generation), `nexus-logo-gen` (139 lines, Nova Canvas + Pillow fallback). Only `nexus-intro-outro` remains a stub (no `handler.py`).
 
 ## nexus-shorts Module
 

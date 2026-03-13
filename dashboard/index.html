@@ -3,1312 +3,2082 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Nexus Cloud — Pipeline Dashboard</title>
+  <title>NexusCloud — Serverless YouTube Pipeline</title>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0A0A0F',
+            surface: '#12121A',
+            raised: '#1A1A28',
+            border: '#2A2A3F',
+            'border-bright': '#3A3A55',
+            'accent-blue': '#4F6EF7',
+            'accent-purple': '#8B5CF6',
+            'accent-cyan': '#22D3EE',
+            'accent-green': '#10B981',
+            'accent-amber': '#F59E0B',
+            'accent-red': '#EF4444',
+            'text-primary': '#F0F0FF',
+            'text-secondary': '#9090B0',
+            'text-muted': '#5A5A7A',
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    }
+  </script>
   <style>
-    :root {
-      --bg: #0d0d0d;
-      --surface: #161616;
-      --surface2: #1f1f1f;
-      --border: #2a2a2a;
-      --text: #e8e8e8;
-      --muted: #888;
-      --accent-doc: #C8A96E;
-      --accent-fin: #00A86B;
-      --accent-ent: #FF3B30;
-      --accent: var(--accent-doc);
-      --mono: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
-    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--mono);
-      min-height: 100vh;
-    }
-    header {
-      border-bottom: 1px solid var(--border);
-      padding: 18px 32px;
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }
-    .logo { font-size: 22px; font-weight: 700; letter-spacing: 2px; color: var(--accent-doc); }
-    .logo span { color: var(--text); font-weight: 400; }
-    main { max-width: 1200px; margin: 0 auto; padding: 32px 24px; }
-    section { margin-bottom: 40px; }
-    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 3px;
-         color: var(--muted); margin-bottom: 18px; }
-
-    /* ── Input Form ─────────────────────────────────────────────── */
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 24px;
-    }
-    .field { margin-bottom: 16px; }
-    label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 6px;
-            text-transform: uppercase; letter-spacing: 1px; }
-    input[type=text] {
-      width: 100%;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 10px 14px;
-      border-radius: 6px;
-      font-family: var(--mono);
-      font-size: 14px;
-      outline: none;
-      transition: border-color .2s;
-    }
-    input[type=text]:focus { border-color: var(--accent-doc); }
-
-    .profile-btns { display: flex; gap: 10px; }
-    .profile-btn {
-      flex: 1; padding: 10px 0; border: 1px solid var(--border);
-      background: var(--bg); color: var(--muted); cursor: pointer;
-      border-radius: 6px; font-family: var(--mono); font-size: 12px;
-      letter-spacing: 1px; text-transform: uppercase; transition: all .2s;
-    }
-    .profile-btn.active-doc { border-color: var(--accent-doc); color: var(--accent-doc); }
-    .profile-btn.active-fin { border-color: var(--accent-fin); color: var(--accent-fin); }
-    .profile-btn.active-ent { border-color: var(--accent-ent); color: var(--accent-ent); }
-
-    .toggle-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
-    .toggle {
-      appearance: none; width: 40px; height: 22px; background: var(--surface2);
-      border: 1px solid var(--border); border-radius: 11px; cursor: pointer;
-      position: relative; transition: background .2s;
-    }
-    .toggle::after {
-      content: ''; position: absolute; top: 3px; left: 3px;
-      width: 14px; height: 14px; background: var(--muted);
-      border-radius: 50%; transition: transform .2s;
-    }
-    .toggle:checked { background: var(--accent-fin); border-color: var(--accent-fin); }
-    .toggle:checked::after { transform: translateX(18px); background: white; }
-
-    .run-btn {
-      width: 100%; padding: 14px; margin-top: 6px;
-      background: var(--accent-doc); color: #000; border: none;
-      border-radius: 6px; font-family: var(--mono); font-size: 14px;
-      font-weight: 700; letter-spacing: 2px; cursor: pointer;
-      text-transform: uppercase; transition: opacity .2s;
-    }
-    .run-btn:disabled { opacity: .5; cursor: not-allowed; }
-    .run-btn.fin { background: var(--accent-fin); }
-    .run-btn.ent { background: var(--accent-ent); color: #fff; }
-
-    /* ── Pipeline Progress ──────────────────────────────────────── */
-    .steps { display: flex; gap: 6px; flex-wrap: wrap; }
-    .step {
-      flex: 1; min-width: 100px; padding: 12px 8px;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 6px; text-align: center; font-size: 11px;
-      color: var(--muted); text-transform: uppercase; letter-spacing: 1px;
-      transition: all .3s; position: relative;
-    }
-    .step.active {
-      border-color: var(--accent-doc); color: var(--accent-doc);
-    }
-    .step.active::after {
-      content: '';
-      position: absolute; inset: -1px; border-radius: 6px;
-      border: 1px solid var(--accent-doc);
-      animation: pulse 1.2s ease-in-out infinite;
-    }
-    .step.done { border-color: var(--accent-fin); color: var(--accent-fin); }
-    .step.error { border-color: var(--accent-ent); color: var(--accent-ent); }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: .3; }
-    }
-    .step-icon { font-size: 18px; display: block; margin-bottom: 4px; }
-
-    /* ── Outputs ────────────────────────────────────────────────── */
-    .output-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-    @media(max-width:768px) { .output-grid { grid-template-columns: 1fr; } }
-
-    .video-wrapper video {
-      width: 100%; border-radius: 6px; border: 1px solid var(--border);
-    }
-
-    .thumb-row { display: flex; gap: 10px; }
-    .thumb-row img {
-      flex: 1; border-radius: 6px; border: 2px solid var(--border);
-      cursor: pointer; transition: border-color .2s;
-    }
-    .thumb-row img:hover { border-color: var(--accent-doc); }
-    .thumb-row img.selected { border-color: var(--accent-fin); }
-
-    .script-viewer {
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: 6px; padding: 16px; font-size: 12px;
-      max-height: 300px; overflow-y: auto; white-space: pre-wrap;
-      color: var(--text); line-height: 1.7;
-    }
-    .copy-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-    .copy-btn {
-      padding: 6px 14px; background: var(--surface2); border: 1px solid var(--border);
-      color: var(--text); border-radius: 4px; font-family: var(--mono);
-      font-size: 11px; cursor: pointer; letter-spacing: 1px;
-    }
-    .copy-btn:hover { border-color: var(--accent-doc); color: var(--accent-doc); }
-
-    /* ── History ────────────────────────────────────────────────── */
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th { text-align: left; color: var(--muted); padding: 8px 12px;
-         border-bottom: 1px solid var(--border); text-transform: uppercase;
-         letter-spacing: 1px; font-size: 11px; }
-    td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
-    tr:hover td { background: var(--surface); }
-    .status-badge {
-      display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px;
-      text-transform: uppercase; letter-spacing: 1px; font-weight: 700;
-    }
-    .badge-RUNNING { background: #1a2a1a; color: var(--accent-fin); }
-    .badge-SUCCEEDED { background: #0a2a1a; color: var(--accent-fin); }
-    .badge-FAILED { background: #2a0a0a; color: var(--accent-ent); }
-    .badge-TIMED_OUT { background: #2a1a0a; color: #ffa500; }
-
-    /* ── Resume ──────────────────────────────────────────────────── */
-    .resume-grid { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
-    @media(max-width:600px) { .resume-grid { grid-template-columns: 1fr; } }
-    select {
-      width: 100%;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 10px 14px;
-      border-radius: 6px;
-      font-family: var(--mono);
-      font-size: 14px;
-      outline: none;
-      appearance: none;
-      cursor: pointer;
-      transition: border-color .2s;
-    }
-    select:focus { border-color: #4A9EFF; }
-    .resume-btn {
-      width: 100%; padding: 14px; margin-top: 6px;
-      background: #1a4a8a; color: #fff; border: none;
-      border-radius: 6px; font-family: var(--mono); font-size: 14px;
-      font-weight: 700; letter-spacing: 2px; cursor: pointer;
-      text-transform: uppercase; transition: opacity .2s;
-      border: 1px solid #4A9EFF;
-    }
-    .resume-btn:hover { background: #1e5aa0; }
-    .resume-btn:disabled { opacity: .5; cursor: not-allowed; }
-    .resume-action-btn {
-      padding: 3px 10px; font-size: 10px; font-family: var(--mono);
-      background: #0d1f3a; border: 1px solid #4A9EFF; color: #4A9EFF;
-      border-radius: 4px; cursor: pointer; letter-spacing: 1px;
-      white-space: nowrap; transition: background .2s;
-    }
-    .resume-action-btn:hover { background: #1a3a6a; }
-    .completed-steps-row {
-      display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;
-    }
-    .step-pill {
-      padding: 2px 10px; border-radius: 10px; font-size: 10px;
-      letter-spacing: 1px; text-transform: uppercase;
-    }
-    .step-pill.done { background: #0a2a1a; color: var(--accent-fin); border: 1px solid var(--accent-fin); }
-    .step-pill.target { background: #1a2a4a; color: #4A9EFF; border: 1px solid #4A9EFF; font-weight:700; }
-
-    a { color: var(--accent-doc); text-decoration: none; }
-    a:hover { text-decoration: underline; }
-
-    .error-msg { color: var(--accent-ent); font-size: 12px; margin-top: 8px; }
-    .success-msg { color: var(--accent-fin); font-size: 12px; margin-top: 8px; }
-
-    /* ── Download ──────────────────────────────────────────────── */
-    .dl-btn {
-      padding: 3px 10px; font-size: 10px; font-family: var(--mono);
-      background: #0d1f2a; border: 1px solid var(--accent-doc); color: var(--accent-doc);
-      border-radius: 4px; cursor: pointer; letter-spacing: 1px;
-      white-space: nowrap; transition: background .2s; margin-left: 6px;
-    }
-    .dl-btn:hover { background: #1a3040; }
-    .dl-btn:disabled { opacity: .5; cursor: not-allowed; }
-    .dl-panel {
-      position: fixed; inset: 0; z-index: 1000;
-      display: flex; align-items: center; justify-content: center;
-      background: rgba(0,0,0,.75);
-    }
-    .dl-panel-box {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 28px 32px; width: 520px; max-width: 96vw;
-      max-height: 80vh; overflow-y: auto;
-    }
-    .dl-panel-title {
-      font-size: 13px; font-weight: 700; letter-spacing: 2px;
-      text-transform: uppercase; margin-bottom: 18px;
-      color: var(--accent-doc); display: flex; justify-content: space-between;
-      align-items: center;
-    }
-    .dl-panel-close {
-      background: none; border: none; color: var(--muted); font-size: 20px;
-      cursor: pointer; line-height: 1;
-    }
-    .dl-panel-close:hover { color: var(--text); }
-    .dl-file-row {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 9px 0; border-bottom: 1px solid var(--border); gap: 10px;
-    }
-    .dl-file-row:last-child { border-bottom: none; }
-    .dl-file-label {
-      font-size: 11px; color: var(--text); flex: 1; word-break: break-all;
-    }
-    .dl-file-type {
-      font-size: 9px; padding: 2px 6px; border-radius: 3px; letter-spacing: 1px;
-      text-transform: uppercase; background: var(--surface2);
-      color: var(--muted); white-space: nowrap; flex-shrink: 0;
-    }
-    .dl-file-a {
-      padding: 4px 12px; font-size: 10px; font-family: var(--mono);
-      background: var(--accent-doc); color: #000; border-radius: 4px;
-      text-decoration: none; white-space: nowrap; flex-shrink: 0;
-      font-weight: 700; letter-spacing: 1px;
-    }
-    .dl-file-a:hover { opacity: .85; text-decoration: none; }
-    .dl-all-btn {
-      width: 100%; margin-top: 18px; padding: 11px;
-      background: var(--surface2); border: 1px solid var(--border);
-      color: var(--text); border-radius: 6px; font-family: var(--mono);
-      font-size: 12px; cursor: pointer; letter-spacing: 1px; transition: border-color .2s;
-    }
-    .dl-all-btn:hover { border-color: var(--accent-doc); color: var(--accent-doc); }
-    .dl-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 20px 0; }
-
-    /* ── Overall Progress Bar ──────────────────────────────────── */
-    .progress-bar-container {
-      width: 100%; height: 8px; background: var(--surface2);
-      border-radius: 4px; margin: 16px 0 8px; overflow: hidden;
-      border: 1px solid var(--border);
-    }
-    .progress-bar-fill {
-      height: 100%; border-radius: 4px;
-      background: linear-gradient(90deg, var(--accent-fin), var(--accent-doc));
-      transition: width 0.5s ease;
-    }
-    .progress-stats {
-      display: flex; justify-content: space-between; align-items: center;
-      font-size: 11px; color: var(--muted); margin-bottom: 12px;
-    }
-    .progress-stats .highlight {
-      color: var(--accent-doc); font-weight: 700; font-size: 13px;
-    }
-    .progress-stats .eta {
-      color: var(--accent-fin); font-weight: 700;
-    }
-
-    /* ── Step Detail Cards ─────────────────────────────────────── */
-    .step-detail {
-      display: flex; align-items: center; gap: 10px;
-      font-size: 11px; padding: 4px 0;
-    }
-    .step .step-time {
-      display: block; margin-top: 4px; font-size: 10px;
-      color: var(--muted); font-weight: 400;
-    }
-    .step.active .step-time { color: var(--accent-doc); }
-    .step.done .step-time { color: var(--accent-fin); }
-    .step.error .step-time { color: var(--accent-ent); }
-    .step .step-progress-mini {
-      width: 100%; height: 3px; background: var(--surface2);
-      border-radius: 2px; margin-top: 4px; overflow: hidden;
-    }
-    .step .step-progress-mini .fill {
-      height: 100%; border-radius: 2px; transition: width 0.3s;
-    }
-    .step.active .step-progress-mini .fill {
-      background: var(--accent-doc);
-      animation: indeterminate 1.5s ease-in-out infinite;
-    }
-    .step.done .step-progress-mini .fill { background: var(--accent-fin); width: 100% !important; }
-    .step.error .step-progress-mini .fill { background: var(--accent-ent); }
-    @keyframes indeterminate {
-      0% { margin-left: 0; width: 30%; }
-      50% { margin-left: 40%; width: 50%; }
-      100% { margin-left: 100%; width: 0%; }
-    }
-
-    /* ── Elapsed Timer ─────────────────────────────────────────── */
-    .timer-display {
-      display: flex; align-items: center; gap: 16px; margin-top: 12px;
-      padding: 12px 16px; background: var(--surface); border: 1px solid var(--border);
-      border-radius: 6px; font-size: 12px;
-    }
-    .timer-display .timer-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
-    .timer-display .timer-value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
-    .timer-display .timer-elapsed { color: var(--text); }
-    .timer-display .timer-eta { color: var(--accent-fin); }
-    .timer-display .timer-separator { color: var(--border); font-size: 24px; }
-
-    /* ── Log Entries with step indicator ────────────────────────── */
-    .log-entry {
-      display: flex; align-items: flex-start; gap: 8px;
-      padding: 2px 0; line-height: 1.6;
-    }
-    .log-entry .log-time {
-      color: var(--muted); white-space: nowrap; min-width: 75px;
-    }
-    .log-entry .log-step-badge {
-      padding: 1px 6px; border-radius: 3px; font-size: 9px;
-      text-transform: uppercase; letter-spacing: 0.5px;
-      white-space: nowrap; background: var(--surface2);
-      color: var(--muted); border: 1px solid var(--border);
-      min-width: 70px; text-align: center;
-    }
-    .log-entry .log-msg { flex: 1; }
+    body { background: #0A0A0F; color: #F0F0FF; font-family: 'Inter', system-ui, sans-serif; min-height: 100vh; overflow-x: hidden; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0A0A0F; }
+    ::-webkit-scrollbar-thumb { background: #2A2A3F; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3A3A55; }
+    @keyframes shimmer { from { background-position: -200% 0; } to { background-position: 200% 0; } }
+    .skeleton { background: linear-gradient(90deg, #12121A 25%, #1A1A28 50%, #12121A 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 8px; }
+    @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+    @keyframes slide-in-right { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes slide-out-right { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
+    .toast-enter { animation: slide-in-right 200ms ease-out forwards; }
+    .toast-exit { animation: slide-out-right 200ms ease-in forwards; }
+    @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+    .fade-in { animation: fade-in 200ms ease-out; }
+    @keyframes progress-bar { from { background-position: 0 0; } to { background-position: 30px 0; } }
+    .progress-animated { background-image: linear-gradient(45deg, rgba(255,255,255,.08) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.08) 50%, rgba(255,255,255,.08) 75%, transparent 75%); background-size: 30px 30px; animation: progress-bar 1s linear infinite; }
+    input:focus, textarea:focus, select:focus { outline: none; }
+    video { border-radius: 8px; }
   </style>
 </head>
 <body>
 <div id="root"></div>
+<script type="text/babel" data-type="module">
+/* ═══════════════════════════════════════════════════════════════════════════════
+   NexusCloud Dashboard — Single-file React 18 Application
+   All views: Channels, Channel Detail, Pipeline Monitor, System Status
+   ═══════════════════════════════════════════════════════════════════════════════ */
+const { useState, useEffect, useRef, useCallback, useMemo, createContext, useContext } = React;
 
-<script type="text/babel">
-// ─── Config (set API_BASE to your API Gateway URL) ───────────────────────────
-const API_BASE = window.__NEXUS_API_BASE__
-  || ('%%NEXUS_API_BASE%%' !== '%%NEXUS_API' + '_BASE%%'
-      ? '%%NEXUS_API_BASE%%'
-      : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-        ? `http://${window.location.host}/api`
-        : 'https://your-api-gateway-url.execute-api.us-east-1.amazonaws.com/prod');
-const IS_LOCAL = API_BASE.includes('localhost') || API_BASE.includes('127.0.0.1');
+// ── API Base URL ─────────────────────────────────────────────────────────────
+const API_BASE = window.__NEXUS_API_BASE__ || window.API_BASE_URL || '/api';
+const api = async (path, opts = {}) => {
+  const url = `${API_BASE}${path}`;
+  const res = await fetch(url, {
+    headers: { 'Content-Type': 'application/json', ...opts.headers },
+    ...opts,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+};
 
-const STEPS = [
-  { key: 'Research',  icon: '🔍', label: 'Research'  },
-  { key: 'Script',    icon: '✍️', label: 'Script'    },
-  { key: 'Audio',     icon: '🎙️', label: 'Audio'     },
-  { key: 'Visuals',   icon: '🎬', label: 'Visuals'   },
-  { key: 'Editor',    icon: '🎞️', label: 'Editor'    },
-  { key: 'Thumbnail', icon: '🖼️', label: 'Thumbnail' },
-  { key: 'Upload',    icon: '📤', label: 'Upload'    },
-  { key: 'Notify',    icon: '🔔', label: 'Notify'    },
+// ── Constants ────────────────────────────────────────────────────────────────
+// Video-only pipeline: no Shorts branch
+const VIDEO_PIPELINE_STEPS = [
+  { id: 'Research', label: 'Research', type: 'lambda' },
+  { id: 'Script', label: 'Script', type: 'lambda' },
+  { id: 'AudioVisuals', label: 'Audio + Visuals', type: 'parallel', substeps: ['Audio', 'Visuals'] },
+  { id: 'MergeParallelOutputs', label: 'Merge', type: 'pass', hidden: true },
+  { id: 'Editor', label: 'Editor', type: 'lambda' },
+  { id: 'Thumbnail', label: 'Thumbnail', type: 'lambda' },
+  { id: 'Notify', label: 'Notify', type: 'lambda' },
 ];
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-async function apiPost(path, body) {
-  const r = await fetch(`${API_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return r.json();
+// Shorts-only pipeline: no Editor, no Thumbnail
+const SHORTS_PIPELINE_STEPS = [
+  { id: 'Research', label: 'Research', type: 'lambda' },
+  { id: 'Script', label: 'Script', type: 'lambda' },
+  { id: 'AudioVisuals', label: 'Audio + Visuals', type: 'parallel', substeps: ['Audio', 'Visuals'] },
+  { id: 'MergeParallelOutputs', label: 'Merge', type: 'pass', hidden: true },
+  { id: 'Shorts', label: 'Shorts', type: 'lambda' },
+  { id: 'Notify', label: 'Notify', type: 'lambda' },
+];
+
+// Combined pipeline: backward-compat for legacy runs (Editor ∥ Shorts)
+const COMBINED_PIPELINE_STEPS = [
+  { id: 'Research', label: 'Research', type: 'lambda' },
+  { id: 'Script', label: 'Script', type: 'lambda' },
+  { id: 'AudioVisuals', label: 'Audio + Visuals', type: 'parallel', substeps: ['Audio', 'Visuals'] },
+  { id: 'MergeParallelOutputs', label: 'Merge', type: 'pass', hidden: true },
+  { id: 'ContentAssembly', label: 'Assembly', type: 'parallel', substeps: ['Editor', 'Shorts'] },
+  { id: 'MergeContentOutputs', label: 'Merge', type: 'pass', hidden: true },
+  { id: 'Thumbnail', label: 'Thumbnail', type: 'lambda' },
+  { id: 'Notify', label: 'Notify', type: 'lambda' },
+];
+
+// Flat reference kept for status parsing compatibility
+const PIPELINE_STEPS = COMBINED_PIPELINE_STEPS;
+
+// Pipeline type metadata (icon, label, gradient, description)
+const PIPELINE_TYPE_META = {
+  video:    { icon: '▶', label: 'Video', gradient: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)', badge: 'bg-accent-blue/10 text-accent-blue border-accent-blue/30', description: 'Full-length video generation' },
+  shorts:   { icon: '⚡', label: 'Shorts', gradient: 'linear-gradient(135deg, #22D3EE, #06B6D4)', badge: 'bg-accent-cyan/10 text-accent-cyan border-accent-cyan/30', description: 'Short-form vertical videos' },
+  combined: { icon: '🎬', label: 'Combined', gradient: 'linear-gradient(135deg, #8B5CF6, #22D3EE)', badge: 'bg-accent-purple/10 text-accent-purple border-accent-purple/30', description: 'Video + Shorts in parallel' },
+};
+
+// Infer pipeline type from run data
+function getPipelineType(runData) {
+  if (!runData) return 'combined';
+  if (runData.pipeline_type) return runData.pipeline_type;
+  // Infer from flags
+  const genShorts = runData.generate_shorts;
+  const genVideo = runData.generate_video;
+  if (genShorts === true && genVideo === false) return 'shorts';
+  if (genShorts === false || genShorts === undefined) return 'video';
+  // Check step names present in run for legacy inference
+  const stepNames = (runData.steps || []).map(s => s.name);
+  const hasEditor = stepNames.includes('Editor');
+  const hasShorts = stepNames.includes('Shorts');
+  if (hasEditor && hasShorts) return 'combined';
+  if (hasShorts && !hasEditor) return 'shorts';
+  if (hasEditor && !hasShorts) return 'video';
+  return 'combined';
 }
-async function apiGet(path) {
-  const r = await fetch(`${API_BASE}${path}`);
-  return r.json();
-}
-function copyToClipboard(text) {
-  navigator.clipboard.writeText(text).catch(() => {});
-}
-function fmtDuration(sec) {
-  if (sec == null || sec < 0) return '—';
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}m ${String(s).padStart(2, '0')}s`;
-}
-function fmtTimer(sec) {
-  if (sec == null || sec < 0) return '00:00';
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = Math.floor(sec % 60);
-  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+
+// Get the right step array for a pipeline type
+function getPipelineSteps(pipelineType) {
+  if (pipelineType === 'video') return VIDEO_PIPELINE_STEPS;
+  if (pipelineType === 'shorts') return SHORTS_PIPELINE_STEPS;
+  return COMBINED_PIPELINE_STEPS;
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
-function App() {
-  const [niche, setNiche] = React.useState('');
-  const [profile, setProfile] = React.useState('documentary');
-  const [dryRun, setDryRun] = React.useState(false);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState('');
-  const [success, setSuccess] = React.useState('');
+const COST_ESTIMATES = { base_video: 2.75, shorts: { micro: 0.28, short: 0.48, mid: 0.67, full: 0.86 } };
+const SHORTS_TIERS = {
+  micro: { duration: 15, sections: 1, nova_reel_clips: 2 },
+  short: { duration: 30, sections: 3, nova_reel_clips: 4 },
+  mid:   { duration: 45, sections: 4, nova_reel_clips: 5 },
+  full:  { duration: 60, sections: 6, nova_reel_clips: 6 },
+};
 
-  // Resume state
-  const [resumeRunId, setResumeRunId] = React.useState('');
-  const [resumeStep, setResumeStep] = React.useState('');   // '' = auto-detect
-  const [resumeLoading, setResumeLoading] = React.useState(false);
-  const [resumeError, setResumeError] = React.useState('');
-  const [resumeSuccess, setResumeSuccess] = React.useState('');
-  const [resumeCompletedSteps, setResumeCompletedSteps] = React.useState([]);
-  const [resumeDetectedStep, setResumeDetectedStep] = React.useState('');
+const PROFILES = {
+  documentary:   { icon: '📽', label: 'Documentary', dur: '10–15 min', style: 'Cinematic' },
+  finance:       { icon: '📈', label: 'Finance', dur: '8–14 min', style: 'Corporate clean' },
+  entertainment: { icon: '⚡', label: 'Entertainment', dur: '6–12 min', style: 'High energy' },
+};
 
-  const [runId, setRunId] = React.useState('');
-  const [status, setStatus] = React.useState(null);   // { status, current_step }
-  const [outputs, setOutputs] = React.useState(null); // { urls }
-  const [script, setScript] = React.useState(null);
-  const [logs, setLogs] = React.useState([]);          // live log entries
-  const [progressPct, setProgressPct] = React.useState(0);
-  const [etaRemaining, setEtaRemaining] = React.useState(null);
-  const [pipelineElapsed, setPipelineElapsed] = React.useState(0);
-  const [stepTimers, setStepTimers] = React.useState({}); // stepName -> {elapsed, estimated}
-  const [pipelineStartTime, setPipelineStartTime] = React.useState(null);
+const STATUS_COLORS = {
+  active: { dot: 'bg-accent-green', text: 'text-accent-green', label: 'ACTIVE' },
+  running: { dot: 'bg-accent-cyan', text: 'text-accent-cyan', label: 'RUNNING', pulse: true },
+  setting_up: { dot: 'bg-accent-purple', text: 'text-accent-purple', label: 'SETTING UP', pulse: true },
+  scheduled: { dot: 'bg-accent-amber', text: 'text-accent-amber', label: 'SCHEDULED' },
+  idle: { dot: 'bg-text-muted', text: 'text-text-muted', label: 'IDLE' },
+  error: { dot: 'bg-accent-red', text: 'text-accent-red', label: 'ERROR' },
+  archived: { dot: 'bg-text-muted', text: 'text-text-muted', label: 'ARCHIVED' },
+};
 
-  const [health, setHealth] = React.useState(null); // null=unknown, 'healthy', 'degraded', 'error'
+// ── Context ──────────────────────────────────────────────────────────────────
+const AppContext = createContext();
 
-  const [history, setHistory] = React.useState(() => {
-    try { return JSON.parse(localStorage.getItem('nexus_history') || '[]'); }
-    catch { return []; }
-  });
-
-  const [selectedThumb, setSelectedThumb] = React.useState(0);
-  const pollerRef = React.useRef(null);
-  const sseRef = React.useRef(null);
-  const logEndRef = React.useRef(null);
-
-  // Download panel
-  const [dlPanel, setDlPanel] = React.useState(null); // { run_id, files: [{label, url, type}] } | null
-  const [dlLoading, setDlLoading] = React.useState(''); // run_id being fetched
-
-  async function handleDownload(run_id) {
-    setDlLoading(run_id);
-    try {
-      const o = await apiGet(`/outputs/${run_id}`);
-      const urls = o?.urls || {};
-      const FILE_LABELS = {
-        [`${run_id}/review/final_video.mp4`]:       { label: 'Final Video',          type: 'MP4'  },
-        [`${run_id}/final_video.mp4`]:              { label: 'Final Video',          type: 'MP4'  },
-        [`${run_id}/audio/voiceover.mp3`]:          { label: 'Voiceover Audio',      type: 'MP3'  },
-        [`${run_id}/audio/background.mp3`]:         { label: 'Background Music',     type: 'MP3'  },
-        [`${run_id}/audio/sfx_mix.mp3`]:            { label: 'SFX Mix',              type: 'MP3'  },
-        [`${run_id}/script.json`]:                  { label: 'Script (JSON)',         type: 'JSON' },
-        [`${run_id}/research.json`]:                { label: 'Research Output',       type: 'JSON' },
-        [`${run_id}/review/thumbnail_0.jpg`]:       { label: 'Thumbnail 1',          type: 'JPG'  },
-        [`${run_id}/review/thumbnail_1.jpg`]:       { label: 'Thumbnail 2',          type: 'JPG'  },
-        [`${run_id}/review/thumbnail_2.jpg`]:       { label: 'Thumbnail 3',          type: 'JPG'  },
-        [`${run_id}/thumbnails/thumbnail_0.jpg`]:   { label: 'Thumbnail 1',          type: 'JPG'  },
-        [`${run_id}/thumbnails/thumbnail_1.jpg`]:   { label: 'Thumbnail 2',          type: 'JPG'  },
-        [`${run_id}/thumbnails/thumbnail_2.jpg`]:   { label: 'Thumbnail 3',          type: 'JPG'  },
-        [`${run_id}/visuals/visuals.mp4`]:          { label: 'Raw Visuals',          type: 'MP4'  },
-        [`${run_id}/visuals/visuals_eq.mp4`]:       { label: 'Color-Graded Visuals', type: 'MP4'  },
-      };
-      const files = Object.entries(urls)
-        .filter(([, url]) => !!url)
-        .map(([key, url]) => ({
-          label: FILE_LABELS[key]?.label || key.split('/').pop(),
-          type:  FILE_LABELS[key]?.type  || key.split('.').pop().toUpperCase(),
-          url,
-        }));
-      setDlPanel({ run_id, files });
-    } catch(e) {
-      alert('Could not fetch outputs: ' + String(e));
-    } finally {
-      setDlLoading('');
-    }
-  }
-
-  function downloadAll(files) {
-    files.forEach((f, i) => {
-      setTimeout(() => {
-        const a = document.createElement('a');
-        a.href = f.url;
-        a.download = f.label;
-        a.target = '_blank';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }, i * 350);
-    });
-  }
-
-  const accentClass = profile === 'finance' ? 'fin' : profile === 'entertainment' ? 'ent' : '';
-
-  // Health check on mount
-  React.useEffect(() => {
-    apiGet('/health').then(h => {
-      setHealth(h.status === 'healthy' ? 'healthy' : h.status === 'degraded' ? 'degraded' : 'error');
-    }).catch(() => setHealth('error'));
+// ── Notification (Toast) System ──────────────────────────────────────────────
+function useNotifications() {
+  const [notifications, setNotifications] = useState([]);
+  const addNotification = useCallback((type, message) => {
+    const id = Date.now() + Math.random();
+    setNotifications(prev => [...prev.slice(-3), { id, type, message, exiting: false }]);
+    setTimeout(() => {
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, exiting: true } : n));
+      setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 250);
+    }, 5000);
   }, []);
+  const removeNotification = useCallback((id) => {
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, exiting: true } : n));
+    setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 250);
+  }, []);
+  return { notifications, addNotification, removeNotification };
+}
 
-  // Auto-scroll logs
-  React.useEffect(() => {
-    if (logEndRef.current) logEndRef.current.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
-
-  // Live elapsed timer (ticks every second while running)
-  const [tick, setTick] = React.useState(0);
-  React.useEffect(() => {
-    if (!pipelineStartTime || (status && ['SUCCEEDED','FAILED','TIMED_OUT','ABORTED'].includes(status.status))) return;
-    const interval = setInterval(() => {
-      setPipelineElapsed(Math.floor((Date.now() - pipelineStartTime) / 1000));
-      setTick(t => t + 1); // force re-render for active step timer
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [pipelineStartTime, status]);
-
-  // Poll or SSE based on mode
-  React.useEffect(() => {
-    if (!runId) return;
-    setLogs([]);
-    setProgressPct(0);
-    setEtaRemaining(null);
-    setPipelineElapsed(0);
-    setStepTimers({});
-    setPipelineStartTime(Date.now());
-
-    // ── SSE mode (local orchestrator) ──
-    if (IS_LOCAL) {
-      if (sseRef.current) sseRef.current.close();
-      const es = new EventSource(`${API_BASE}/events/${runId}`);
-      sseRef.current = es;
-
-      es.addEventListener('snapshot', (e) => {
-        const data = JSON.parse(e.data);
-        setStatus(data);
-        if (data.elapsed_sec) setPipelineElapsed(data.elapsed_sec);
-        if (data.eta_remaining_sec != null) setEtaRemaining(data.eta_remaining_sec);
-        // Recover progress from snapshot
-        if (data.steps) {
-          const done = data.steps.filter(s => s.status === 'done').length;
-          setProgressPct(Math.round((done / data.steps.length) * 100));
-          const timers = {};
-          data.steps.forEach(s => {
-            timers[s.name] = { elapsed: s.elapsed_sec, estimated: s.estimated_duration_sec };
-          });
-          setStepTimers(timers);
-        }
-      });
-
-      es.addEventListener('step_start', (e) => {
-        const data = JSON.parse(e.data);
-        setStatus(prev => prev ? { ...prev, current_step: data.step, current_step_index: data.index } : prev);
-        setLogs(prev => [...prev, { time: data.timestamp, icon: '▶', msg: data.message, step: data.step }]);
-        if (data.progress_pct != null) setProgressPct(data.progress_pct);
-        if (data.eta_remaining_sec != null) setEtaRemaining(data.eta_remaining_sec);
-        if (data.pipeline_elapsed_sec != null) setPipelineElapsed(data.pipeline_elapsed_sec);
-        setStepTimers(prev => ({
-          ...prev,
-          [data.step]: { elapsed: null, estimated: data.estimated_duration_sec, startedAt: Date.now() }
-        }));
-      });
-
-      es.addEventListener('step_done', (e) => {
-        const data = JSON.parse(e.data);
-        setLogs(prev => [...prev, { time: data.timestamp, icon: '✅', msg: data.message, step: data.step }]);
-        if (data.progress_pct != null) setProgressPct(data.progress_pct);
-        if (data.eta_remaining_sec != null) setEtaRemaining(data.eta_remaining_sec);
-        if (data.pipeline_elapsed_sec != null) setPipelineElapsed(data.pipeline_elapsed_sec);
-        setStepTimers(prev => ({
-          ...prev,
-          [data.step]: { ...prev[data.step], elapsed: data.elapsed_sec }
-        }));
-        // Refresh full status
-        apiGet(`/status/${runId}`).then(s => { if (s) setStatus(s); }).catch(() => {});
-      });
-
-      es.addEventListener('step_error', (e) => {
-        const data = JSON.parse(e.data);
-        setLogs(prev => [...prev, { time: data.timestamp, icon: '❌', msg: data.message, step: data.step }]);
-        if (data.progress_pct != null) setProgressPct(data.progress_pct);
-        if (data.pipeline_elapsed_sec != null) setPipelineElapsed(data.pipeline_elapsed_sec);
-        setEtaRemaining(0);
-        apiGet(`/status/${runId}`).then(s => { if (s) setStatus(s); }).catch(() => {});
-      });
-
-      es.addEventListener('log', (e) => {
-        const data = JSON.parse(e.data);
-        setLogs(prev => [...prev, { time: data.timestamp, icon: '📋', msg: data.message, step: data.step }]);
-      });
-
-      es.addEventListener('pipeline_done', (e) => {
-        const data = JSON.parse(e.data);
-        const totalStr = data.total_elapsed_sec ? ` in ${fmtDuration(data.total_elapsed_sec)}` : '';
-        setLogs(prev => [...prev, {
-          time: data.timestamp || new Date().toISOString(),
-          icon: data.status === 'SUCCEEDED' ? '🎉' : '💥',
-          msg: `Pipeline ${data.status}${totalStr}` + (data.title ? ` — ${data.title}` : ''),
-          step: 'Pipeline',
-        }]);
-        if (data.total_elapsed_sec) setPipelineElapsed(data.total_elapsed_sec);
-        setProgressPct(data.status === 'SUCCEEDED' ? 100 : progressPct);
-        setEtaRemaining(0);
-        apiGet(`/status/${runId}`).then(s => { if (s) setStatus(s); }).catch(() => {});
-        es.close();
-      });
-
-      es.onerror = () => {
-        // SSE closed or errored — do a final status fetch
-        apiGet(`/status/${runId}`).then(s => { if (s) setStatus(s); }).catch(() => {});
-      };
-
-      return () => es.close();
-    }
-
-    // ── Polling mode (cloud / API Gateway) ──
-    pollerRef.current = setInterval(async () => {
-      const s = await apiGet(`/status/${runId}`).catch(() => null);
-      if (!s) return;
-      setStatus(s);
-
-      // Populate step timers from API response
-      if (s.steps) {
-        const done = s.steps.filter(x => x.status === 'done').length;
-        const errored = s.steps.filter(x => x.status === 'error').length;
-        setProgressPct(s.progress_pct ?? Math.round(((done + errored) / s.steps.length) * 100));
-        const timers = {};
-        s.steps.forEach(st => {
-          timers[st.name] = {
-            elapsed: st.duration_sec,
-            estimated: null,
-            startedAt: st.status === 'running' && st.entered_at ? new Date(st.entered_at).getTime() : null,
-          };
-        });
-        setStepTimers(timers);
-      }
-
-      // Build log entries from timeline
-      if (s.timeline && s.timeline.length > 0) {
-        const newLogs = s.timeline.map(t => ({
-          time: t.time,
-          step: t.step,
-          icon: t.event === 'completed' ? '✅' : t.event === 'failed' ? '❌' : '▶',
-          msg: t.message,
-        }));
-        setLogs(newLogs);
-      }
-
-      if (s.elapsed_sec) setPipelineElapsed(s.elapsed_sec);
-
-      if (s.status === 'SUCCEEDED' || s.status === 'FAILED') {
-        clearInterval(pollerRef.current);
-        setEtaRemaining(0);
-        if (s.status === 'SUCCEEDED') setProgressPct(100);
-        // Add final log entry
-        setLogs(prev => [...prev, {
-          time: s.stop_date || new Date().toISOString(),
-          step: 'Pipeline',
-          icon: s.status === 'SUCCEEDED' ? '🎉' : '💥',
-          msg: `Pipeline ${s.status}` + (s.elapsed_sec ? ` in ${fmtDuration(s.elapsed_sec)}` : ''),
-        }]);
-        // Fetch outputs (for both success and failure - to get error logs)
-        const o = await apiGet(`/outputs/${runId}`).catch(() => null);
-        if (o) {
-          setOutputs(o);
-          if (o.urls?.[`${runId}/script.json`]) {
-            fetch(o.urls[`${runId}/script.json`])
-              .then(r => r.json())
-              .then(setScript)
-              .catch(() => {});
-          }
-        }
-      }
-    }, 4000);
-    return () => clearInterval(pollerRef.current);
-  }, [runId]);
-
-  async function handleRun() {
-    if (!niche.trim()) { setError('Enter a niche keyword'); return; }
-    setError(''); setSuccess('');
-    setResumeRunId(''); setResumeStep(''); setResumeError(''); setResumeSuccess(''); setResumeCompletedSteps([]); setResumeDetectedStep('');
-    setLoading(true);
-    setStatus(null); setOutputs(null); setScript(null); setLogs([]);
-    setProgressPct(0); setEtaRemaining(null); setPipelineElapsed(0);
-    setStepTimers({}); setPipelineStartTime(null);
-    try {
-      const res = await apiPost('/run', { niche, profile, dry_run: dryRun });
-      if (res.error) { setError(res.error); return; }
-      setRunId(res.run_id);
-      const newEntry = {
-        run_id: res.run_id, niche, profile, dry_run: dryRun,
-        status: 'RUNNING', title: '', video_url: '', start: new Date().toISOString(),
-      };
-      const updated = [newEntry, ...history].slice(0, 10);
-      setHistory(updated);
-      localStorage.setItem('nexus_history', JSON.stringify(updated));
-      setSuccess(`Pipeline started. Run ID: ${res.run_id}`);
-    } catch(e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleResume() {
-    if (!resumeRunId.trim()) { setResumeError('Enter a Run ID'); return; }
-    setResumeError(''); setResumeSuccess(''); setResumeCompletedSteps([]); setResumeDetectedStep('');
-    setResumeLoading(true);
-    setStatus(null); setOutputs(null); setScript(null); setLogs([]);
-    setProgressPct(0); setEtaRemaining(null); setPipelineElapsed(0);
-    setStepTimers({}); setPipelineStartTime(null);
-    try {
-      const body = {
-        run_id: resumeRunId.trim(),
-        dry_run: dryRun,
-      };
-      if (resumeStep) body.resume_from = resumeStep;
-      const res = await apiPost('/resume', body);
-      if (res.error) { setResumeError(res.error); return; }
-      setResumeCompletedSteps(res.completed_steps || []);
-      setResumeDetectedStep(res.resume_from || '');
-      setRunId(res.run_id);
-      const newEntry = {
-        run_id: res.run_id, niche: '', profile: '',
-        dry_run: dryRun, status: 'RUNNING', title: '',
-        start: new Date().toISOString(),
-        resume_of: resumeRunId.trim(),
-        resume_from: res.resume_from,
-      };
-      const updated = [newEntry, ...history].slice(0, 10);
-      setHistory(updated);
-      localStorage.setItem('nexus_history', JSON.stringify(updated));
-      setResumeSuccess(`Resumed from ${res.resume_from}. New run: ${res.run_id}`);
-    } catch(e) {
-      setResumeError(String(e));
-    } finally {
-      setResumeLoading(false);
-    }
-  }
-
-  function fillResume(h) {
-    setResumeRunId(h.resume_of || h.run_id);
-    setResumeStep('');
-    setResumeError(''); setResumeSuccess(''); setResumeCompletedSteps([]); setResumeDetectedStep('');
-    document.getElementById('resume-section')?.scrollIntoView({ behavior: 'smooth' });
-  }
-
-  // Update history entry when status changes
-  React.useEffect(() => {
-    if (!runId || !status) return;
-    setHistory(prev => {
-      const updated = prev.map(h =>
-        h.run_id === runId
-          ? { ...h, status: status.status, title: status.title || h.title }
-          : h
-      );
-      localStorage.setItem('nexus_history', JSON.stringify(updated));
-      return updated;
-    });
-  }, [status]);
-
-  function stepState(stepKey) {
-    if (!status) return '';
-    // Use steps[] array (works for both local and cloud mode)
-    if (status.steps) {
-      const s = status.steps.find(x => x.name === stepKey);
-      if (!s) return '';
-      if (s.status === 'done') return 'done';
-      if (s.status === 'running') return 'active';
-      if (s.status === 'error') return 'error';
-      return '';
-    }
-    // Fallback: infer from current_step position
-    const current = status.current_step || '';
-    const stepIdx = STEPS.findIndex(s => s.key === stepKey);
-    const currentIdx = STEPS.findIndex(s => s.key === current);
-    if (status.status === 'FAILED' && stepIdx === currentIdx) return 'error';
-    if (stepIdx < currentIdx) return 'done';
-    if (stepIdx === currentIdx) return 'active';
-    return '';
-  }
-
-  const videoUrl = outputs?.urls?.[`${runId}/review/final_video.mp4`]
-    || outputs?.urls?.[`${runId}/final_video.mp4`];
-  const thumbUrls = [0, 1, 2].map(i =>
-    outputs?.urls?.[`${runId}/review/thumbnail_${i}.jpg`]
-    || outputs?.urls?.[`${runId}/thumbnails/thumbnail_${i}.jpg`]
-  ).filter(Boolean);
-
+function Toasts() {
+  const { notifications, removeNotification } = useContext(AppContext);
+  const icons = { success: '✅', error: '✖', warning: '⚠️', info: 'ℹ️' };
+  const borders = { success: 'border-l-accent-green', error: 'border-l-accent-red', warning: 'border-l-accent-amber', info: 'border-l-accent-blue' };
   return (
-    <div>
-      {/* ── Download Panel ── */}
-      {dlPanel && (
-        <div className="dl-panel" onClick={() => setDlPanel(null)}>
-          <div className="dl-panel-box" onClick={e => e.stopPropagation()}>
-            <div className="dl-panel-title">
-              <span>📥 Downloads — <span style={{fontWeight:400,color:'var(--muted)'}}>{dlPanel.run_id.slice(0,8)}…</span></span>
-              <button className="dl-panel-close" onClick={() => setDlPanel(null)}>✕</button>
-            </div>
-            {dlPanel.files.length === 0
-              ? <div className="dl-empty">No output files available for this run.</div>
-              : <>
-                  {dlPanel.files.map((f, i) => (
-                    <div key={i} className="dl-file-row">
-                      <span className="dl-file-label">{f.label}</span>
-                      <span className="dl-file-type">{f.type}</span>
-                      <a className="dl-file-a" href={f.url} download={f.label} target="_blank" rel="noreferrer">
-                        ↓ Download
-                      </a>
-                    </div>
-                  ))}
-                  <button className="dl-all-btn" onClick={() => downloadAll(dlPanel.files)}>
-                    ↓ Download All ({dlPanel.files.length} files)
-                  </button>
-                </>
-            }
-          </div>
+    <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 max-w-sm">
+      {notifications.map(n => (
+        <div key={n.id} className={`${n.exiting ? 'toast-exit' : 'toast-enter'} bg-surface border border-border ${borders[n.type]} border-l-4 rounded-xl px-4 py-3 flex items-start gap-3 shadow-2xl`}>
+          <span className="text-sm mt-0.5 shrink-0">{icons[n.type]}</span>
+          <p className="text-sm text-text-primary flex-1">{n.message}</p>
+          <button onClick={() => removeNotification(n.id)} className="text-text-muted hover:text-text-primary text-xs mt-0.5 shrink-0">✕</button>
         </div>
-      )}
-      <header>
-        <div className="logo">NEXUS<span> CLOUD</span></div>
-        {IS_LOCAL && (
-          <span style={{
-            background:'#1a2a1a', color:'var(--accent-fin)', padding:'3px 10px',
-            borderRadius:4, fontSize:10, letterSpacing:2, fontWeight:700,
-          }}>🔧 LOCAL</span>
-        )}
-        <div style={{fontSize:11,color:'var(--muted)',marginLeft:'auto',display:'flex',alignItems:'center',gap:12}}>
-          {IS_LOCAL ? 'Local Docker Orchestrator' : 'Serverless YouTube Automation Pipeline'}
-          {health && (
-            <span style={{
-              display:'inline-flex', alignItems:'center', gap:5, padding:'3px 10px',
-              borderRadius:4, fontSize:10, letterSpacing:1, fontWeight:700,
-              background: health === 'healthy' ? '#0a2a1a' : health === 'degraded' ? '#2a1a0a' : '#2a0a0a',
-              color: health === 'healthy' ? 'var(--accent-fin)' : health === 'degraded' ? '#ffa500' : 'var(--accent-ent)',
-              border: `1px solid ${health === 'healthy' ? 'var(--accent-fin)' : health === 'degraded' ? '#ffa500' : 'var(--accent-ent)'}`,
-            }}>
-              {health === 'healthy' ? '● DEPLOY OK' : health === 'degraded' ? '● DEGRADED' : '● UNREACHABLE'}
-            </span>
-          )}
-        </div>
-      </header>
-
-      <main>
-        {/* ── Input Form ── */}
-        <section>
-          <h2>New Pipeline Run</h2>
-          <div className="card">
-            <div className="field">
-              <label>Niche Keyword</label>
-              <input
-                type="text"
-                value={niche}
-                onChange={e => setNiche(e.target.value)}
-                placeholder="e.g. obscure history, stock market, true crime..."
-                onKeyDown={e => e.key === 'Enter' && handleRun()}
-              />
-            </div>
-            <div className="field">
-              <label>Channel Profile</label>
-              <div className="profile-btns">
-                {['documentary', 'finance', 'entertainment'].map(p => (
-                  <button
-                    key={p}
-                    className={`profile-btn ${profile === p ? `active-${p.slice(0,3)}` : ''}`}
-                    onClick={() => setProfile(p)}
-                  >{p.charAt(0).toUpperCase() + p.slice(1)}</button>
-                ))}
-              </div>
-            </div>
-            <div className="field">
-              <div className="toggle-row">
-                <input
-                  type="checkbox" className="toggle" id="dry"
-                  checked={dryRun} onChange={e => setDryRun(e.target.checked)}
-                />
-                <label htmlFor="dry" style={{marginBottom:0,textTransform:'none',letterSpacing:0,fontSize:13}}>
-                  Dry Run (no AI calls, no real uploads)
-                </label>
-              </div>
-            </div>
-            <button
-              className={`run-btn ${accentClass}`}
-              onClick={handleRun}
-              disabled={loading}
-            >
-              {loading ? '⏳  Starting...' : '▶  Run Pipeline'}
-            </button>
-            {error && <div className="error-msg">⚠ {error}</div>}
-            {success && <div className="success-msg">✔ {success}</div>}
-          </div>
-        </section>
-
-        {/* ── Resume Failed Run ── */}
-        <section id="resume-section">
-          <h2>↺ Resume Failed Run</h2>
-          <div className="card">
-            <div className="resume-grid">
-              <div className="field" style={{marginBottom:0}}>
-                <label>Run ID to Resume</label>
-                <input
-                  type="text"
-                  value={resumeRunId}
-                  onChange={e => { setResumeRunId(e.target.value); setResumeError(''); setResumeSuccess(''); setResumeCompletedSteps([]); setResumeDetectedStep(''); }}
-                  placeholder="e.g. e0e1d1ab-e575-4a95-8b72-babd36653832"
-                  onKeyDown={e => e.key === 'Enter' && handleResume()}
-                />
-              </div>
-              <div className="field" style={{marginBottom:0}}>
-                <label>Resume From Step</label>
-                <select value={resumeStep} onChange={e => setResumeStep(e.target.value)}>
-                  <option value="">Auto-detect</option>
-                  <option value="Research">Research</option>
-                  <option value="Script">Script</option>
-                  <option value="AudioVisuals">AudioVisuals</option>
-                  <option value="Editor">Editor</option>
-                  <option value="Thumbnail">Thumbnail</option>
-                  <option value="Notify">Notify</option>
-                </select>
-              </div>
-            </div>
-            {resumeCompletedSteps.length > 0 && (
-              <div className="completed-steps-row" style={{marginTop:12}}>
-                <span style={{fontSize:10,color:'var(--muted)',alignSelf:'center',marginRight:4}}>S3:</span>
-                {['Research','Script','AudioVisuals','Editor','Thumbnail','Notify'].map(s => (
-                  <span key={s} className={`step-pill ${resumeCompletedSteps.includes(s) ? 'done' : s === resumeDetectedStep ? 'target' : ''}`}
-                    style={{opacity: resumeCompletedSteps.includes(s) || s === resumeDetectedStep ? 1 : 0.3}}>
-                    {resumeCompletedSteps.includes(s) ? '✓ ' : s === resumeDetectedStep ? '▶ ' : ''}{s}
-                  </span>
-                ))}
-              </div>
-            )}
-            <button
-              className="resume-btn"
-              onClick={handleResume}
-              disabled={resumeLoading || !resumeRunId.trim()}
-            >
-              {resumeLoading ? '⏳  Checking S3...' : `↺  Resume${resumeDetectedStep ? ' from ' + resumeDetectedStep : ''}`}
-            </button>
-            {resumeError && <div className="error-msg">⚠ {resumeError}</div>}
-            {resumeSuccess && <div className="success-msg">✔ {resumeSuccess}</div>}
-          </div>
-        </section>
-
-        {/* ── Pipeline Progress ── */}
-        {runId && (
-          <section>
-            <h2>Pipeline Progress {status && `— ${status.status}`}</h2>
-
-            {/* Overall progress bar */}
-            <div className="progress-bar-container">
-              <div className="progress-bar-fill" style={{width: `${progressPct}%`}} />
-            </div>
-            <div className="progress-stats">
-              <span><span className="highlight">{progressPct}%</span> complete</span>
-              <span>
-                {status && status.current_step_index != null && status.total_steps
-                  ? `Step ${Math.min(status.current_step_index + 1, status.total_steps)} of ${status.total_steps}`
-                  : ''}
-              </span>
-              <span>ETA: <span className="eta">{etaRemaining != null && etaRemaining > 0 ? fmtDuration(etaRemaining) : etaRemaining === 0 ? 'Done' : '—'}</span></span>
-            </div>
-
-            {/* Timer display */}
-            <div className="timer-display">
-              <div>
-                <div className="timer-label">Elapsed</div>
-                <div className="timer-value timer-elapsed">{fmtTimer(pipelineElapsed)}</div>
-              </div>
-              <div className="timer-separator">│</div>
-              <div>
-                <div className="timer-label">Remaining</div>
-                <div className="timer-value timer-eta">
-                  {etaRemaining != null && etaRemaining > 0 ? fmtTimer(etaRemaining) : etaRemaining === 0 ? '00:00' : '--:--'}
-                </div>
-              </div>
-              <div className="timer-separator">│</div>
-              <div>
-                <div className="timer-label">Current Step</div>
-                <div className="timer-value" style={{fontSize:14,color:'var(--accent-doc)'}}>
-                  {status?.current_step || '—'}
-                </div>
-              </div>
-            </div>
-
-            {/* Steps with mini progress & timing */}
-            <div className="steps" style={{marginTop: 16}}>
-              {STEPS.map(s => {
-                const st = stepState(s.key);
-                const timer = stepTimers[s.key];
-                let timeLabel = '';
-                if (st === 'done' && timer?.elapsed != null) {
-                  timeLabel = fmtDuration(timer.elapsed);
-                } else if (st === 'active' && timer?.startedAt) {
-                  // Live counting
-                  const live = Math.floor((Date.now() - timer.startedAt) / 1000);
-                  timeLabel = `${fmtTimer(live)}`;
-                  if (timer?.estimated) timeLabel += ` / ~${fmtDuration(timer.estimated)}`;
-                } else if (timer?.estimated) {
-                  timeLabel = `~${fmtDuration(timer.estimated)}`;
-                }
-                return (
-                  <div key={s.key} className={`step ${st}`}>
-                    <span className="step-icon">{s.icon}</span>
-                    {s.label}
-                    <span className="step-time">{timeLabel}</span>
-                    <div className="step-progress-mini">
-                      <div className="fill" style={{
-                        width: st === 'done' ? '100%' : st === 'active' ? '50%' : '0%'
-                      }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            {runId && (
-              <p style={{marginTop:10,fontSize:11,color:'var(--muted)'}}>
-                Run ID: <code style={{color:'var(--text)'}}>{runId}</code>
-              </p>
-            )}
-
-            {/* ── Live Logs (both local and cloud mode) ── */}
-            {logs.length > 0 && (
-              <div style={{
-                marginTop:16, background:'var(--bg)', border:'1px solid var(--border)',
-                borderRadius:6, padding:'12px 16px', maxHeight:300, overflowY:'auto',
-                fontSize:12, lineHeight:1.8, fontFamily:'var(--mono)',
-              }}>
-                {logs.map((l, i) => (
-                  <div key={i} className="log-entry" style={{
-                    color: l.icon === '❌' || l.icon === '💥' ? 'var(--accent-ent)'
-                         : l.icon === '✅' || l.icon === '🎉' ? 'var(--accent-fin)'
-                         : 'var(--text)'
-                  }}>
-                    <span className="log-time">
-                      {new Date(l.time).toLocaleTimeString()}
-                    </span>
-                    {l.step && <span className="log-step-badge">{l.step}</span>}
-                    <span className="log-msg">{l.icon} {l.msg}</span>
-                  </div>
-                ))}
-                <div ref={logEndRef} />
-              </div>
-            )}
-
-            {/* ── Error Detail Panel ── */}
-            {status && status.error && status.status === 'FAILED' && (
-              <div style={{
-                marginTop:16, background:'#1a0a0a', border:'1px solid var(--accent-ent)',
-                borderRadius:6, padding:'16px 20px',
-              }}>
-                <div style={{
-                  fontSize:13, fontWeight:700, color:'var(--accent-ent)',
-                  marginBottom:10, display:'flex', alignItems:'center', gap:8,
-                }}>
-                  <span style={{fontSize:18}}>⚠️</span>
-                  Pipeline Failed
-                  {status.error.step && (
-                    <span style={{
-                      fontSize:10, background:'var(--accent-ent)', color:'#fff',
-                      padding:'2px 8px', borderRadius:3, marginLeft:6,
-                    }}>at {status.error.step}</span>
-                  )}
-                </div>
-                {status.error.step_error && (
-                  <div style={{marginBottom:10}}>
-                    <div style={{fontSize:11, color:'var(--muted)', marginBottom:4}}>ERROR TYPE</div>
-                    <code style={{
-                      color:'var(--accent-ent)', fontSize:12,
-                      background:'var(--surface2)', padding:'4px 8px', borderRadius:4,
-                    }}>{status.error.step_error.type}</code>
-                  </div>
-                )}
-                {status.error.step_error?.message && (
-                  <div style={{marginBottom:10}}>
-                    <div style={{fontSize:11, color:'var(--muted)', marginBottom:4}}>MESSAGE</div>
-                    <div style={{
-                      fontSize:12, color:'var(--text)', lineHeight:1.6,
-                      background:'var(--surface)', padding:'10px 12px', borderRadius:4,
-                      maxHeight:120, overflowY:'auto', wordBreak:'break-word',
-                    }}>{status.error.step_error.message}</div>
-                  </div>
-                )}
-                {status.error.step_error?.stack_trace && (
-                  <div>
-                    <div style={{fontSize:11, color:'var(--muted)', marginBottom:4}}>STACK TRACE</div>
-                    <pre style={{
-                      fontSize:11, color:'#ccc', lineHeight:1.5,
-                      background:'var(--bg)', padding:'10px 12px', borderRadius:4,
-                      maxHeight:200, overflowY:'auto', whiteSpace:'pre-wrap', wordBreak:'break-all',
-                      border:'1px solid var(--border)',
-                    }}>{status.error.step_error.stack_trace}</pre>
-                  </div>
-                )}
-                {status.error.cause && !status.error.step_error && (
-                  <div style={{
-                    fontSize:12, color:'var(--text)', lineHeight:1.6,
-                    background:'var(--surface)', padding:'10px 12px', borderRadius:4,
-                    maxHeight:120, overflowY:'auto', wordBreak:'break-word',
-                  }}>{status.error.cause}</div>
-                )}
-              </div>
-            )}
-
-            {/* ── Error Logs from S3 ── */}
-            {outputs?.error_logs && Object.keys(outputs.error_logs).length > 0 && (
-              <div style={{marginTop:16}}>
-                <div style={{fontSize:11,color:'var(--muted)',marginBottom:8,textTransform:'uppercase',letterSpacing:2}}>
-                  Error Logs from S3
-                </div>
-                {Object.entries(outputs.error_logs).map(([step, data]) => (
-                  <div key={step} style={{
-                    background:'var(--surface)', border:'1px solid var(--border)',
-                    borderRadius:6, padding:'10px 14px', marginBottom:8, fontSize:12,
-                  }}>
-                    <span style={{color:'var(--accent-ent)', fontWeight:700}}>
-                      {step}:
-                    </span>{' '}
-                    <span style={{color:'var(--text)'}}>
-                      {typeof data === 'object' ? (data.error || JSON.stringify(data)) : String(data)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* ── Outputs ── */}
-        {outputs && (
-          <section>
-            <h2 style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-              <span>Outputs</span>
-              <button
-                className="dl-btn"
-                style={{fontSize:11,padding:'4px 14px'}}
-                disabled={dlLoading === runId}
-                onClick={() => handleDownload(runId)}
-              >
-                {dlLoading === runId ? '⏳ Loading...' : '📥 Download All Outputs'}
-              </button>
-            </h2>
-            <div className="output-grid">
-              {/* Video */}
-              <div>
-                <h2 style={{marginBottom:10}}>Final Video</h2>
-                {videoUrl
-                  ? <div className="video-wrapper"><video src={videoUrl} controls /></div>
-                  : <div className="card" style={{textAlign:'center',color:'var(--muted)',padding:40}}>
-                      Video not yet available
-                    </div>
-                }
-              </div>
-              {/* Thumbnails */}
-              <div>
-                <h2 style={{marginBottom:10}}>Thumbnails</h2>
-                <div className="thumb-row">
-                  {thumbUrls.length > 0
-                    ? thumbUrls.map((u, i) => (
-                        <img key={i} src={u} alt={`Thumbnail ${i+1}`}
-                          className={selectedThumb === i ? 'selected' : ''}
-                          onClick={() => setSelectedThumb(i)} />
-                      ))
-                    : <div className="card" style={{flex:1,textAlign:'center',color:'var(--muted)',padding:40}}>
-                        No thumbnails yet
-                      </div>
-                  }
-                </div>
-              </div>
-            </div>
-
-            {/* Script viewer */}
-            {script && (
-              <div style={{marginTop:24}}>
-                <h2 style={{marginBottom:10}}>Script</h2>
-                <div className="card">
-                  <div style={{marginBottom:12}}>
-                    <strong>{script.title}</strong>
-                    <div style={{fontSize:11,color:'var(--muted)',marginTop:4}}>
-                      {script.total_duration_estimate ? fmtDuration(script.total_duration_estimate) : ''}
-                      {' '}&bull;{' '}{(script.tags||[]).join(', ')}
-                    </div>
-                  </div>
-                  <div className="script-viewer">
-                    {(script.sections || []).map((s, i) => (
-                      <div key={i} style={{marginBottom:16}}>
-                        <div style={{color:'var(--accent-doc)',marginBottom:4,fontSize:11}}>
-                          ── {s.title} ──
-                        </div>
-                        {s.content}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="copy-row">
-                    <button className="copy-btn" onClick={() => copyToClipboard(script.title)}>
-                      📋 Copy Title
-                    </button>
-                    <button className="copy-btn" onClick={() => copyToClipboard(script.description || '')}>
-                      📋 Copy Description
-                    </button>
-                    <button className="copy-btn" onClick={() => copyToClipboard((script.tags||[]).join(', '))}>
-                      📋 Copy Tags
-                    </button>
-                    <button className="copy-btn" onClick={() => copyToClipboard(JSON.stringify(script, null, 2))}>
-                      📋 Copy Full JSON
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* ── History ── */}
-        {history.length > 0 && (
-          <section>
-            <h2>Run History (last 10)</h2>
-            <div className="card" style={{padding:0,overflow:'hidden'}}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Run ID</th>
-                    <th>Niche</th>
-                    <th>Profile</th>
-                    <th>Status</th>
-                    <th>Started</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.map(h => (
-                    <tr key={h.run_id} style={{cursor:'pointer'}}
-                      onClick={() => setRunId(h.resume_of || h.run_id)}>
-                      <td>
-                        <code style={{fontSize:10}}>{h.run_id.slice(0,8)}…</code>
-                        {h.dry_run && <span style={{marginLeft:6,fontSize:10,color:'var(--muted)'}}>[dry]</span>}
-                        {h.resume_of && (
-                          <span style={{marginLeft:6,fontSize:10,color:'#4A9EFF',opacity:.8}}>
-                            ↺{h.resume_from ? ' '+h.resume_from : ''}
-                          </span>
-                        )}
-                      </td>
-                      <td>{h.niche || <span style={{color:'var(--muted)'}}>—</span>}</td>
-                      <td>{h.profile || <span style={{color:'var(--muted)'}}>—</span>}</td>
-                      <td>
-                        <span className={`status-badge badge-${h.status || 'RUNNING'}`}>
-                          {h.status || 'RUNNING'}
-                        </span>
-                      </td>
-                      <td style={{color:'var(--muted)'}}>
-                        {h.start ? new Date(h.start).toLocaleString() : '—'}
-                      </td>
-                      <td onClick={e => e.stopPropagation()}>
-                        <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                          {(h.status === 'FAILED' || h.status === 'TIMED_OUT') && (
-                            <button className="resume-action-btn" onClick={() => fillResume(h)}>
-                              ↺ Resume
-                            </button>
-                          )}
-                          <button
-                            className="dl-btn"
-                            disabled={dlLoading === h.run_id}
-                            onClick={() => handleDownload(h.run_id)}
-                            title="Download all outputs for this run"
-                          >
-                            {dlLoading === h.run_id ? '⏳' : '📥 Download'}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-      </main>
+      ))}
     </div>
   );
 }
 
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<App />);
+// ── SSE Manager ──────────────────────────────────────────────────────────────
+// Manages SSE connections with automatic reconnect and status tracking.
+// On disconnect: waits 3s then retries up to 3 times.
+// After 3 failures: status = "unreachable".
+// On reconnect: re-syncs run state via GET /status/:run_id.
+function useSSE() {
+  const [sseStatus, setSseStatus] = useState('connected');
+  const connectionsRef = useRef({});
+  const retriesRef = useRef({});
+
+  const connectSSE = useCallback((runId, onEvent) => {
+    if (connectionsRef.current[runId]) {
+      connectionsRef.current[runId].close();
+    }
+    retriesRef.current[runId] = retriesRef.current[runId] || 0;
+    const url = `${API_BASE}/events/${runId}`;
+    const es = new EventSource(url);
+
+    es.onopen = () => {
+      retriesRef.current[runId] = 0;
+      setSseStatus('connected');
+    };
+
+    const handleEvent = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        onEvent(e.type || 'message', data);
+        if (e.type === 'pipeline_done' || data.type === 'pipeline_done') {
+          es.close();
+          delete connectionsRef.current[runId];
+        }
+      } catch {}
+    };
+
+    ['snapshot', 'step_start', 'step_done', 'step_error', 'log', 'pipeline_done', 'message'].forEach(t => {
+      es.addEventListener(t, handleEvent);
+    });
+    es.onmessage = handleEvent;
+
+    es.onerror = () => {
+      es.close();
+      delete connectionsRef.current[runId];
+      retriesRef.current[runId] = (retriesRef.current[runId] || 0) + 1;
+      if (retriesRef.current[runId] >= 3) {
+        setSseStatus('unreachable');
+      } else {
+        setSseStatus('reconnecting');
+        setTimeout(() => connectSSE(runId, onEvent), 3000);
+      }
+    };
+
+    connectionsRef.current[runId] = es;
+  }, []);
+
+  const disconnectSSE = useCallback((runId) => {
+    if (connectionsRef.current[runId]) {
+      connectionsRef.current[runId].close();
+      delete connectionsRef.current[runId];
+    }
+  }, []);
+
+  const disconnectAll = useCallback(() => {
+    Object.keys(connectionsRef.current).forEach(id => {
+      connectionsRef.current[id].close();
+    });
+    connectionsRef.current = {};
+  }, []);
+
+  const reconnect = useCallback(() => {
+    retriesRef.current = {};
+    setSseStatus('reconnecting');
+  }, []);
+
+  useEffect(() => () => disconnectAll(), []);
+  return { sseStatus, connectSSE, disconnectSSE, reconnect, setSseStatus };
+}
+
+// ── Router ───────────────────────────────────────────────────────────────────
+function useRouter() {
+  const [route, setRoute] = useState(window.location.hash || '#/channels');
+  useEffect(() => {
+    const onHash = () => setRoute(window.location.hash || '#/channels');
+    window.addEventListener('hashchange', onHash);
+    if (!window.location.hash) window.location.hash = '#/channels';
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  const navigate = useCallback((hash) => { window.location.hash = hash; }, []);
+  const match = useMemo(() => {
+    const h = route;
+    if (h.match(/^#\/channels\/([^/]+)$/)) return { view: 'channelDetail', id: h.split('/')[2] };
+    if (h.match(/^#\/run\/(.+)$/)) return { view: 'pipelineMonitor', runId: h.replace('#/run/', '') };
+    if (h === '#/status') return { view: 'status' };
+    return { view: 'channels' };
+  }, [route]);
+  return { route, navigate, match };
+}
+
+// ── Utility components ───────────────────────────────────────────────────────
+function Skeleton({ className }) {
+  return <div className={`skeleton ${className}`}>&nbsp;</div>;
+}
+
+function StatusDot({ status }) {
+  const cfg = STATUS_COLORS[status] || STATUS_COLORS.idle;
+  return <span className={`inline-block w-2 h-2 rounded-full ${cfg.dot} ${cfg.pulse ? 'pulse-dot' : ''}`} />;
+}
+
+function Badge({ children, color = 'bg-raised text-text-secondary border-border' }) {
+  return <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold border ${color}`}>{children}</span>;
+}
+
+function CopyButton({ text }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+      className="text-text-muted hover:text-text-primary transition-colors ml-1.5 text-xs">
+      {copied ? '✓' : '⎘'}
+    </button>
+  );
+}
+
+function Toggle({ checked, onChange, label }) {
+  return (
+    <label className="flex items-center gap-3 cursor-pointer select-none">
+      <div className={`relative w-10 h-[22px] rounded-full transition-colors ${checked ? 'bg-accent-blue' : 'bg-raised border border-border'}`} onClick={() => onChange(!checked)}>
+        <div className={`absolute top-[3px] w-4 h-4 rounded-full transition-transform bg-white ${checked ? 'left-[22px]' : 'left-[3px]'}`} />
+      </div>
+      {label && <span className="text-sm text-text-secondary">{label}</span>}
+    </label>
+  );
+}
+
+function Modal({ children, onClose, width = 'max-w-lg' }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center fade-in" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className={`relative ${width} w-full mx-4 bg-surface border border-border rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto`} onClick={e => e.stopPropagation()}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Drawer({ children, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end fade-in" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      <div className="relative w-full max-w-[480px] bg-surface border-l border-border h-full overflow-y-auto shadow-2xl" style={{ animation: 'slide-in-right 250ms ease-out' }} onClick={e => e.stopPropagation()}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ProgressBar({ pct, animated = false }) {
+  return (
+    <div className="w-full h-1.5 rounded-full bg-raised overflow-hidden">
+      <div className={`h-full rounded-full transition-all duration-500 ${animated ? 'progress-animated' : ''}`}
+        style={{ width: `${Math.min(100, Math.max(0, pct))}%`, background: 'linear-gradient(90deg, #4F6EF7, #22D3EE)' }} />
+    </div>
+  );
+}
+
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  const s = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+function fmtDuration(sec) {
+  if (!sec && sec !== 0) return '';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function ColorSwatch({ color, label }) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="w-8 h-5 rounded" style={{ backgroundColor: color }} />
+      <span className="text-sm text-text-secondary">{label}</span>
+      <span className="text-xs font-mono text-accent-cyan ml-auto">{color}</span>
+    </div>
+  );
+}
+
+// ── Sidebar ──────────────────────────────────────────────────────────────────
+function Sidebar({ collapsed }) {
+  const { navigate, match, activeRuns, sseStatus, reconnect, setDrawer } = useContext(AppContext);
+  const runEntries = Object.entries(activeRuns).filter(([, r]) => r.status === 'RUNNING').slice(0, 5);
+
+  const navItems = [
+    { icon: '📺', label: 'Channels', hash: '#/channels', matchView: 'channels' },
+    { icon: '▶', label: 'Pipeline', hash: '#/channels', matchView: 'pipelineMonitor' },
+    { icon: '⚡', label: 'Shorts', hash: '#/channels', matchView: 'channels' },
+    { icon: '🔧', label: 'System Status', hash: '#/status', matchView: 'status' },
+  ];
+
+  const sseColors = { connected: 'bg-accent-green', reconnecting: 'bg-accent-amber pulse-dot', unreachable: 'bg-accent-red' };
+  const sseLabels = { connected: 'CONNECTED', reconnecting: 'RECONNECTING...', unreachable: 'UNREACHABLE' };
+
+  return (
+    <aside className={`hidden md:flex flex-col border-r border-border bg-surface h-screen sticky top-0 transition-all duration-200 ${collapsed ? 'w-16' : 'w-60'}`}>
+      <div className={`px-4 py-5 border-b border-border ${collapsed ? 'text-center' : ''}`}>
+        {collapsed ? (
+          <span className="text-lg font-bold" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>⬡</span>
+        ) : (
+          <>
+            <div className="font-bold tracking-tight flex items-center gap-2">
+              <span style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>⬡</span>
+              <span className="text-text-primary">NEXUSCLOUD</span>
+            </div>
+            <p className="text-[10px] text-text-muted mt-0.5 tracking-wide">Serverless YT Pipeline</p>
+          </>
+        )}
+      </div>
+
+      <nav className="flex-1 px-2 py-3 space-y-1">
+        {navItems.map(item => {
+          const active = match.view === item.matchView || (item.matchView === 'channels' && match.view === 'channelDetail');
+          return (
+            <button key={item.hash} onClick={() => navigate(item.hash)}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition-colors ${active ? 'bg-raised text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-raised/50'}`}>
+              <span className="text-base">{item.icon}</span>
+              {!collapsed && <span>{item.label}</span>}
+              {active && !collapsed && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-accent-blue" />}
+            </button>
+          );
+        })}
+
+        {!collapsed && (
+          <button onClick={() => setDrawer('create-channel')} className="w-full mt-3 flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-sm border border-dashed border-border text-text-muted hover:text-text-primary hover:border-border-bright transition-colors">
+            <span>+</span> New Channel
+          </button>
+        )}
+      </nav>
+
+      {!collapsed && runEntries.length > 0 && (
+        <div className="px-3 py-3 border-t border-border">
+          <p className="text-[10px] font-medium text-text-muted uppercase tracking-widest mb-2">Active Runs</p>
+          {runEntries.map(([id, run]) => {
+            const ptMeta = PIPELINE_TYPE_META[run.pipeline_type] || PIPELINE_TYPE_META.combined;
+            return (
+            <button key={id} onClick={() => navigate(`#/run/${id}`)} className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-raised transition-colors text-xs group mb-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan pulse-dot" />
+              <span className="shrink-0">{ptMeta.icon}</span>
+              <span className="text-text-secondary truncate flex-1 text-left group-hover:text-text-primary">{id.slice(0, 12)}</span>
+              <span className="text-text-muted">{run.progress_pct || 0}%</span>
+            </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className={`px-3 py-3 border-t border-border ${collapsed ? 'text-center' : 'flex items-center gap-2'}`}>
+        <span className={`inline-block w-2 h-2 rounded-full ${sseColors[sseStatus]}`} />
+        {!collapsed && (
+          <>
+            <span className="text-[10px] text-text-muted uppercase tracking-wider">{sseLabels[sseStatus]}</span>
+            {sseStatus === 'unreachable' && <button onClick={reconnect} className="ml-auto text-[10px] text-accent-blue hover:underline">Retry</button>}
+            <span className="ml-auto text-[10px] text-text-muted">v2.0.0</span>
+          </>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+// ── Mobile Bottom Nav ────────────────────────────────────────────────────────
+function MobileNav() {
+  const { navigate, match } = useContext(AppContext);
+  const items = [
+    { icon: '📺', label: 'Channels', hash: '#/channels', matchView: 'channels' },
+    { icon: '▶', label: 'Pipeline', hash: '#/channels', matchView: 'pipelineMonitor' },
+    { icon: '⚡', label: 'Shorts', hash: '#/channels', matchView: 'channels' },
+    { icon: '🔧', label: 'Status', hash: '#/status', matchView: 'status' },
+  ];
+  return (
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-surface border-t border-border flex">
+      {items.map(item => {
+        const active = match.view === item.matchView || (item.matchView === 'channels' && (match.view === 'channelDetail' || match.view === 'pipelineMonitor'));
+        return (
+          <button key={item.hash} onClick={() => navigate(item.hash)} className={`flex-1 flex flex-col items-center gap-1 py-3 text-xs ${active ? 'text-accent-blue' : 'text-text-muted'}`}>
+            <span className="text-lg">{item.icon}</span>
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VIEW 1 — CHANNEL GRID
+// ═════════════════════════════════════════════════════════════════════════════
+function ChannelGrid() {
+  const { channels, channelsLoading, navigate, setDrawer, setModal, setModalChannel, addNotification, refreshChannels } = useContext(AppContext);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('all');
+
+  const filters = ['all', 'active', 'scheduled', 'setting_up', 'error'];
+  const filtered = useMemo(() => {
+    let list = channels;
+    if (filter !== 'all') list = list.filter(c => (c.stats?.status || 'idle') === filter);
+    if (search) list = list.filter(c => c.name?.toLowerCase().includes(search.toLowerCase()) || c.niche?.toLowerCase().includes(search.toLowerCase()));
+    return list;
+  }, [channels, filter, search]);
+
+  if (channelsLoading) {
+    return (
+      <div className="p-6">
+        <div className="flex items-center justify-between mb-6">
+          <Skeleton className="h-10 w-64" />
+          <Skeleton className="h-10 w-40" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+          {[1,2,3,4,5,6].map(i => (
+            <div key={i} className="border border-border rounded-2xl bg-surface p-5">
+              <div className="flex items-center gap-4 mb-4"><Skeleton className="w-12 h-12 rounded-full" /><div className="flex-1"><Skeleton className="h-4 w-3/4 mb-2" /><Skeleton className="h-3 w-1/2" /></div></div>
+              <Skeleton className="h-3 w-full mb-2" /><Skeleton className="h-3 w-2/3 mb-4" /><div className="flex gap-3"><Skeleton className="h-8 flex-1" /><Skeleton className="h-8 w-20" /></div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (channels.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[70vh] text-center px-4">
+        <div className="text-6xl mb-4">🎬✨</div>
+        <h2 className="text-xl font-bold text-text-primary mb-2">No channels yet</h2>
+        <p className="text-text-secondary mb-6 max-w-md">Create your first channel to start generating content automatically.</p>
+        <button onClick={() => setDrawer('create-channel')} className="px-6 py-3 rounded-xl font-semibold text-white text-sm" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
+          Create your first channel →
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 md:p-6">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
+        <div className="relative flex-1 max-w-sm">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-sm">🔍</span>
+          <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search channels..."
+            className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-surface border border-border text-sm text-text-primary placeholder:text-text-muted focus:border-accent-blue focus:ring-1 focus:ring-accent-blue/20 transition-all" />
+        </div>
+        <button onClick={() => setDrawer('create-channel')} className="px-5 py-2.5 rounded-xl font-semibold text-white text-sm shrink-0 hover:opacity-90 transition-opacity" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
+          + New Channel
+        </button>
+      </div>
+
+      <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
+        {filters.map(f => (
+          <button key={f} onClick={() => setFilter(f)}
+            className={`px-4 py-1.5 rounded-full text-xs font-medium capitalize whitespace-nowrap transition-colors ${filter === f ? 'bg-raised text-text-primary border border-border-bright' : 'text-text-muted hover:text-text-secondary border border-transparent'}`}>
+            {f === 'all' ? 'All' : f.replace('_', ' ')}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+        {filtered.map(ch => <ChannelCard key={ch.channel_id} channel={ch} />)}
+      </div>
+    </div>
+  );
+}
+
+function ChannelCard({ channel }) {
+  const { navigate, setModal, setModalChannel } = useContext(AppContext);
+  const ch = channel;
+  const status = ch.stats?.status || 'idle';
+  const statusCfg = STATUS_COLORS[status] || STATUS_COLORS.idle;
+  const profile = PROFILES[ch.profile] || PROFILES.documentary;
+  const initials = (ch.name || 'NC').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  const setupSteps = [
+    { label: 'Brand Design', done: true },
+    { label: 'Logo Generation', done: status !== 'setting_up' },
+    { label: 'Intro / Outro', done: status !== 'setting_up' },
+    { label: 'Voice Setup', done: status !== 'setting_up' },
+  ];
+
+  return (
+    <div onClick={() => navigate(`#/channels/${ch.channel_id}`)}
+      className="border border-border rounded-2xl bg-surface p-5 cursor-pointer hover:border-border-bright transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl group">
+      <div className="flex items-center gap-3 mb-3">
+        {ch.brand?.logo_s3 ? (
+          <div className="w-12 h-12 rounded-full overflow-hidden border border-border shrink-0">
+            <img src={ch.brand.logo_url || ''} alt="" className="w-full h-full object-cover" onError={e => { e.target.style.display = 'none'; e.target.parentElement.innerHTML = `<div class="w-full h-full flex items-center justify-center text-sm font-bold" style="background:linear-gradient(135deg,${ch.brand?.primary_color || '#4F6EF7'},${ch.brand?.accent_color || '#8B5CF6'})">${initials}</div>`; }} />
+          </div>
+        ) : (
+          <div className="w-12 h-12 rounded-full flex items-center justify-center text-sm font-bold shrink-0" style={{ background: `linear-gradient(135deg, ${ch.brand?.primary_color || '#4F6EF7'}, ${ch.brand?.accent_color || '#8B5CF6'})` }}>
+            {initials}
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <h3 className="font-semibold text-text-primary truncate group-hover:text-white transition-colors">{ch.name}</h3>
+          <p className="text-xs text-text-muted truncate">@{ch.niche} · {ch.profile}</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 mb-3">
+        <Badge>{profile.icon} {profile.label}</Badge>
+      </div>
+
+      {status === 'setting_up' ? (
+        <div className="space-y-1.5 mb-4">
+          {setupSteps.map((s, i) => (
+            <div key={i} className="flex items-center gap-2 text-xs">
+              <span className={s.done ? 'text-accent-green' : 'text-text-muted'}>{s.done ? '✓' : '○'}</span>
+              <span className={s.done ? 'text-text-secondary' : 'text-text-muted'}>{s.label}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 gap-4 py-3 border-t border-b border-border/50 mb-3">
+            <div><p className="text-[10px] text-text-muted uppercase tracking-wider">Videos</p><p className="text-sm font-semibold text-text-primary">{ch.stats?.videos_generated || 0}</p></div>
+            <div><p className="text-[10px] text-text-muted uppercase tracking-wider">Shorts</p><p className="text-sm font-semibold text-text-primary">{(ch.stats?.videos_generated || 0) * 4}</p></div>
+            <div><p className="text-[10px] text-text-muted uppercase tracking-wider">Last Run</p><p className="text-sm font-semibold text-text-primary">{ch.stats?.last_published ? timeAgo(ch.stats.last_published) : '—'}</p></div>
+          </div>
+
+          <div className="flex items-center justify-between mb-3">
+            {ch.schedule?.enabled ? (
+              <span className="text-xs text-text-muted">Next: {ch.schedule.frequency}</span>
+            ) : (
+              <span className="text-xs text-text-muted">No schedule</span>
+            )}
+            <div className="flex items-center gap-1.5">
+              <StatusDot status={status} />
+              <span className={`text-[10px] font-medium uppercase tracking-wider ${statusCfg.text}`}>{statusCfg.label}</span>
+            </div>
+          </div>
+        </>
+      )}
+
+      <div className="flex gap-2">
+        <button onClick={e => { e.stopPropagation(); setModalChannel(ch); setModal('generate-video'); }}
+          className="flex-1 px-3 py-2 rounded-xl text-xs font-semibold text-white transition-opacity hover:opacity-90" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
+          ▶ Generate Video
+        </button>
+        <button onClick={e => { e.stopPropagation(); setModalChannel(ch); setModal('generate-shorts'); }}
+          className="px-3 py-2 rounded-xl text-xs font-semibold text-accent-cyan border border-accent-cyan/30 bg-accent-cyan/5 hover:bg-accent-cyan/10 transition-colors">
+          ⚡ Shorts
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VIEW 2 — CREATE CHANNEL DRAWER
+// ═════════════════════════════════════════════════════════════════════════════
+function CreateChannelDrawer({ onClose }) {
+  const { addNotification, refreshChannels } = useContext(AppContext);
+  const [name, setName] = useState('');
+  const [niche, setNiche] = useState('');
+  const [profile, setProfile] = useState('documentary');
+  const [styleHints, setStyleHints] = useState('');
+  const [schedEnabled, setSchedEnabled] = useState(false);
+  const [freq, setFreq] = useState('3x per week');
+  const [schedTime, setSchedTime] = useState('09:00');
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!name.trim() || !niche.trim()) return;
+    setSubmitting(true);
+    try {
+      const body = { channel_name: name, niche, profile, style_hints: styleHints };
+      if (schedEnabled) body.schedule = { enabled: true, frequency: freq, time: schedTime };
+      await api('/channel/create', { method: 'POST', body: JSON.stringify(body) });
+      addNotification('success', `${name} — brand kit generating...`);
+      refreshChannels();
+      onClose();
+    } catch (err) {
+      addNotification('error', `Failed to create channel: ${err.error || err.message || 'Unknown error'}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Drawer onClose={onClose}>
+      <div className="p-6">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-lg font-bold text-text-primary">Create Channel</h2>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl">✕</button>
+        </div>
+
+        <div className="space-y-5">
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-2">Channel Name <span className="text-accent-red">*</span></label>
+            <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Echoes of Antiquity"
+              className="w-full px-4 py-2.5 rounded-xl bg-surface border border-border text-sm text-text-primary placeholder:text-text-muted focus:border-accent-blue focus:ring-1 focus:ring-accent-blue/20" />
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-2">Niche / Topic <span className="text-accent-red">*</span></label>
+            <input type="text" value={niche} onChange={e => setNiche(e.target.value)} placeholder="ancient civilizations and lost empires"
+              className="w-full px-4 py-2.5 rounded-xl bg-surface border border-border text-sm text-text-primary placeholder:text-text-muted focus:border-accent-blue focus:ring-1 focus:ring-accent-blue/20" />
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-2">Content Profile <span className="text-accent-red">*</span></label>
+            <div className="grid grid-cols-3 gap-3">
+              {Object.entries(PROFILES).map(([key, p]) => (
+                <button key={key} onClick={() => setProfile(key)}
+                  className={`p-3 rounded-xl border text-left transition-all ${profile === key ? 'border-accent-blue bg-accent-blue/5' : 'border-border hover:border-border-bright'}`}>
+                  <span className="text-lg">{p.icon}</span>
+                  <p className="text-xs font-semibold text-text-primary mt-1">{p.label}</p>
+                  <p className="text-[10px] text-text-muted">{p.dur}</p>
+                  <p className="text-[10px] text-text-muted">{p.style}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-2">Style Hints</label>
+            <textarea value={styleHints} onChange={e => setStyleHints(e.target.value)} placeholder="dark cinematic, golden accents, dramatic pacing" rows={2}
+              className="w-full px-4 py-2.5 rounded-xl bg-surface border border-border text-sm text-text-primary placeholder:text-text-muted focus:border-accent-blue focus:ring-1 focus:ring-accent-blue/20 resize-none" />
+            <p className="text-[10px] text-text-muted mt-1">Drives Nova Canvas logo generation and Claude brand design pass</p>
+          </div>
+
+          <div>
+            <Toggle checked={schedEnabled} onChange={setSchedEnabled} label="Enable Schedule" />
+            {schedEnabled && (
+              <div className="mt-3 space-y-3 pl-2 border-l-2 border-border ml-1">
+                <div className="flex flex-wrap gap-2">
+                  {['1x/week', '2x/week', '3x/week', 'Daily'].map(f => (
+                    <button key={f} onClick={() => setFreq(f)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${freq === f ? 'bg-accent-blue text-white' : 'bg-raised text-text-muted border border-border hover:text-text-secondary'}`}>{f}</button>
+                  ))}
+                </div>
+                <input type="time" value={schedTime} onChange={e => setSchedTime(e.target.value)}
+                  className="px-3 py-2 rounded-xl bg-surface border border-border text-sm text-text-primary focus:border-accent-blue" />
+              </div>
+            )}
+          </div>
+
+          <div className="bg-raised/50 border border-border rounded-xl p-4">
+            <p className="text-[10px] font-medium text-text-muted uppercase tracking-widest mb-2">Estimated Cost</p>
+            <p className="text-sm text-accent-green font-semibold">~$0.35 (one-time setup)</p>
+          </div>
+        </div>
+
+        <div className="flex gap-3 mt-6 pt-6 border-t border-border">
+          <button onClick={onClose} className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-text-secondary border border-border hover:bg-raised transition-colors">Cancel</button>
+          <button onClick={handleSubmit} disabled={!name.trim() || !niche.trim() || submitting}
+            className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-40 transition-opacity hover:opacity-90" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
+            {submitting ? 'Creating...' : '✨ Create Channel →'}
+          </button>
+        </div>
+      </div>
+    </Drawer>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VIEW 3 — CHANNEL DETAIL
+// ═════════════════════════════════════════════════════════════════════════════
+function ChannelDetail({ channelId }) {
+  const { navigate, setModal, setModalChannel, addNotification } = useContext(AppContext);
+  const [channel, setChannel] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('overview');
+  const [videos, setVideos] = useState([]);
+  const [videosLoading, setVideosLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const data = await api(`/channel/${channelId}`);
+        if (!cancelled) setChannel(data);
+      } catch {
+        if (!cancelled) addNotification('error', 'Failed to load channel');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [channelId]);
+
+  useEffect(() => {
+    if (tab === 'videos' && channel) {
+      setVideosLoading(true);
+      api(`/channel/${channelId}/videos`).then(data => setVideos(data.videos || data || [])).catch(() => {}).finally(() => setVideosLoading(false));
+    }
+  }, [tab, channelId, channel]);
+
+  if (loading) {
+    return (
+      <div className="p-6">
+        <Skeleton className="h-8 w-48 mb-4" />
+        <div className="border border-border rounded-2xl bg-surface p-6 mb-6">
+          <div className="flex items-center gap-4"><Skeleton className="w-20 h-20 rounded-full" /><div><Skeleton className="h-6 w-48 mb-2" /><Skeleton className="h-4 w-32" /></div></div>
+          <div className="grid grid-cols-2 gap-4"><Skeleton className="h-40" /><Skeleton className="h-40" /></div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <Skeleton className="h-40" />
+          <Skeleton className="h-40" />
+          <Skeleton className="h-40" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!channel) {
+    return <div className="p-6 text-center"><p className="text-text-muted">Channel not found</p><button onClick={() => navigate('#/channels')} className="mt-4 text-accent-blue hover:underline text-sm">← Back to channels</button></div>;
+  }
+
+  const ch = channel;
+  const status = ch.stats?.status || 'idle';
+  const statusCfg = STATUS_COLORS[status] || STATUS_COLORS.idle;
+  const initials = (ch.name || 'NC').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  const tabs = ['overview', 'videos', 'shorts', 'settings'];
+
+  return (
+    <div className="p-4 md:p-6">
+      <button onClick={() => navigate('#/channels')} className="text-sm text-text-muted hover:text-text-primary mb-4 inline-flex items-center gap-1 transition-colors">← Back to channels</button>
+
+      <div className="border border-border rounded-2xl bg-surface p-5 mb-6">
+        <div className="flex flex-col md:flex-row md:items-center gap-4 mb-4">
+          <div className="w-20 h-20 rounded-full flex items-center justify-center text-2xl font-bold shrink-0" style={{ background: `linear-gradient(135deg, ${ch.brand?.primary_color || '#4F6EF7'}, ${ch.brand?.accent_color || '#8B5CF6'})` }}>
+            {initials}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-3 flex-wrap">
+              <h1 className="text-xl font-bold text-text-primary">{ch.name}</h1>
+              <div className="flex items-center gap-1.5"><StatusDot status={status} /><span className={`text-[10px] font-medium uppercase tracking-wider ${statusCfg.text}`}>{statusCfg.label}</span></div>
+            </div>
+            <p className="text-sm text-text-muted mt-0.5">{ch.niche} · {ch.profile}</p>
+          </div>
+          <div className="flex gap-2 shrink-0 flex-wrap">
+            <button onClick={() => { setModalChannel(ch); setModal('generate-video'); }} className="px-4 py-2 rounded-xl text-xs font-semibold text-white hover:opacity-90 transition-opacity" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>▶ Generate Video</button>
+            <button onClick={() => { setModalChannel(ch); setModal('generate-shorts'); }} className="px-4 py-2 rounded-xl text-xs font-semibold text-accent-cyan border border-accent-cyan/30 bg-accent-cyan/5 hover:bg-accent-cyan/10 transition-colors">⚡ Generate Shorts</button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            { label: 'Videos', value: ch.stats?.videos_generated || 0 },
+            { label: 'Shorts', value: (ch.stats?.videos_generated || 0) * 4 },
+            { label: 'Runs', value: (ch.stats?.videos_generated || 0) + Math.floor((ch.stats?.videos_generated || 0) * 0.3) },
+            { label: 'Status', value: statusCfg.label, color: statusCfg.text },
+          ].map(s => (
+            <div key={s.label} className="bg-raised/50 rounded-xl p-3">
+              <p className="text-[10px] text-text-muted uppercase tracking-wider">{s.label}</p>
+              <p className={`text-lg font-bold ${s.color || 'text-text-primary'}`}>{s.value}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex gap-1 mb-6 border-b border-border pb-px overflow-x-auto">
+        {tabs.map(t => (
+          <button key={t} onClick={() => setTab(t)} className={`px-4 py-2.5 text-sm font-medium capitalize whitespace-nowrap transition-colors border-b-2 -mb-px ${tab === t ? 'border-accent-blue text-text-primary' : 'border-transparent text-text-muted hover:text-text-primary'}`}>{t}</button>
+        ))}
+      </div>
+
+      {tab === 'overview' && <OverviewTab channel={ch} />}
+      {tab === 'videos' && <VideosTab channel={ch} videos={videos} loading={videosLoading} />}
+      {tab === 'shorts' && <ShortsTab channel={ch} />}
+      {tab === 'settings' && <SettingsTab channel={ch} />}
+    </div>
+  );
+}
+
+// ── Overview Tab ──────────────────────────────────────────────────────────────
+function OverviewTab({ channel }) {
+  const ch = channel;
+  const brand = ch.brand || {};
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+      <div className="lg:col-span-2 space-y-5">
+        <div className="border border-border rounded-2xl bg-surface p-5">
+          <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">Brand Kit</h3>
+          <div className="w-full aspect-square max-w-[200px] mx-auto rounded-xl bg-raised flex items-center justify-center mb-4 overflow-hidden">
+            {brand.logo_s3 ? (
+              <img src={brand.logo_url || ''} alt="Logo" className="w-full h-full object-contain p-4" onError={e => { e.target.style.display = 'none'; }} />
+            ) : (
+              <span className="text-4xl font-bold" style={{ background: `linear-gradient(135deg, ${brand.primary_color || '#4F6EF7'}, ${brand.accent_color || '#8B5CF6'})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+                {(ch.name || 'N').split(' ').map(w => w[0]).join('').slice(0, 2)}
+              </span>
+            )}
+          </div>
+
+          <div className="space-y-2 mb-4">
+            <ColorSwatch color={brand.primary_color || '#C8A96E'} label="Primary" />
+            <ColorSwatch color={brand.secondary_color || '#1A1A2E'} label="Secondary" />
+            <ColorSwatch color={brand.accent_color || '#FFD700'} label="Accent" />
+          </div>
+
+          <div className="space-y-2 text-sm border-t border-border/50 pt-3">
+            <div className="flex justify-between"><span className="text-text-muted">Font</span><span className="text-text-primary">{brand.font || 'Cinzel'}</span></div>
+            <div className="flex justify-between"><span className="text-text-muted">LUT</span><span className="text-accent-cyan font-mono text-xs">{brand.lut_preset || 'teal_orange'}</span></div>
+            <div className="flex justify-between"><span className="text-text-muted">Voice</span><span className="text-accent-cyan font-mono text-xs truncate ml-4">{ch.voice_id || 'Not set'}</span></div>
+          </div>
+
+          {brand.intro_s3 && (
+            <div className="mt-4 pt-3 border-t border-border/50">
+              <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">Intro</p>
+              <video controls preload="none" className="w-full rounded-lg bg-black" style={{ maxHeight: '120px' }}>
+                <source src={brand.intro_url || ''} type="video/mp4" />
+              </video>
+            </div>
+          )}
+          {brand.outro_s3 && (
+            <div className="mt-3">
+              <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">Outro</p>
+              <video controls preload="none" className="w-full rounded-lg bg-black" style={{ maxHeight: '120px' }}>
+                <source src={brand.outro_url || ''} type="video/mp4" />
+              </video>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="lg:col-span-3 space-y-5">
+        <div className="border border-border rounded-2xl bg-surface p-5">
+          <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">Recent Activity</h3>
+          <div className="space-y-3">
+            {(ch.recent_activity || [
+              { icon: '✅', text: 'Video generated', detail: ch.stats?.last_published ? timeAgo(ch.stats.last_published) : 'recently' },
+              { icon: '⚡', text: 'Shorts batch completed', detail: '4/4 succeeded' },
+            ]).map((a, i) => (
+              <div key={i} className="flex items-start gap-3 text-sm">
+                <span className="shrink-0 mt-0.5">{a.icon}</span>
+                <div className="flex-1 min-w-0"><p className="text-text-primary">{a.text}</p><p className="text-xs text-text-muted">{a.detail}</p></div>
+              </div>
+            ))}
+            {(!ch.recent_activity || ch.recent_activity.length === 0) && (
+              <p className="text-sm text-text-muted">No recent activity</p>
+            )}
+          </div>
+        </div>
+
+        <div className="border border-border rounded-2xl bg-surface p-5">
+          <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">Schedule</h3>
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm text-text-primary">{ch.schedule?.enabled ? 'Active' : 'Paused'}</span>
+            <Badge color={ch.schedule?.enabled ? 'bg-accent-green/10 text-accent-green border-accent-green/30' : 'bg-raised text-text-muted border-border'}>{ch.schedule?.enabled ? 'Enabled' : 'Disabled'}</Badge>
+          </div>
+          {ch.schedule?.enabled && (
+            <div className="space-y-1 text-sm text-text-secondary">
+              <p>Frequency: {ch.schedule.frequency}</p>
+              <p>Cron: <span className="font-mono text-accent-cyan text-xs">{ch.schedule.cron}</span></p>
+            </div>
+          )}
+        </div>
+
+        <div className="border border-border rounded-2xl bg-surface p-5">
+          <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">YouTube</h3>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-accent-green">✅</span>
+            <span className="text-sm text-text-primary">Connected</span>
+          </div>
+          <p className="text-xs text-text-muted">Secret: <span className="font-mono text-accent-cyan">nexus/youtube_credentials_{ch.channel_id}</span></p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Videos Tab ────────────────────────────────────────────────────────────────
+function VideosTab({ channel, videos, loading }) {
+  const { navigate, addNotification } = useContext(AppContext);
+  const [page, setPage] = useState(0);
+  const perPage = 10;
+  const paged = videos.slice(page * perPage, (page + 1) * perPage);
+  const totalPages = Math.ceil(videos.length / perPage);
+
+  const handleResume = async (runId) => {
+    try {
+      const res = await api('/resume', { method: 'POST', body: JSON.stringify({ run_id: runId }) });
+      addNotification('info', `Resuming pipeline from ${res.resume_from || 'auto-detected step'}`);
+      navigate(`#/run/${res.run_id}`);
+    } catch (err) {
+      addNotification('error', `Resume failed: ${err.error || 'Unknown error'}`);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-3">
+        {[1,2,3,4,5].map(i => (
+          <div key={i} className="border border-border rounded-xl bg-surface p-4 flex gap-4">
+            <Skeleton className="w-24 h-14 shrink-0" />
+            <div className="flex-1"><Skeleton className="h-4 w-3/4 mb-2" /><Skeleton className="h-3 w-1/2" /></div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (videos.length === 0) {
+    return <div className="text-center py-16"><p className="text-text-muted">No videos yet for this channel</p></div>;
+  }
+
+  const statusBadge = (s) => {
+    const m = {
+      published: 'bg-accent-green/10 text-accent-green border-accent-green/30',
+      processing: 'bg-accent-amber/10 text-accent-amber border-accent-amber/30',
+      failed: 'bg-accent-red/10 text-accent-red border-accent-red/30',
+      pending_approval: 'bg-accent-purple/10 text-accent-purple border-accent-purple/30',
+    };
+    return m[s] || 'bg-raised text-text-muted border-border';
+  };
+
+  return (
+    <div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="border-b border-border">
+            <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-3 px-3">Title</th>
+            <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-3 px-3 hidden md:table-cell">Duration</th>
+            <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-3 px-3">Status</th>
+            <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-3 px-3 hidden lg:table-cell">Run ID</th>
+            <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-3 px-3 hidden md:table-cell">Date</th>
+            <th className="text-right text-[10px] text-text-muted uppercase tracking-widest py-3 px-3">Actions</th>
+          </tr></thead>
+          <tbody>
+            {paged.map((v, i) => (
+              <tr key={i} className="border-b border-border/50 hover:bg-raised/30 transition-colors">
+                <td className="py-3 px-3"><p className="text-text-primary font-medium truncate max-w-[200px]">{v.title || 'Untitled'}</p></td>
+                <td className="py-3 px-3 hidden md:table-cell text-text-muted">{v.duration ? fmtDuration(v.duration) : '—'}</td>
+                <td className="py-3 px-3"><Badge color={statusBadge(v.status)}>{(v.status || 'unknown').replace('_', ' ')}</Badge></td>
+                <td className="py-3 px-3 hidden lg:table-cell"><span className="font-mono text-xs text-accent-cyan">{(v.run_id || '').slice(0, 12)}</span></td>
+                <td className="py-3 px-3 hidden md:table-cell text-text-muted text-xs">{v.date ? timeAgo(v.date) : '—'}</td>
+                <td className="py-3 px-3 text-right">
+                  <div className="flex gap-1 justify-end">
+                    {v.run_id && <button onClick={() => navigate(`#/run/${v.run_id}`)} className="px-2 py-1 rounded-lg text-xs text-text-muted hover:text-text-primary hover:bg-raised transition-colors">View</button>}
+                    {v.status === 'failed' && v.run_id && <button onClick={() => handleResume(v.run_id)} className="px-2 py-1 rounded-lg text-xs text-accent-blue hover:bg-accent-blue/10 transition-colors">Resume</button>}
+                    {v.status === 'pending_approval' && <button onClick={() => addNotification('info', 'Approve & Publish flow initiated')} className="px-2 py-1 rounded-lg text-xs text-accent-green hover:bg-accent-green/10 transition-colors">Publish</button>}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2 mt-4">
+          <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="px-3 py-1.5 rounded-lg text-xs text-text-muted hover:text-text-primary disabled:opacity-30 border border-border">Prev</button>
+          <span className="text-xs text-text-muted">{page + 1} / {totalPages}</span>
+          <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className="px-3 py-1.5 rounded-lg text-xs text-text-muted hover:text-text-primary disabled:opacity-30 border border-border">Next</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Shorts Tab ────────────────────────────────────────────────────────────────
+function ShortsTab({ channel }) {
+  const [shorts, setShorts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tierFilter, setTierFilter] = useState('all');
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        if (channel.stats?.last_run_id) {
+          const data = await api(`/outputs/${channel.stats.last_run_id}`);
+          const manifestUrl = data.urls?.[`${channel.stats.last_run_id}/shorts/manifest.json`];
+          if (manifestUrl) {
+            const manifest = await fetch(manifestUrl).then(r => r.json());
+            setShorts(manifest.shorts || []);
+          }
+        }
+      } catch {} finally { setLoading(false); }
+    };
+    load();
+  }, [channel]);
+
+  const filtered = tierFilter === 'all' ? shorts : shorts.filter(s => s.tier === tierFilter);
+
+  if (loading) {
+    return (
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        {[1,2,3,4].map(i => <div key={i} className="border border-border rounded-2xl bg-surface overflow-hidden"><Skeleton className="aspect-[9/16]" /></div>)}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
+        {['all', 'micro', 'short', 'mid', 'full'].map(t => (
+          <button key={t} onClick={() => setTierFilter(t)}
+            className={`px-4 py-1.5 rounded-full text-xs font-medium capitalize whitespace-nowrap transition-colors ${tierFilter === t ? 'bg-raised text-text-primary border border-border-bright' : 'text-text-muted hover:text-text-secondary border border-transparent'}`}>
+            {t === 'all' ? 'All' : `${SHORTS_TIERS[t]?.duration || 0}s`}
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="text-center py-16"><p className="text-text-muted">No shorts available</p></div>
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {filtered.map((s, i) => (
+            <div key={i} className="border border-border rounded-2xl bg-surface overflow-hidden group hover:border-border-bright transition-all">
+              <div className="aspect-[9/16] bg-raised relative flex items-center justify-center">
+                {s.presigned_url ? (
+                  <video src={s.presigned_url} className="w-full h-full object-cover" preload="none" />
+                ) : (
+                  <span className="text-2xl">🎬</span>
+                )}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-center pb-3">
+                  <div className="flex gap-2">
+                    {s.presigned_url && <a href={s.presigned_url} download className="px-3 py-1.5 rounded-lg bg-white/20 text-white text-xs font-medium backdrop-blur-sm hover:bg-white/30">↓</a>}
+                    {s.presigned_url && <a href={s.presigned_url} target="_blank" className="px-3 py-1.5 rounded-lg bg-white/20 text-white text-xs font-medium backdrop-blur-sm hover:bg-white/30">▶</a>}
+                  </div>
+                </div>
+              </div>
+              <div className="p-3 space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className={`w-1.5 h-1.5 rounded-full ${s.status === 'success' ? 'bg-accent-green' : 'bg-accent-red'}`} />
+                  <span className="text-xs font-semibold text-text-primary">{s.duration}s</span>
+                  <Badge>{s.tier}</Badge>
+                </div>
+                {s.overlay_type && <p className="text-[10px] text-text-muted">{s.overlay_type}</p>}
+                {s.beat_synced && <p className="text-[10px] text-accent-cyan">♪ beat synced</p>}
+                {s.attempts > 1 && <p className="text-[10px] text-text-muted">attempts: {s.attempts}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Settings Tab ──────────────────────────────────────────────────────────────
+function SettingsTab({ channel }) {
+  const { addNotification, navigate } = useContext(AppContext);
+  const [name, setName] = useState(channel.name || '');
+  const [niche, setNiche] = useState(channel.niche || '');
+  const [saving, setSaving] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [archiving, setArchiving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api(`/channel/${channel.channel_id}/brand`, { method: 'PUT', body: JSON.stringify({ channel_name: name, niche }) });
+      addNotification('success', 'Channel settings updated');
+    } catch (err) {
+      addNotification('error', `Save failed: ${err.error || 'Unknown error'}`);
+    } finally { setSaving(false); }
+  };
+
+  const handleArchive = async () => {
+    setArchiving(true);
+    try {
+      await api(`/channel/${channel.channel_id}`, { method: 'DELETE' });
+      addNotification('success', `${channel.name} archived`);
+      navigate('#/channels');
+    } catch (err) {
+      addNotification('error', `Archive failed: ${err.error || 'Unknown error'}`);
+    } finally { setArchiving(false); }
+  };
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <div className="border border-border rounded-2xl bg-surface p-5">
+        <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">Channel Identity</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs text-text-muted mb-1.5">Name</label>
+            <input type="text" value={name} onChange={e => setName(e.target.value)} className="w-full px-4 py-2.5 rounded-xl bg-bg border border-border text-sm text-text-primary focus:border-accent-blue" />
+          </div>
+          <div>
+            <label className="block text-xs text-text-muted mb-1.5">Niche</label>
+            <input type="text" value={niche} onChange={e => setNiche(e.target.value)} className="w-full px-4 py-2.5 rounded-xl bg-bg border border-border text-sm text-text-primary focus:border-accent-blue" />
+          </div>
+          <div>
+            <label className="block text-xs text-text-muted mb-1.5">Profile</label>
+            <input type="text" value={channel.profile} readOnly className="w-full px-4 py-2.5 rounded-xl bg-bg border border-border text-sm text-text-muted" />
+          </div>
+          <button onClick={handleSave} disabled={saving} className="px-5 py-2 rounded-xl text-sm font-semibold text-white hover:opacity-90 disabled:opacity-40 transition-opacity" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
+            {saving ? 'Saving...' : 'Save Changes'}
+          </button>
+        </div>
+      </div>
+
+      <div className="border border-border rounded-2xl bg-surface p-5">
+        <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">Voice</h3>
+        <p className="text-sm text-text-secondary">ElevenLabs voice_id: <span className="font-mono text-accent-cyan">{channel.voice_id || 'Not configured'}</span></p>
+      </div>
+
+      <div className="border border-border rounded-2xl bg-surface p-5">
+        <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">YouTube Credentials</h3>
+        <p className="text-sm text-text-secondary mb-2">Secret key:</p>
+        <div className="flex items-center gap-2 bg-bg rounded-lg px-3 py-2">
+          <code className="text-xs text-accent-cyan font-mono flex-1">nexus/youtube_credentials_{channel.channel_id}</code>
+          <CopyButton text={`nexus/youtube_credentials_${channel.channel_id}`} />
+        </div>
+      </div>
+
+      <div className="border border-accent-red/20 rounded-2xl bg-accent-red/5 p-5">
+        <h3 className="text-[11px] font-medium text-accent-red uppercase tracking-widest mb-4">Danger Zone</h3>
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm text-text-secondary mb-2">Archive this channel. This will disable scheduling and hide the channel.</p>
+            <button onClick={handleArchive} disabled={archiving} className="px-4 py-2 rounded-xl text-xs font-semibold text-accent-red border border-accent-red/30 bg-accent-red/10 hover:bg-accent-red/20 transition-colors disabled:opacity-40">
+              {archiving ? 'Archiving...' : 'Archive Channel'}
+            </button>
+          </div>
+          <div className="pt-4 border-t border-accent-red/10">
+            <p className="text-sm text-text-secondary mb-2">Delete all content. Type <strong className="text-accent-red">{channel.name}</strong> to confirm.</p>
+            <div className="flex gap-2">
+              <input type="text" value={deleteConfirm} onChange={e => setDeleteConfirm(e.target.value)} placeholder={channel.name}
+                className="flex-1 px-3 py-2 rounded-xl bg-bg border border-accent-red/20 text-sm text-text-primary focus:border-accent-red placeholder:text-text-muted" />
+              <button disabled={deleteConfirm !== channel.name}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-accent-red disabled:opacity-30 hover:opacity-90 transition-opacity">
+                Delete All Content
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VIEW 4A — GENERATE VIDEO MODAL (video-only pipeline)
+// ═════════════════════════════════════════════════════════════════════════════
+function GenerateVideoModal({ channel, onClose }) {
+  const { addNotification, navigate } = useContext(AppContext);
+  const [topic, setTopic] = useState('');
+  const [profile, setProfile] = useState(channel?.profile || 'documentary');
+  const [dryRun, setDryRun] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const cost = dryRun ? 0 : COST_ESTIMATES.base_video;
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    try {
+      const body = {
+        channel_id: channel?.channel_id,
+        niche: topic || channel?.niche || '',
+        profile,
+        dry_run: dryRun,
+        generate_shorts: false,
+        generate_video: true,
+        pipeline_type: 'video',
+        shorts_tiers: '',
+      };
+      const res = await api('/run', { method: 'POST', body: JSON.stringify(body) });
+      addNotification('info', `Video pipeline started for ${channel?.name || 'channel'}`);
+      onClose();
+      navigate(`#/run/${res.run_id}`);
+    } catch (err) {
+      addNotification('error', `Failed to start pipeline: ${err.error || 'Unknown error'}`);
+    } finally { setSubmitting(false); }
+  };
+
+  const meta = PIPELINE_TYPE_META.video;
+
+  return (
+    <Modal onClose={onClose} width="max-w-lg">
+      <div className="p-6">
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-2">
+            <span className="text-lg">{meta.icon}</span>
+            <h2 className="text-lg font-bold text-text-primary">Generate Video</h2>
+          </div>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl">✕</button>
+        </div>
+
+        <div className="space-y-5">
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-1.5">Channel</label>
+            <div className="flex items-center gap-2 bg-raised rounded-xl px-4 py-2.5">
+              <span className="text-sm font-medium text-text-primary">{channel?.name}</span>
+              <Badge>{channel?.profile}</Badge>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-1.5">Topic / Angle</label>
+            <input type="text" value={topic} onChange={e => setTopic(e.target.value)} placeholder="The mysterious disappearance of the Bronze Age civilizations"
+              className="w-full px-4 py-2.5 rounded-xl bg-surface border border-border text-sm text-text-primary placeholder:text-text-muted focus:border-accent-blue focus:ring-1 focus:ring-accent-blue/20" />
+            <p className="text-[10px] text-text-muted mt-1">Leave blank — AI researches and selects the best trending topic</p>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-1.5">Profile</label>
+            <div className="flex gap-2">
+              {Object.entries(PROFILES).map(([key, p]) => (
+                <button key={key} onClick={() => setProfile(key)}
+                  className={`flex-1 px-3 py-2 rounded-xl text-xs font-medium transition-all text-center ${profile === key ? 'bg-accent-blue/10 text-accent-blue border border-accent-blue/30' : 'bg-raised text-text-muted border border-border hover:text-text-secondary'}`}>
+                  {p.icon} {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-raised/30 border border-border rounded-xl p-3 flex items-center gap-3">
+            <span className="text-lg">{meta.icon}</span>
+            <div>
+              <p className="text-xs font-semibold text-text-primary">Video Pipeline</p>
+              <p className="text-[10px] text-text-muted">Research → Script → Audio + Visuals → Editor → Thumbnail → Notify</p>
+            </div>
+          </div>
+
+          <div>
+            <Toggle checked={dryRun} onChange={setDryRun} label="Dry Run" />
+            {dryRun && <p className="text-[10px] text-accent-amber mt-1 ml-[52px]">Validates pipeline plumbing without spending AI credits</p>}
+          </div>
+
+          <div className="bg-raised/50 border border-border rounded-xl p-4">
+            <p className="text-[10px] font-medium text-text-muted uppercase tracking-widest mb-2">Estimated Cost</p>
+            {dryRun ? (
+              <p className="text-sm text-accent-green font-semibold">$0.00 (dry run)</p>
+            ) : (
+              <div className="flex justify-between text-sm">
+                <span className="text-text-secondary">Long-form video</span>
+                <span className="text-accent-amber font-bold">~${cost.toFixed(2)}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex gap-3 mt-6 pt-6 border-t border-border">
+          <button onClick={onClose} className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-text-secondary border border-border hover:bg-raised transition-colors">Cancel</button>
+          <button onClick={handleSubmit} disabled={submitting}
+            className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-40 transition-opacity hover:opacity-90" style={{ background: meta.gradient }}>
+            {submitting ? 'Starting...' : '▶ Start Video Pipeline →'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VIEW 4B — GENERATE SHORTS MODAL (shorts-only pipeline)
+// ═════════════════════════════════════════════════════════════════════════════
+function GenerateShortsModal({ channel, onClose }) {
+  const { addNotification, navigate } = useContext(AppContext);
+  const [topic, setTopic] = useState('');
+  const [profile, setProfile] = useState(channel?.profile || 'documentary');
+  const [tiers, setTiers] = useState({ micro: true, short: true, mid: true, full: true });
+  const [dryRun, setDryRun] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const toggleTier = (t) => setTiers(prev => ({ ...prev, [t]: !prev[t] }));
+  const selectedTiers = Object.entries(tiers).filter(([, v]) => v).map(([k]) => k);
+
+  const cost = useMemo(() => {
+    if (dryRun) return 0;
+    return selectedTiers.reduce((sum, t) => sum + (COST_ESTIMATES.shorts[t] || 0), 0);
+  }, [selectedTiers, dryRun]);
+
+  const handleSubmit = async () => {
+    if (selectedTiers.length === 0) return;
+    setSubmitting(true);
+    try {
+      const body = {
+        channel_id: channel?.channel_id,
+        niche: topic || channel?.niche || '',
+        profile,
+        dry_run: dryRun,
+        generate_shorts: true,
+        generate_video: false,
+        pipeline_type: 'shorts',
+        shorts_tiers: selectedTiers.join(','),
+      };
+      const res = await api('/run', { method: 'POST', body: JSON.stringify(body) });
+      addNotification('info', `Shorts pipeline started for ${channel?.name || 'channel'}`);
+      onClose();
+      navigate(`#/run/${res.run_id}`);
+    } catch (err) {
+      addNotification('error', `Failed to start pipeline: ${err.error || 'Unknown error'}`);
+    } finally { setSubmitting(false); }
+  };
+
+  const meta = PIPELINE_TYPE_META.shorts;
+
+  return (
+    <Modal onClose={onClose} width="max-w-lg">
+      <div className="p-6">
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-2">
+            <span className="text-lg">{meta.icon}</span>
+            <h2 className="text-lg font-bold text-text-primary">Generate Shorts</h2>
+          </div>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl">✕</button>
+        </div>
+
+        <div className="space-y-5">
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-1.5">Channel</label>
+            <div className="flex items-center gap-2 bg-raised rounded-xl px-4 py-2.5">
+              <span className="text-sm font-medium text-text-primary">{channel?.name}</span>
+              <Badge>{channel?.profile}</Badge>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-1.5">Topic / Angle</label>
+            <input type="text" value={topic} onChange={e => setTopic(e.target.value)} placeholder="The mysterious disappearance of the Bronze Age civilizations"
+              className="w-full px-4 py-2.5 rounded-xl bg-surface border border-border text-sm text-text-primary placeholder:text-text-muted focus:border-accent-blue focus:ring-1 focus:ring-accent-blue/20" />
+            <p className="text-[10px] text-text-muted mt-1">Leave blank — AI researches and selects the best trending topic</p>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-1.5">Profile</label>
+            <div className="flex gap-2">
+              {Object.entries(PROFILES).map(([key, p]) => (
+                <button key={key} onClick={() => setProfile(key)}
+                  className={`flex-1 px-3 py-2 rounded-xl text-xs font-medium transition-all text-center ${profile === key ? 'bg-accent-blue/10 text-accent-blue border border-accent-blue/30' : 'bg-raised text-text-muted border border-border hover:text-text-secondary'}`}>
+                  {p.icon} {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-raised/30 border border-border rounded-xl p-3 flex items-center gap-3">
+            <span className="text-lg">{meta.icon}</span>
+            <div>
+              <p className="text-xs font-semibold text-text-primary">Shorts Pipeline</p>
+              <p className="text-[10px] text-text-muted">Research → Script → Audio + Visuals → Shorts → Notify</p>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-1.5">Duration Tiers</label>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(SHORTS_TIERS).map(([key, t]) => (
+                <label key={key} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs cursor-pointer transition-colors ${tiers[key] ? 'bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20' : 'bg-raised text-text-muted border border-border'}`}>
+                  <input type="checkbox" checked={tiers[key]} onChange={() => toggleTier(key)} className="sr-only" />
+                  <span className={`w-3.5 h-3.5 rounded flex items-center justify-center border ${tiers[key] ? 'bg-accent-cyan border-accent-cyan text-white' : 'border-border'}`}>
+                    {tiers[key] && <span className="text-[9px]">✓</span>}
+                  </span>
+                  {t.duration}s ({key}) — ${COST_ESTIMATES.shorts[key]?.toFixed(2)}
+                </label>
+              ))}
+            </div>
+            {selectedTiers.length === 0 && <p className="text-[10px] text-accent-red mt-1">Select at least one tier</p>}
+          </div>
+
+          <div>
+            <Toggle checked={dryRun} onChange={setDryRun} label="Dry Run" />
+            {dryRun && <p className="text-[10px] text-accent-amber mt-1 ml-[52px]">Validates pipeline plumbing without spending AI credits</p>}
+          </div>
+
+          <div className="bg-raised/50 border border-border rounded-xl p-4">
+            <p className="text-[10px] font-medium text-text-muted uppercase tracking-widest mb-2">Estimated Cost</p>
+            {dryRun ? (
+              <p className="text-sm text-accent-green font-semibold">$0.00 (dry run)</p>
+            ) : (
+              <div className="space-y-1 text-sm">
+                {selectedTiers.map(t => (
+                  <div key={t} className="flex justify-between">
+                    <span className="text-text-secondary">{SHORTS_TIERS[t]?.duration}s ({t})</span>
+                    <span className="text-text-primary">~${(COST_ESTIMATES.shorts[t] || 0).toFixed(2)}</span>
+                  </div>
+                ))}
+                <div className="flex justify-between border-t border-border/50 pt-1 mt-1">
+                  <span className="text-text-primary font-semibold">Total ({selectedTiers.length} shorts)</span>
+                  <span className="text-accent-amber font-bold">~${cost.toFixed(2)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex gap-3 mt-6 pt-6 border-t border-border">
+          <button onClick={onClose} className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-text-secondary border border-border hover:bg-raised transition-colors">Cancel</button>
+          <button onClick={handleSubmit} disabled={submitting || selectedTiers.length === 0}
+            className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-40 transition-opacity hover:opacity-90" style={{ background: meta.gradient }}>
+            {submitting ? 'Starting...' : '⚡ Start Shorts Pipeline →'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VIEW 5 — PIPELINE MONITOR
+// ═════════════════════════════════════════════════════════════════════════════
+function PipelineMonitor({ runId }) {
+  const { navigate, addNotification, connectSSE, disconnectSSE, setActiveRun } = useContext(AppContext);
+  const [runData, setRunData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [logs, setLogs] = useState([]);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [outputs, setOutputs] = useState(null);
+  const logRef = useRef(null);
+
+  // Load initial status from GET /status/{run_id}
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const data = await api(`/status/${runId}`);
+        if (!cancelled) {
+          setRunData(data);
+          setActiveRun(runId, { status: data.status, progress_pct: data.progress_pct, step: data.current_step });
+        }
+      } catch (err) {
+        if (!cancelled) addNotification('error', `Failed to load run: ${err.error || 'Unknown error'}`);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [runId]);
+
+  // Connect SSE for real-time updates
+  useEffect(() => {
+    const handleEvent = (type, data) => {
+      if (type === 'snapshot') {
+        setRunData(prev => ({ ...prev, ...data }));
+        setActiveRun(runId, { status: data.status, progress_pct: data.progress_pct, step: data.current_step });
+      } else if (type === 'step_start' || type === 'step_done' || type === 'step_error') {
+        // Re-fetch status for accurate step data
+        api(`/status/${runId}`).then(d => {
+          setRunData(d);
+          setActiveRun(runId, { status: d.status, progress_pct: d.progress_pct, step: d.current_step });
+        }).catch(() => {});
+      } else if (type === 'log') {
+        const entry = { time: data.timestamp || new Date().toISOString(), message: data.message || JSON.stringify(data) };
+        setLogs(prev => [...prev.slice(-500), entry]);
+      } else if (type === 'pipeline_done') {
+        api(`/status/${runId}`).then(d => {
+          setRunData(d);
+          setActiveRun(runId, { status: d.status, progress_pct: 100 });
+          if (d.status === 'SUCCEEDED') {
+             const pt = getPipelineType(d);
+             const ptLabel = PIPELINE_TYPE_META[pt]?.label || 'Pipeline';
+             addNotification('success', `${ptLabel} generation complete`);
+           } else if (d.status === 'FAILED') {
+            addNotification('error', `Pipeline failed at ${d.current_step || 'unknown step'}`);
+          }
+        }).catch(() => {});
+      }
+    };
+    connectSSE(runId, handleEvent);
+    return () => disconnectSSE(runId);
+  }, [runId]);
+
+  // Load outputs when pipeline succeeds
+  useEffect(() => {
+    if (runData?.status === 'SUCCEEDED' && !outputs) {
+      api(`/outputs/${runId}`).then(setOutputs).catch(() => {});
+    }
+  }, [runData?.status]);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    if (logRef.current && logsOpen) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [logs, logsOpen]);
+
+  const handleResume = async () => {
+    try {
+      const res = await api('/resume', { method: 'POST', body: JSON.stringify({ run_id: runId }) });
+      addNotification('info', `Resuming from ${res.resume_from || 'auto-detected step'}`);
+      navigate(`#/run/${res.run_id}`);
+    } catch (err) {
+      addNotification('error', `Resume failed: ${err.error || 'Unknown error'}`);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="p-6">
+        <Skeleton className="h-8 w-64 mb-4" />
+        <Skeleton className="h-4 w-48 mb-8" />
+        {[1,2,3,4,5].map(i => <div key={i} className="flex gap-4 mb-4"><Skeleton className="w-8 h-8 rounded-full" /><Skeleton className="h-8 flex-1" /></div>)}
+      </div>
+    );
+  }
+
+  if (!runData) {
+    return <div className="p-6 text-center"><p className="text-text-muted">Run not found</p><button onClick={() => navigate('#/channels')} className="mt-4 text-accent-blue hover:underline text-sm">← Back to channels</button></div>;
+  }
+
+  const statusBadge = {
+    RUNNING: <Badge color="bg-accent-cyan/10 text-accent-cyan border-accent-cyan/30"><span className="pulse-dot mr-1.5 inline-block w-1.5 h-1.5 rounded-full bg-accent-cyan" /> RUNNING</Badge>,
+    SUCCEEDED: <Badge color="bg-accent-green/10 text-accent-green border-accent-green/30">✅ COMPLETE</Badge>,
+    FAILED: <Badge color="bg-accent-red/10 text-accent-red border-accent-red/30">✖ FAILED</Badge>,
+  };
+
+  return (
+    <div className="p-4 md:p-6 max-w-4xl">
+      <button onClick={() => navigate('#/channels')} className="text-sm text-text-muted hover:text-text-primary mb-4 inline-flex items-center gap-1 transition-colors">← Back</button>
+
+      <div className="border border-border rounded-2xl bg-surface p-5 mb-6">
+        <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-3 mb-1 flex-wrap">
+              <h1 className="text-lg font-bold text-text-primary">Pipeline Run</h1>
+              {statusBadge[runData.status] || <Badge>{runData.status}</Badge>}
+              {(() => { const pt = getPipelineType(runData); const meta = PIPELINE_TYPE_META[pt]; return meta ? <Badge color={meta.badge}>{meta.icon} {meta.label}</Badge> : null; })()}
+            </div>
+            <div className="space-y-1 text-sm">
+              <p className="text-text-muted">Run ID: <span className="font-mono text-accent-cyan">{runId}</span><CopyButton text={runId} /></p>
+              {runData.start_date && <p className="text-text-muted">Started: {timeAgo(runData.start_date)}{runData.elapsed_sec ? ` · ${fmtDuration(runData.elapsed_sec)} elapsed` : ''}</p>}
+            </div>
+          </div>
+          {runData.status === 'FAILED' && (
+            <button onClick={handleResume} className="px-4 py-2 rounded-xl text-xs font-semibold text-white hover:opacity-90 transition-opacity shrink-0" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
+              🔄 Resume Run
+            </button>
+          )}
+        </div>
+        {runData.status === 'RUNNING' && <ProgressBar pct={runData.progress_pct || 0} animated className="mt-4" />}
+      </div>
+
+      <div className="border border-border rounded-2xl bg-surface p-5 mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest">Pipeline Steps</h3>
+          {(() => { const pt = getPipelineType(runData); const meta = PIPELINE_TYPE_META[pt]; return meta ? <Badge color={meta.badge}>{meta.icon} {meta.label}</Badge> : null; })()}
+        </div>
+        <div className="space-y-0">
+          {getPipelineSteps(getPipelineType(runData)).filter(s => !s.hidden).map((step, idx) => {
+            const stepData = (runData.steps || []).find(s => s.name === step.id);
+            const status = stepData?.status || 'pending';
+            const isParallel = step.type === 'parallel';
+            return (
+              <div key={step.id} className="relative">
+                {idx > 0 && <div className="absolute left-[15px] -top-2 w-0.5 h-4 bg-border" />}
+                <StepRow step={step} stepData={stepData} status={status} allSteps={runData.steps || []} onResume={handleResume} />
+                {isParallel && step.substeps && (
+                  <div className="ml-8 pl-4 border-l border-border/50 space-y-1 mb-2">
+                    {step.substeps.map(sub => {
+                      const subData = (runData.steps || []).find(s => s.name === sub);
+                      const subStatus = subData?.status || (status === 'done' ? 'done' : 'pending');
+                      const isShorts = sub === 'Shorts';
+                      const isSkipped = isShorts && subStatus === 'skipped';
+                      return (
+                        <div key={sub} className="flex items-center gap-3 py-1.5">
+                          <span className="text-xs shrink-0">
+                            {subStatus === 'done' ? '✅' : subStatus === 'running' ? '🔄' : subStatus === 'error' ? '✖' : isSkipped ? '⏭' : '○'}
+                          </span>
+                          <span className={`text-sm ${subStatus === 'done' ? 'text-text-primary' : subStatus === 'running' ? 'text-accent-blue' : subStatus === 'error' ? 'text-accent-red' : 'text-text-muted'}`}>
+                            {sub}{isSkipped && ' (skipped)'}
+                          </span>
+                          {subData?.duration_sec && <span className="text-xs text-text-muted ml-auto">{fmtDuration(subData.duration_sec)}</span>}
+                          {subData?.error && <span className="text-xs text-accent-red ml-auto truncate max-w-[200px]">{subData.error.message}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="border border-border rounded-2xl bg-surface mb-6 overflow-hidden">
+        <button onClick={() => setLogsOpen(!logsOpen)} className="w-full flex items-center justify-between p-4 text-sm font-medium text-text-secondary hover:text-text-primary transition-colors">
+          <span>Live Log Stream ({logs.length})</span>
+          <span className="text-xs">{logsOpen ? '▲' : '▼'}</span>
+        </button>
+        {logsOpen && (
+          <div ref={logRef} className="max-h-64 overflow-y-auto px-4 pb-4 font-mono text-xs leading-relaxed" style={{ background: '#06060C', color: '#22D3EE' }}>
+            {logs.length === 0 && <p className="text-text-muted py-4 text-center font-sans">Waiting for log events...</p>}
+            {logs.map((l, i) => (
+              <div key={i} className="py-0.5 break-all">
+                <span className="text-text-muted">[{new Date(l.time).toLocaleTimeString()}]</span> {l.message}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {runData.status === 'SUCCEEDED' && <OutputsPanel outputs={outputs} runId={runId} runData={runData} />}
+    </div>
+  );
+}
+
+function StepRow({ step, stepData, status, allSteps, onResume }) {
+  const icon = status === 'done' ? '✅' : status === 'running' ? '🔄' : status === 'error' ? '✖' : status === 'skipped' ? '⏭' : '○';
+  const textColor = status === 'done' ? 'text-text-primary' : status === 'running' ? 'text-accent-blue' : status === 'error' ? 'text-accent-red' : 'text-text-muted';
+
+  return (
+    <div className="flex items-center gap-3 py-2.5">
+      <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm shrink-0 ${status === 'running' ? 'bg-accent-blue/10' : status === 'done' ? 'bg-accent-green/10' : status === 'error' ? 'bg-accent-red/10' : 'bg-raised'}`}>
+        {icon}
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className={`text-sm font-medium ${textColor}`}>{step.label}</span>
+          {status === 'running' && <span className="pulse-dot w-1.5 h-1.5 rounded-full bg-accent-blue" />}
+          {step.type === 'parallel' && <span className="text-[10px] text-text-muted bg-raised px-1.5 py-0.5 rounded">parallel</span>}
+        </div>
+        {stepData?.error && <p className="text-xs text-accent-red mt-0.5 truncate">{stepData.error.message || stepData.error.type}</p>}
+      </div>
+      {stepData?.duration_sec && <span className="text-xs text-text-muted font-mono shrink-0">{fmtDuration(stepData.duration_sec)}</span>}
+      {status === 'error' && <button onClick={onResume} className="text-xs text-accent-blue hover:underline shrink-0">Resume</button>}
+    </div>
+  );
+}
+
+function OutputsPanel({ outputs, runId, runData }) {
+  const { addNotification } = useContext(AppContext);
+  if (!outputs) return null;
+
+  const pipelineType = getPipelineType(runData);
+  const urls = outputs.urls || {};
+  const videoUrl = urls[`${runId}/final_video.mp4`] || urls[`${runId}/final_video_dry_run.mp4`] || urls[`${runId}/review/final_video.mp4`];
+  const thumbUrls = [0,1,2].map(i => urls[`${runId}/thumbnails/thumbnail_${i}.jpg`]).filter(Boolean);
+  const scriptUrl = urls[`${runId}/script.json`];
+  const shortsManifestUrl = urls[`${runId}/shorts/manifest.json`];
+  const showVideo = pipelineType === 'video' || pipelineType === 'combined';
+  const showShorts = pipelineType === 'shorts' || pipelineType === 'combined';
+  const meta = PIPELINE_TYPE_META[pipelineType] || PIPELINE_TYPE_META.combined;
+
+  return (
+    <div className="border border-border rounded-2xl bg-surface p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest">Outputs</h3>
+        <Badge color={meta.badge}>{meta.icon} {meta.label}</Badge>
+      </div>
+
+      {showVideo && thumbUrls.length > 0 && (
+        <div className="mb-4">
+          <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">Thumbnails</p>
+          <div className="flex gap-2 overflow-x-auto pb-2">
+            {thumbUrls.map((url, i) => (
+              <a key={i} href={url} target="_blank" className="shrink-0 border border-border rounded-lg overflow-hidden hover:border-border-bright transition-colors">
+                <img src={url} alt={`Thumbnail ${i}`} className="h-20 w-auto object-cover" />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {showVideo && videoUrl && (
+        <div className="mb-4">
+          <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">Final Video</p>
+          <div className="flex gap-2 flex-wrap">
+            <a href={videoUrl} target="_blank" className="px-4 py-2 rounded-xl text-xs font-medium text-accent-blue border border-accent-blue/30 bg-accent-blue/5 hover:bg-accent-blue/10 transition-colors">▶ Preview</a>
+            <a href={videoUrl} download className="px-4 py-2 rounded-xl text-xs font-medium text-text-secondary border border-border hover:bg-raised transition-colors">↓ Download</a>
+            {scriptUrl && <a href={scriptUrl} target="_blank" className="px-4 py-2 rounded-xl text-xs font-medium text-text-secondary border border-border hover:bg-raised transition-colors">📋 Script</a>}
+          </div>
+        </div>
+      )}
+
+      {showShorts && shortsManifestUrl && (
+        <div className="mb-4">
+          <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">Shorts</p>
+          <a href={shortsManifestUrl} target="_blank" className="text-xs text-accent-cyan hover:underline">manifest.json ↓</a>
+        </div>
+      )}
+
+      <div className="pt-4 border-t border-border/50">
+        {showVideo ? (
+          <>
+            <button onClick={() => addNotification('info', 'Approve & Publish flow initiated — see scripts/approve_upload.py')}
+              className="w-full px-4 py-3 rounded-xl text-sm font-semibold text-white hover:opacity-90 transition-opacity" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
+              🚀 Approve & Publish to YouTube
+            </button>
+            <p className="text-[10px] text-text-muted text-center mt-2">Triggers approve_upload.py flow — upload is a separate manual step</p>
+          </>
+        ) : (
+          <>
+            <button onClick={() => addNotification('info', 'Shorts download flow initiated')}
+              className="w-full px-4 py-3 rounded-xl text-sm font-semibold text-white hover:opacity-90 transition-opacity" style={{ background: 'linear-gradient(135deg, #22D3EE, #06B6D4)' }}>
+              ⚡ Download All Shorts
+            </button>
+            <p className="text-[10px] text-text-muted text-center mt-2">Download shorts for manual upload to YouTube Shorts, Reels, TikTok</p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VIEW 6 — SYSTEM STATUS
+// ═════════════════════════════════════════════════════════════════════════════
+function SystemStatus() {
+  const [health, setHealth] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [recentRuns, setRecentRuns] = useState([]);
+  const { navigate } = useContext(AppContext);
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const data = await api('/health');
+        setHealth(data);
+      } catch { setHealth({ status: 'unreachable', checks: {} }); }
+      finally { setLoading(false); }
+    };
+    load();
+  }, []);
+
+  const awsServices = [
+    { name: 'Step Functions', key: 'step_functions' },
+    { name: 'Lambda', key: 'lambda' },
+    { name: 'Fargate / ECS', key: 'ecs' },
+    { name: 'S3 (3 buckets)', key: 's3' },
+    { name: 'Bedrock Claude', key: 'bedrock' },
+    { name: 'Nova Canvas', key: 'nova_canvas' },
+    { name: 'Nova Reel', key: 'nova_reel' },
+    { name: 'MediaConvert', key: 'mediaconvert' },
+  ];
+
+  const externalAPIs = [
+    { name: 'Perplexity API', key: 'perplexity' },
+    { name: 'ElevenLabs', key: 'elevenlabs' },
+    { name: 'Pexels', key: 'pexels' },
+    { name: 'Pixabay', key: 'pixabay' },
+    { name: 'Discord Webhook', key: 'discord' },
+    { name: 'YouTube OAuth', key: 'youtube' },
+    { name: 'PostgreSQL', key: 'postgresql' },
+  ];
+
+  const terraformModules = ['storage', 'secrets', 'networking', 'identity', 'compute', 'orchestration', 'api', 'observability'];
+
+  if (loading) {
+    return (
+      <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {[1,2,3].map(i => <div key={i} className="border border-border rounded-2xl bg-surface p-5"><Skeleton className="h-5 w-32 mb-4" />{[1,2,3,4].map(j => <Skeleton key={j} className="h-4 w-full mb-2" />)}</div>)}
+      </div>
+    );
+  }
+
+  const checks = health?.checks || {};
+  const getStatus = (key) => {
+    const v = checks[key];
+    if (v === 'ok' || v === 'healthy') return { icon: '✅', label: 'Healthy', color: 'text-accent-green' };
+    if (v === 'warning') return { icon: '⚠️', label: 'Warning', color: 'text-accent-amber' };
+    if (v === 'error') return { icon: '❌', label: 'Error', color: 'text-accent-red' };
+    return { icon: '✅', label: 'OK', color: 'text-accent-green' };
+  };
+
+  return (
+    <div className="p-4 md:p-6">
+      <h1 className="text-lg font-bold text-text-primary mb-6">System Status</h1>
+
+      <div className="flex items-center gap-3 mb-6 p-4 rounded-2xl border border-border bg-surface">
+        <span className={`w-3 h-3 rounded-full ${health?.status === 'healthy' ? 'bg-accent-green' : health?.status === 'degraded' ? 'bg-accent-amber pulse-dot' : 'bg-accent-red'}`} />
+        <span className="text-sm font-semibold text-text-primary capitalize">{health?.status || 'Unknown'}</span>
+        <span className="text-xs text-text-muted ml-auto">Last checked: just now</span>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="border border-border rounded-2xl bg-surface p-5">
+          <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">AWS Services</h3>
+          <div className="space-y-3">
+            {awsServices.map(svc => {
+              const s = getStatus(svc.key);
+              return (
+                <div key={svc.key} className="flex items-center justify-between">
+                  <span className="text-sm text-text-secondary">{svc.name}</span>
+                  <span className={`text-xs font-medium ${s.color}`}>{s.icon} {s.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="border border-border rounded-2xl bg-surface p-5">
+          <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">External APIs</h3>
+          <div className="space-y-3">
+            {externalAPIs.map(svc => {
+              const s = getStatus(svc.key);
+              return (
+                <div key={svc.key} className="flex items-center justify-between">
+                  <span className="text-sm text-text-secondary">{svc.name}</span>
+                  <span className={`text-xs font-medium ${s.color}`}>{s.icon} {s.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="border border-border rounded-2xl bg-surface p-5">
+          <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">Infrastructure</h3>
+          <div className="mb-4">
+            <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">Terraform Modules</p>
+            <div className="flex flex-wrap gap-1.5">
+              {terraformModules.map(m => (
+                <span key={m} className="px-2 py-0.5 rounded bg-raised text-[10px] text-text-secondary font-mono">{m}</span>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-2 text-sm">
+            <div>
+              <p className="text-[10px] text-text-muted uppercase tracking-widest mb-1">State Machine</p>
+              <div className="flex items-center gap-1">
+                <code className="text-xs text-accent-cyan font-mono">nexus-pipeline</code>
+                <CopyButton text="nexus-pipeline" />
+              </div>
+            </div>
+            <div>
+              <p className="text-[10px] text-text-muted uppercase tracking-widest mb-1">Channel Setup</p>
+              <div className="flex items-center gap-1">
+                <code className="text-xs text-accent-cyan font-mono">nexus-channel-setup</code>
+                <CopyButton text="nexus-channel-setup" />
+              </div>
+            </div>
+            <div>
+              <p className="text-[10px] text-text-muted uppercase tracking-widest mb-1">Dashboard CDN</p>
+              <div className="flex items-center gap-1">
+                <code className="text-xs text-accent-cyan font-mono">CloudFront</code>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6 border border-border rounded-2xl bg-surface p-5">
+        <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">Recent Runs</h3>
+        {recentRuns.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="border-b border-border">
+                <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-2 px-2">Run ID</th>
+                <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-2 px-2 hidden md:table-cell">Channel</th>
+                <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-2 px-2">Status</th>
+                <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-2 px-2 hidden lg:table-cell">Duration</th>
+                <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-2 px-2 hidden md:table-cell">Date</th>
+              </tr></thead>
+              <tbody>
+                {recentRuns.map((r, i) => (
+                  <tr key={i} className="border-b border-border/50 hover:bg-raised/30 transition-colors cursor-pointer" onClick={() => navigate(`#/run/${r.run_id}`)}>
+                    <td className="py-2 px-2"><span className="font-mono text-xs text-accent-cyan">{(r.run_id || '').slice(0, 12)}</span></td>
+                    <td className="py-2 px-2 hidden md:table-cell text-text-secondary text-xs">{r.channel || '—'}</td>
+                    <td className="py-2 px-2"><Badge color={r.status === 'SUCCEEDED' ? 'bg-accent-green/10 text-accent-green border-accent-green/30' : r.status === 'FAILED' ? 'bg-accent-red/10 text-accent-red border-accent-red/30' : 'bg-accent-cyan/10 text-accent-cyan border-accent-cyan/30'}>{r.status || 'UNKNOWN'}</Badge></td>
+                    <td className="py-2 px-2 hidden lg:table-cell text-text-muted text-xs">{r.elapsed_sec ? fmtDuration(r.elapsed_sec) : '—'}</td>
+                    <td className="py-2 px-2 hidden md:table-cell text-text-muted text-xs">{r.start_date ? timeAgo(r.start_date) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-text-muted text-center py-6">No recent runs available. Start a pipeline from a channel to see runs here.</p>
+        )}
+      </div>
+
+      {health?.error_logs && Object.keys(health.error_logs).length > 0 && (
+        <div className="mt-6 border border-accent-red/20 rounded-2xl bg-accent-red/5 p-5">
+          <h3 className="text-[11px] font-medium text-accent-red uppercase tracking-widest mb-3">Recent Errors</h3>
+          {Object.entries(health.error_logs).map(([step, err]) => (
+            <div key={step} className="mb-2 text-sm">
+              <span className="font-semibold text-accent-red">{step}:</span>
+              <span className="text-text-secondary ml-2">{typeof err === 'string' ? err : JSON.stringify(err)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// APP ROOT
+// ═════════════════════════════════════════════════════════════════════════════
+function App() {
+  const router = useRouter();
+  const { notifications, addNotification, removeNotification } = useNotifications();
+  const sse = useSSE();
+
+  const [channels, setChannels] = useState([]);
+  const [channelsLoading, setChannelsLoading] = useState(true);
+  const [activeRuns, setActiveRuns] = useState({});
+  const [modal, setModal] = useState(null);
+  const [drawer, setDrawer] = useState(null);
+  const [modalChannel, setModalChannel] = useState(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  const setActiveRun = useCallback((runId, data) => {
+    setActiveRuns(prev => ({ ...prev, [runId]: { ...prev[runId], ...data } }));
+  }, []);
+
+  const refreshChannels = useCallback(async () => {
+    try {
+      const data = await api('/channel/list');
+      setChannels(data.channels || data || []);
+    } catch {}
+  }, []);
+
+  // Load channels on mount
+  useEffect(() => {
+    const load = async () => {
+      setChannelsLoading(true);
+      try {
+        const data = await api('/channel/list');
+        setChannels(data.channels || data || []);
+      } catch {}
+      finally { setChannelsLoading(false); }
+    };
+    load();
+  }, []);
+
+  // Check SSE status periodically — try /health
+  useEffect(() => {
+    const check = () => {
+      api('/health').then(() => {
+        if (sse.sseStatus === 'unreachable') sse.setSseStatus('connected');
+      }).catch(() => {
+        if (sse.sseStatus === 'connected') sse.setSseStatus('unreachable');
+      });
+    };
+    const interval = setInterval(check, 30000);
+    return () => clearInterval(interval);
+  }, [sse.sseStatus]);
+
+  const ctx = {
+    ...router,
+    ...sse,
+    channels, channelsLoading, refreshChannels,
+    activeRuns, setActiveRun,
+    modal, setModal, drawer, setDrawer,
+    modalChannel, setModalChannel,
+    notifications, addNotification, removeNotification,
+  };
+
+  const { match } = router;
+
+  return (
+    <AppContext.Provider value={ctx}>
+      <div className="flex min-h-screen">
+        <Sidebar collapsed={sidebarCollapsed} />
+        <main className="flex-1 min-h-screen pb-20 md:pb-0">
+          {match.view === 'channels' && <ChannelGrid />}
+          {match.view === 'channelDetail' && <ChannelDetail channelId={match.id} />}
+          {match.view === 'pipelineMonitor' && <PipelineMonitor runId={match.runId} />}
+          {match.view === 'status' && <SystemStatus />}
+          {!['channels', 'channelDetail', 'pipelineMonitor', 'status'].includes(match.view) && (
+            <div className="flex flex-col items-center justify-center min-h-[70vh]">
+              <p className="text-4xl mb-4">404</p>
+              <p className="text-text-muted mb-4">Page not found</p>
+              <button onClick={() => router.navigate('#/channels')} className="text-accent-blue hover:underline text-sm">← Back to channels</button>
+            </div>
+          )}
+        </main>
+        <MobileNav />
+      </div>
+
+      {drawer === 'create-channel' && <CreateChannelDrawer onClose={() => setDrawer(null)} />}
+      {modal === 'generate-video' && modalChannel && <GenerateVideoModal channel={modalChannel} onClose={() => { setModal(null); setModalChannel(null); }} />}
+      {modal === 'generate-shorts' && modalChannel && <GenerateShortsModal channel={modalChannel} onClose={() => { setModal(null); setModalChannel(null); }} />}
+      <Toasts />
+    </AppContext.Provider>
+  );
+}
+
+// Mount
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
 </script>
 </body>
 </html>

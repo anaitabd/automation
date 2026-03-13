@@ -4,15 +4,25 @@ import time
 import uuid
 import boto3
 
+import db as channel_db
+
 STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
 OUTPUTS_BUCKET = os.environ["OUTPUTS_BUCKET"]
 ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets-670294435884")
 ECS_SUBNETS = json.loads(os.environ.get("ECS_SUBNETS", "[]"))
+CHANNEL_SETUP_FUNCTION = os.environ.get("CHANNEL_SETUP_FUNCTION", "nexus-channel-setup")
 
 sfn = boto3.client("stepfunctions")
 s3 = boto3.client("s3")
+lambda_client = boto3.client("lambda")
 
 PIPELINE_STEPS = ["Research", "Script", "Audio", "Visuals", "Editor", "Thumbnail", "Upload", "Notify"]
+
+# Bootstrap DB schema on cold start
+try:
+    channel_db.bootstrap_schema()
+except Exception as _bootstrap_err:
+    print(f"[WARN] DB bootstrap failed (may retry on first request): {_bootstrap_err}")
 
 
 def _response(status_code: int, body: dict) -> dict:
@@ -22,7 +32,7 @@ def _response(status_code: int, body: dict) -> dict:
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "Content-Type",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+            "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
         },
         "body": json.dumps(body, default=str),
     }
@@ -142,6 +152,9 @@ def _handle_run(body: dict) -> dict:
     niche = body.get("niche", "")
     profile = body.get("profile", "documentary")
     dry_run = bool(body.get("dry_run", False))
+    channel_id = body.get("channel_id", "")
+    generate_shorts = bool(body.get("generate_shorts", False))
+    shorts_tiers = body.get("shorts_tiers", "")
 
     if not niche:
         return _response(400, {"error": "niche is required"})
@@ -159,6 +172,9 @@ def _handle_run(body: dict) -> dict:
                 "profile": profile,
                 "dry_run": dry_run,
                 "subnets": ECS_SUBNETS,
+                "channel_id": channel_id,
+                "generate_shorts": generate_shorts,
+                "shorts_tiers": shorts_tiers,
             }
         ),
     )
@@ -456,6 +472,111 @@ def _handle_health() -> dict:
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Channel CRUD handlers
+# ═══════════════════════════════════════════════════════════════════════
+
+def _handle_channel_create(body: dict) -> dict:
+    """POST /channel/create — create channel + trigger async setup."""
+    name = body.get("channel_name", "").strip()
+    niche = body.get("niche", "").strip()
+    profile = body.get("profile", "documentary")
+    style_hints = body.get("style_hints", "")
+    schedule = body.get("schedule")
+
+    if not name:
+        return _response(400, {"error": "channel_name is required"})
+    if not niche:
+        return _response(400, {"error": "niche is required"})
+    if profile not in ("documentary", "finance", "entertainment"):
+        return _response(400, {"error": "profile must be documentary|finance|entertainment"})
+
+    channel_id = str(uuid.uuid4())
+    try:
+        ch = channel_db.create_channel(
+            channel_id=channel_id,
+            name=name,
+            niche=niche,
+            profile=profile,
+            style_hints=style_hints,
+            schedule=schedule,
+        )
+    except Exception as exc:
+        return _response(500, {"error": f"Failed to create channel: {exc}"})
+
+    # Trigger async channel setup (brand design → logo → intro/outro)
+    try:
+        lambda_client.invoke(
+            FunctionName=CHANNEL_SETUP_FUNCTION,
+            InvocationType="Event",  # async fire-and-forget
+            Payload=json.dumps({
+                "channel_id": channel_id,
+                "channel_name": name,
+                "niche": niche,
+                "profile": profile,
+                "style_hints": style_hints,
+            }),
+        )
+    except Exception as exc:
+        print(f"[WARN] Failed to invoke channel-setup: {exc}")
+        # Channel row exists; setup can be retried
+
+    return _response(200, ch)
+
+
+def _handle_channel_list() -> dict:
+    """GET /channel/list — return all non-archived channels."""
+    try:
+        channels = channel_db.list_channels()
+        return _response(200, {"channels": channels})
+    except Exception as exc:
+        return _response(500, {"error": f"Failed to list channels: {exc}"})
+
+
+def _handle_channel_get(channel_id: str) -> dict:
+    """GET /channel/{id} — return single channel."""
+    try:
+        ch = channel_db.get_channel(channel_id)
+        if not ch:
+            return _response(404, {"error": "Channel not found"})
+        return _response(200, ch)
+    except Exception as exc:
+        return _response(500, {"error": f"Failed to get channel: {exc}"})
+
+
+def _handle_channel_update_brand(channel_id: str, body: dict) -> dict:
+    """PUT /channel/{id}/brand — update channel settings."""
+    try:
+        name = body.get("channel_name")
+        niche = body.get("niche")
+        ch = channel_db.update_channel_settings(channel_id, name=name, niche=niche)
+        if not ch:
+            return _response(404, {"error": "Channel not found"})
+        return _response(200, ch)
+    except Exception as exc:
+        return _response(500, {"error": f"Failed to update channel: {exc}"})
+
+
+def _handle_channel_videos(channel_id: str) -> dict:
+    """GET /channel/{id}/videos — return videos for a channel."""
+    try:
+        videos = channel_db.get_channel_videos(channel_id)
+        return _response(200, {"videos": videos})
+    except Exception as exc:
+        return _response(500, {"error": f"Failed to get videos: {exc}"})
+
+
+def _handle_channel_delete(channel_id: str) -> dict:
+    """DELETE /channel/{id} — archive (soft-delete) a channel."""
+    try:
+        found = channel_db.archive_channel(channel_id)
+        if not found:
+            return _response(404, {"error": "Channel not found"})
+        return _response(200, {"status": "archived", "channel_id": channel_id})
+    except Exception as exc:
+        return _response(500, {"error": f"Failed to archive channel: {exc}"})
+
+
 def lambda_handler(event: dict, context) -> dict:
     method = event.get("httpMethod", "")
     path = event.get("path", "")
@@ -483,5 +604,30 @@ def lambda_handler(event: dict, context) -> dict:
     elif method == "GET" and "/outputs/" in path:
         run_id = path_params.get("run_id", path.split("/outputs/")[-1])
         return _handle_outputs(run_id)
+
+    # ── Channel routes ──
+    elif method == "POST" and path == "/channel/create":
+        body = json.loads(event.get("body") or "{}")
+        return _handle_channel_create(body)
+
+    elif method == "GET" and path == "/channel/list":
+        return _handle_channel_list()
+
+    elif method == "GET" and path.startswith("/channel/") and "/videos" in path:
+        cid = path.replace("/channel/", "").replace("/videos", "")
+        return _handle_channel_videos(cid)
+
+    elif method == "PUT" and path.startswith("/channel/") and "/brand" in path:
+        cid = path.replace("/channel/", "").replace("/brand", "")
+        body = json.loads(event.get("body") or "{}")
+        return _handle_channel_update_brand(cid, body)
+
+    elif method == "DELETE" and path.startswith("/channel/"):
+        cid = path.replace("/channel/", "")
+        return _handle_channel_delete(cid)
+
+    elif method == "GET" and path.startswith("/channel/"):
+        cid = path_params.get("id", path.replace("/channel/", ""))
+        return _handle_channel_get(cid)
 
     return _response(404, {"error": "Not found"})
