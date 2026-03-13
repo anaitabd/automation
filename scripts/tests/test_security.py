@@ -138,7 +138,7 @@ class TestInputValidationSecurity:
     def test_whitespace_only_niche_rejected(self):
         h = _load_api()
         resp = h._handle_run({"niche": "   ", "profile": "documentary"})
-        assert resp["statusCode"] in (400, 200)
+        assert resp["statusCode"] == 400
 
     def test_invalid_profile_rejected(self):
         h = _load_api()
@@ -206,7 +206,9 @@ class TestSecretHandling:
         source_path = os.path.join(LAMBDAS_DIR, "nexus-upload", "handler.py")
         with open(source_path) as f:
             source = f.read()
-        assert "client_secret" not in source.split("credentials")[0][:200]
+        dangerous_patterns = ['"client_secret": "', "'client_secret': '", "refresh_token = '", 'refresh_token = "']
+        for pattern in dangerous_patterns:
+            assert pattern not in source, f"Potential hardcoded YouTube credential found: {pattern!r}"
 
     def test_secrets_fetched_via_get_secret_function(self):
         source_path = os.path.join(LAMBDAS_DIR, "nexus-research", "handler.py")

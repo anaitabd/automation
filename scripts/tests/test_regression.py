@@ -261,7 +261,7 @@ class TestUploadDryRunNotCallsYouTube:
         mock_upload.assert_not_called()
 
 
-class TestVisualsHandlerDryRunDoeNotCallNova:
+class TestVisualsHandlerDoesNotCallNova:
     """FIX: dry_run in Visuals must skip all Nova Canvas / Nova Reel calls."""
 
     def _load_visuals(self):

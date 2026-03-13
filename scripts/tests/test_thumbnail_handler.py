@@ -105,6 +105,18 @@ class TestFindFont:
         result = h._find_font("DejaVuSans-Bold.ttf")
         assert isinstance(result, str)
 
+    def test_returns_non_empty_when_system_font_exists(self):
+        h = _load()
+        known_candidates = ["DejaVuSans-Bold.ttf", "DejaVuSans.ttf"]
+        found = None
+        for name in known_candidates:
+            result = h._find_font(name)
+            if result:
+                found = result
+                break
+        if found:
+            assert os.path.isfile(found)
+
 
 class TestGenerateThumbnailConcepts:
     def test_bedrock_call_returns_concepts(self):

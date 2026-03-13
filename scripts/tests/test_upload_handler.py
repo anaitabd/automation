@@ -131,7 +131,6 @@ class TestManualApprovalMode:
         s3_mock = MagicMock()
         _make_script_s3(s3_mock, script)
         put_calls = []
-        original_put = s3_mock.put_object
         def capturing_put(**kwargs):
             put_calls.append(kwargs)
             return {}
@@ -140,9 +139,7 @@ class TestManualApprovalMode:
              patch.dict(os.environ, {"YOUTUBE_AUTO_PUBLISH": "false"}):
             h.lambda_handler(_make_event(dry_run=False), None)
         pending_calls = [c for c in put_calls if "pending_upload.json" in c.get("Key", "")]
-        if pending_calls:
-            body = json.loads(pending_calls[0]["Body"])
-            assert "Subscribe!" in body.get("title", "") or True
+        assert len(pending_calls) > 0, "pending_upload.json was not written to S3"
 
 
 class TestRefreshAccessToken:
