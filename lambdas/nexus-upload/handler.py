@@ -5,11 +5,14 @@ import time
 import urllib.parse
 import urllib.request
 import boto3
+from boto3.s3.transfer import TransferConfig
 from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
 
 log = get_logger("nexus-upload")
 
 _cache: dict = {}
+_S3_MULTIPART_THRESHOLD = 100 * 1024 * 1024
+_S3_TRANSFER_CONFIG = TransferConfig(multipart_threshold=_S3_MULTIPART_THRESHOLD)
 
 
 def get_secret(name: str) -> dict:
@@ -135,6 +138,7 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
 def lambda_handler(event: dict, context) -> dict:
     run_id: str = event["run_id"]
     profile_name: str = event.get("profile", "documentary")
+    niche: str = event.get("niche", "")
     final_video_s3_key: str = event["final_video_s3_key"]
     primary_thumbnail_s3_key: str = event["primary_thumbnail_s3_key"]
     script_s3_key: str = event["script_s3_key"]
@@ -163,12 +167,15 @@ def lambda_handler(event: dict, context) -> dict:
             return {
                 "run_id": run_id,
                 "profile": profile_name,
+                "niche": niche,
                 "dry_run": True,
                 "title": title,
                 "video_id": "DRY_RUN_VIDEO_ID",
                 "video_url": "https://youtube.com/watch?v=DRY_RUN_VIDEO_ID",
                 "thumbnail_s3_keys": thumbnail_s3_keys,
                 "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
+                "final_video_s3_key": final_video_s3_key,
+                "script_s3_key": script_s3_key,
                 "video_duration_sec": video_duration_sec,
             }
 
@@ -207,12 +214,15 @@ def lambda_handler(event: dict, context) -> dict:
             return {
                 "run_id": run_id,
                 "profile": profile_name,
+                "niche": niche,
                 "dry_run": False,
                 "video_id": "PENDING_MANUAL_APPROVAL",
                 "video_url": "pending://manual-approval-required",
                 "title": title,
                 "thumbnail_s3_keys": thumbnail_s3_keys,
                 "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
+                "final_video_s3_key": final_video_s3_key,
+                "script_s3_key": script_s3_key,
                 "video_duration_sec": video_duration_sec,
                 "auto_publish": False,
             }
@@ -237,7 +247,7 @@ def lambda_handler(event: dict, context) -> dict:
         with tempfile.TemporaryDirectory() as tmpdir:
             log.info("Downloading video from S3: %s", final_video_s3_key)
             video_local = os.path.join(tmpdir, "final_video.mp4")
-            s3.download_file(S3_OUTPUTS_BUCKET, final_video_s3_key, video_local)
+            s3.download_file(S3_OUTPUTS_BUCKET, final_video_s3_key, video_local, Config=_S3_TRANSFER_CONFIG)
 
             log.info("Downloading thumbnail from S3: %s", primary_thumbnail_s3_key)
             thumbnail_local = os.path.join(tmpdir, "thumbnail.jpg")
@@ -265,12 +275,15 @@ def lambda_handler(event: dict, context) -> dict:
         return {
             "run_id": run_id,
             "profile": profile_name,
+            "niche": niche,
             "dry_run": False,
             "video_id": video_id,
             "video_url": video_url,
             "title": title,
             "thumbnail_s3_keys": thumbnail_s3_keys,
             "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
+            "final_video_s3_key": final_video_s3_key,
+            "script_s3_key": script_s3_key,
             "video_duration_sec": video_duration_sec,
         }
 

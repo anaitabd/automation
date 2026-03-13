@@ -98,10 +98,24 @@
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.error",
-          "Next": "NotifyError"
+          "Next": "ResearchError"
         }
       ],
       "Next": "Script"
+    },
+
+    "ResearchError": {
+      "Type": "Pass",
+      "Parameters": {
+        "step_name": "Research",
+        "error.$": "$.error",
+        "run_id.$": "$$.Execution.Input.run_id",
+        "niche.$": "$$.Execution.Input.niche",
+        "profile.$": "$$.Execution.Input.profile",
+        "dry_run.$": "$$.Execution.Input.dry_run"
+      },
+      "ResultPath": "$",
+      "Next": "NotifyError"
     },
 
     "Script": {
@@ -147,10 +161,24 @@
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.error",
-          "Next": "NotifyError"
+          "Next": "ScriptError"
         }
       ],
       "Next": "AudioVisuals"
+    },
+
+    "ScriptError": {
+      "Type": "Pass",
+      "Parameters": {
+        "step_name": "Script",
+        "error.$": "$.error",
+        "run_id.$": "$$.Execution.Input.run_id",
+        "niche.$": "$$.Execution.Input.niche",
+        "profile.$": "$$.Execution.Input.profile",
+        "dry_run.$": "$$.Execution.Input.dry_run"
+      },
+      "ResultPath": "$",
+      "Next": "NotifyError"
     },
 
     "AudioVisuals": {
@@ -275,10 +303,24 @@
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.error",
-          "Next": "NotifyError"
+          "Next": "AudioVisualsError"
         }
       ],
       "Next": "MergeParallelOutputs"
+    },
+
+    "AudioVisualsError": {
+      "Type": "Pass",
+      "Parameters": {
+        "step_name": "AudioVisuals",
+        "error.$": "$.error",
+        "run_id.$": "$$.Execution.Input.run_id",
+        "niche.$": "$$.Execution.Input.niche",
+        "profile.$": "$$.Execution.Input.profile",
+        "dry_run.$": "$$.Execution.Input.dry_run"
+      },
+      "ResultPath": "$",
+      "Next": "NotifyError"
     },
 
     "MergeParallelOutputs": {
@@ -463,10 +505,24 @@
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.error",
-          "Next": "NotifyError"
+          "Next": "EditorError"
         }
       ],
       "Next": "MergeContentOutputs"
+    },
+
+    "EditorError": {
+      "Type": "Pass",
+      "Parameters": {
+        "step_name": "Editor",
+        "error.$": "$.error",
+        "run_id.$": "$$.Execution.Input.run_id",
+        "niche.$": "$$.Execution.Input.niche",
+        "profile.$": "$$.Execution.Input.profile",
+        "dry_run.$": "$$.Execution.Input.dry_run"
+      },
+      "ResultPath": "$",
+      "Next": "NotifyError"
     },
 
     "MergeContentOutputs": {
@@ -529,10 +585,88 @@
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.error",
-          "Next": "NotifyError"
+          "Next": "ThumbnailError"
+        }
+      ],
+      "Next": "Upload"
+    },
+
+    "ThumbnailError": {
+      "Type": "Pass",
+      "Parameters": {
+        "step_name": "Thumbnail",
+        "error.$": "$.error",
+        "run_id.$": "$$.Execution.Input.run_id",
+        "niche.$": "$$.Execution.Input.niche",
+        "profile.$": "$$.Execution.Input.profile",
+        "dry_run.$": "$$.Execution.Input.dry_run"
+      },
+      "ResultPath": "$",
+      "Next": "NotifyError"
+    },
+
+    "Upload": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${NexusUploadArn}",
+        "Payload": {
+          "run_id.$": "$.run_id",
+          "profile.$": "$.profile",
+          "dry_run.$": "$.dry_run",
+          "niche.$": "$.niche",
+          "script_s3_key.$": "$.script_s3_key",
+          "final_video_s3_key.$": "$.final_video_s3_key",
+          "primary_thumbnail_s3_key.$": "$.primary_thumbnail_s3_key",
+          "thumbnail_s3_keys.$": "$.thumbnail_s3_keys",
+          "title.$": "$.title",
+          "video_duration_sec.$": "$.video_duration_sec"
+        }
+      },
+      "ResultSelector": {
+        "run_id.$": "$.Payload.run_id",
+        "profile.$": "$.Payload.profile",
+        "dry_run.$": "$.Payload.dry_run",
+        "niche.$": "$.Payload.niche",
+        "title.$": "$.Payload.title",
+        "final_video_s3_key.$": "$.Payload.final_video_s3_key",
+        "video_duration_sec.$": "$.Payload.video_duration_sec",
+        "thumbnail_s3_keys.$": "$.Payload.thumbnail_s3_keys",
+        "primary_thumbnail_s3_key.$": "$.Payload.primary_thumbnail_s3_key",
+        "video_url.$": "$.Payload.video_url",
+        "video_id.$": "$.Payload.video_id"
+      },
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "UploadError"
         }
       ],
       "Next": "Notify"
+    },
+
+    "UploadError": {
+      "Type": "Pass",
+      "Parameters": {
+        "step_name": "Upload",
+        "error.$": "$.error",
+        "run_id.$": "$$.Execution.Input.run_id",
+        "niche.$": "$$.Execution.Input.niche",
+        "profile.$": "$$.Execution.Input.profile",
+        "dry_run.$": "$$.Execution.Input.dry_run"
+      },
+      "ResultPath": "$",
+      "Next": "NotifyError"
     },
 
     "Notify": {
@@ -547,6 +681,7 @@
           "niche.$": "$.niche",
           "title.$": "$.title",
           "final_video_s3_key.$": "$.final_video_s3_key",
+          "video_url.$": "$.video_url",
           "video_duration_sec.$": "$.video_duration_sec",
           "thumbnail_s3_keys.$": "$.thumbnail_s3_keys",
           "primary_thumbnail_s3_key.$": "$.primary_thumbnail_s3_key",
@@ -580,6 +715,7 @@
         "Payload": {
           "run_id.$": "$$.Execution.Input.run_id",
           "error.$": "$.error",
+          "step_name.$": "$.step_name",
           "niche.$": "$$.Execution.Input.niche",
           "profile.$": "$$.Execution.Input.profile",
           "dry_run.$": "$$.Execution.Input.dry_run"
