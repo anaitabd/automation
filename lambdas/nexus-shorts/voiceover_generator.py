@@ -56,7 +56,9 @@ def generate_voiceover(
     api_key = el_secret["api_key"]
 
     voice_cfg = profile.get("voice", {})
-    voice_id = voice_cfg.get("voice_id", "21m00Tcm4TlvDq8ikWAM")
+    voice_id = voice_cfg.get("voice_id")
+    if not voice_id:
+        raise ValueError("Profile missing voice.voice_id — check profile JSON in CONFIG_BUCKET")
     model_id = voice_cfg.get("model_id", "eleven_multilingual_v2")
 
     # Use shorts-specific voice settings if available, else fallback to main

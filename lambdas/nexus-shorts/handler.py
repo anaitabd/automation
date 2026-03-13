@@ -188,6 +188,11 @@ def lambda_handler(event: dict, context=None) -> dict:
         log.error("Shorts step FAILED: %s", exc, exc_info=True)
         _write_error(run_id, "shorts", exc)
         raise
+    finally:
+        import shutil
+        from config import SCRATCH_DIR
+        scratch_dir = os.path.join(SCRATCH_DIR, run_id)
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -481,14 +481,14 @@ def _exec_step(
     })
 
 
-def _run_pipeline(run_id: str, niche: str, profile: str, dry_run: bool) -> None:
+def _run_pipeline(run_id: str, niche: str, profile: str, dry_run: bool, generate_shorts: bool = False) -> None:
     """Execute the pipeline — Audio ∥ Visuals and Editor ∥ Shorts run in parallel."""
     state = {
         "run_id": run_id,
         "niche": niche,
         "profile": profile,
         "dry_run": dry_run,
-        "generate_shorts": True,  # default; can be overridden by API input
+        "generate_shorts": generate_shorts,
     }
 
     run = _runs[run_id]
@@ -799,6 +799,7 @@ class Handler(BaseHTTPRequestHandler):
             niche = body.get("niche", "").strip()
             profile = body.get("profile", "documentary")
             dry_run = bool(body.get("dry_run", False))
+            generate_shorts = bool(body.get("generate_shorts", False))
 
             if not niche:
                 self._json_response(400, {"error": "niche is required"})
@@ -812,7 +813,7 @@ class Handler(BaseHTTPRequestHandler):
 
             thread = threading.Thread(
                 target=_run_pipeline,
-                args=(run_id, niche, profile, dry_run),
+                args=(run_id, niche, profile, dry_run, generate_shorts),
                 daemon=True,
             )
             thread.start()

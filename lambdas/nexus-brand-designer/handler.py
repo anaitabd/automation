@@ -6,7 +6,6 @@ Also selects an appropriate ElevenLabs voice_id from the profile defaults.
 """
 
 import json
-import logging
 import os
 
 import boto3
@@ -50,7 +49,7 @@ def _load_profile(profile: str) -> dict:
     if cache_key not in _cache:
         s3 = boto3.client("s3")
         try:
-            resp = s3.get_object(Bucket=CONFIG_BUCKET, Key=f"profiles/{profile}.json")
+            resp = s3.get_object(Bucket=CONFIG_BUCKET, Key=f"{profile}.json")
             _cache[cache_key] = json.loads(resp["Body"].read())
         except Exception as exc:
             log.warning("Failed to load profile %s: %s — using defaults", profile, exc)
@@ -106,7 +105,7 @@ def lambda_handler(event: dict, context) -> dict:
 
     # Load profile defaults for voice and thumbnail
     profile_data = _load_profile(profile)
-    default_voice_id = profile_data.get("voice", {}).get("voice_id", "21m00Tcm4TlvDq8ikWAM")
+    default_voice_id = profile_data.get("voice", {}).get("voice_id", "")
     default_font = profile_data.get("thumbnail", {}).get("font", "Cinzel")
     default_lut = profile_data.get("shorts", {}).get("lut_preset", "cinematic_teal_orange")
 

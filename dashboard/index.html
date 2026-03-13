@@ -92,6 +92,7 @@ const VIDEO_PIPELINE_STEPS = [
   { id: 'MergeParallelOutputs', label: 'Merge', type: 'pass', hidden: true },
   { id: 'Editor', label: 'Editor', type: 'lambda' },
   { id: 'Thumbnail', label: 'Thumbnail', type: 'lambda' },
+  { id: 'Upload', label: 'Upload', type: 'lambda' },
   { id: 'Notify', label: 'Notify', type: 'lambda' },
 ];
 
@@ -114,6 +115,7 @@ const COMBINED_PIPELINE_STEPS = [
   { id: 'ContentAssembly', label: 'Assembly', type: 'parallel', substeps: ['Editor', 'Shorts'] },
   { id: 'MergeContentOutputs', label: 'Merge', type: 'pass', hidden: true },
   { id: 'Thumbnail', label: 'Thumbnail', type: 'lambda' },
+  { id: 'Upload', label: 'Upload', type: 'lambda' },
   { id: 'Notify', label: 'Notify', type: 'lambda' },
 ];
 

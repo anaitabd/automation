@@ -11,8 +11,12 @@ from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_comp
 log = get_logger("nexus-upload")
 
 _cache: dict = {}
-_S3_MULTIPART_THRESHOLD = 100 * 1024 * 1024
-_S3_TRANSFER_CONFIG = TransferConfig(multipart_threshold=_S3_MULTIPART_THRESHOLD)
+_S3_MULTIPART_THRESHOLD = 100 * 1024 * 1024  # 100 MB
+_S3_TRANSFER_CONFIG = TransferConfig(
+    multipart_threshold=_S3_MULTIPART_THRESHOLD,
+    max_concurrency=10,
+    multipart_chunksize=16 * 1024 * 1024,  # 16 MB chunks
+)
 
 
 def get_secret(name: str) -> dict:

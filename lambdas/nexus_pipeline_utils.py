@@ -20,6 +20,14 @@ STEPS = {
 
 _secret_cache: dict = {}
 
+_REQUIRED_SECRETS = [
+    "nexus/perplexity_api_key",
+    "nexus/elevenlabs_api_key",
+    "nexus/pexels_api_key",
+    "nexus/discord_webhook_url",
+]
+
+# Legacy env-var list for local dev / docker compose
 _REQUIRED_ENV_VARS = [
     "ELEVENLABS_API_KEY",
     "PERPLEXITY_API_KEY",
@@ -30,12 +38,31 @@ _REQUIRED_ENV_VARS = [
 ]
 
 
-def validate_secrets() -> None:
-    missing = [k for k in _REQUIRED_ENV_VARS if not os.environ.get(k)]
-    if missing:
-        raise EnvironmentError(
-            f"Missing required environment variable(s): {', '.join(missing)}"
-        )
+def validate_secrets(use_secrets_manager: bool = False) -> None:
+    """Validate that required secrets are accessible.
+
+    Args:
+        use_secrets_manager: If True, checks Secrets Manager (cloud mode).
+                            If False, checks environment variables (local/docker mode).
+    """
+    if use_secrets_manager:
+        sm = boto3.client("secretsmanager")
+        missing = []
+        for secret_id in _REQUIRED_SECRETS:
+            try:
+                sm.get_secret_value(SecretId=secret_id)
+            except Exception:
+                missing.append(secret_id)
+        if missing:
+            raise EnvironmentError(
+                f"Missing or inaccessible Secrets Manager secret(s): {', '.join(missing)}"
+            )
+    else:
+        missing = [k for k in _REQUIRED_ENV_VARS if not os.environ.get(k)]
+        if missing:
+            raise EnvironmentError(
+                f"Missing required environment variable(s): {', '.join(missing)}"
+            )
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -90,7 +117,7 @@ def notify_step_start(
     label = meta["label"]
 
     log = logging.getLogger(f"nexus-{step_key}")
-    log.info("━━━ Step %d/%d: %s STARTING ━━━ run_id=%s niche=%s profile=%s dry_run=%s",
+    log.info("━━━ Step %s/%s: %s STARTING ━━━ run_id=%s niche=%s profile=%s dry_run=%s",
              step_num, total, label, run_id, niche, profile, dry_run)
 
     webhook_url = _get_webhook_url()
@@ -135,7 +162,7 @@ def notify_step_complete(
     label = meta["label"]
 
     log = logging.getLogger(f"nexus-{step_key}")
-    log.info("━━━ Step %d/%d: %s COMPLETED in %.1fs ━━━", step_num, total, label, elapsed_sec)
+    log.info("━━━ Step %s/%s: %s COMPLETED in %.1fs ━━━", step_num, total, label, elapsed_sec)
 
     webhook_url = _get_webhook_url()
     if not webhook_url:

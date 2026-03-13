@@ -171,7 +171,9 @@ def _synthesize_sentence(
 
 
 def _generate_voiceover(script: dict, profile: dict, api_key: str, tmpdir: str) -> str:
-    voice_id = profile.get("voice", {}).get("voice_id", "21m00Tcm4TlvDq8ikWAM")
+    voice_id = profile.get("voice", {}).get("voice_id")
+    if not voice_id:
+        raise ValueError("Profile missing voice.voice_id — check profile JSON in CONFIG_BUCKET")
     segment_files: list[str] = []
 
     def _make_silence(duration_ms: int, label: str) -> str:
@@ -607,8 +609,5 @@ if __name__ == "__main__":
     result = lambda_handler({}, None)
     print(json.dumps(result, default=str))
     sys.exit(0)
-if __name__ == "__main__":
-    import sys
-    result = lambda_handler({}, None)
     print(json.dumps(result, default=str))
     sys.exit(0)

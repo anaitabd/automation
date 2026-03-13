@@ -100,10 +100,10 @@ resource "aws_api_gateway_resource" "status_run_id" {
   path_part   = "{run_id}"
 }
 resource "aws_api_gateway_method" "status_get" {
-  rest_api_id   = aws_api_gateway_rest_api.nexus.id
-  resource_id   = aws_api_gateway_resource.status_run_id.id
-  http_method   = "GET"
-  authorization = "NONE"
+  rest_api_id        = aws_api_gateway_rest_api.nexus.id
+  resource_id        = aws_api_gateway_resource.status_run_id.id
+  http_method        = "GET"
+  authorization      = "NONE"
   request_parameters = { "method.request.path.run_id" = true }
 }
 resource "aws_api_gateway_integration" "status_get" {
@@ -127,10 +127,10 @@ resource "aws_api_gateway_resource" "outputs_run_id" {
   path_part   = "{run_id}"
 }
 resource "aws_api_gateway_method" "outputs_get" {
-  rest_api_id   = aws_api_gateway_rest_api.nexus.id
-  resource_id   = aws_api_gateway_resource.outputs_run_id.id
-  http_method   = "GET"
-  authorization = "NONE"
+  rest_api_id        = aws_api_gateway_rest_api.nexus.id
+  resource_id        = aws_api_gateway_resource.outputs_run_id.id
+  http_method        = "GET"
+  authorization      = "NONE"
   request_parameters = { "method.request.path.run_id" = true }
 }
 resource "aws_api_gateway_integration" "outputs_get" {
@@ -161,11 +161,11 @@ resource "aws_api_gateway_method" "options" {
   authorization = "NONE"
 }
 resource "aws_api_gateway_integration" "options" {
-  for_each    = local.cors_resources
-  rest_api_id = aws_api_gateway_rest_api.nexus.id
-  resource_id = each.value
-  http_method = aws_api_gateway_method.options[each.key].http_method
-  type        = "MOCK"
+  for_each          = local.cors_resources
+  rest_api_id       = aws_api_gateway_rest_api.nexus.id
+  resource_id       = each.value
+  http_method       = aws_api_gateway_method.options[each.key].http_method
+  type              = "MOCK"
   request_templates = { "application/json" = "{\"statusCode\": 200}" }
 }
 resource "aws_api_gateway_method_response" "options_200" {
@@ -205,6 +205,12 @@ resource "aws_api_gateway_deployment" "prod" {
       aws_api_gateway_integration.resume_post,
       aws_api_gateway_integration.status_get,
       aws_api_gateway_integration.outputs_get,
+      aws_api_gateway_integration.channel_create_post,
+      aws_api_gateway_integration.channel_list_get,
+      aws_api_gateway_integration.channel_get,
+      aws_api_gateway_integration.channel_delete,
+      aws_api_gateway_integration.channel_brand_put,
+      aws_api_gateway_integration.channel_videos_get,
     ]))
   }
 
@@ -216,6 +222,12 @@ resource "aws_api_gateway_deployment" "prod" {
     aws_api_gateway_integration.resume_post,
     aws_api_gateway_integration.status_get,
     aws_api_gateway_integration.outputs_get,
+    aws_api_gateway_integration.channel_create_post,
+    aws_api_gateway_integration.channel_list_get,
+    aws_api_gateway_integration.channel_get,
+    aws_api_gateway_integration.channel_delete,
+    aws_api_gateway_integration.channel_brand_put,
+    aws_api_gateway_integration.channel_videos_get,
   ]
 }
 

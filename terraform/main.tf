@@ -45,6 +45,7 @@ module "identity" {
   assets_bucket_arn  = module.storage.assets_bucket_arn
   outputs_bucket_arn = module.storage.outputs_bucket_arn
   config_bucket_arn  = module.storage.config_bucket_arn
+  efs_filesystem_arn = module.networking.efs_file_system_arn
 }
 
 # ── Compute (Lambdas + ECS) ──
@@ -68,7 +69,7 @@ module "compute" {
   public_subnet_ids      = module.networking.public_subnet_ids
   # state_machine_arn is set after orchestration via a second-pass update
   # (API handler reads it from env; SFN ARN is predictable)
-  state_machine_arn      = "arn:aws:states:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:stateMachine:nexus-pipeline"
+  state_machine_arn = "arn:aws:states:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:stateMachine:nexus-pipeline"
 }
 
 # ── Orchestration (Step Functions) ──
@@ -99,9 +100,9 @@ module "api" {
 
 # ── Observability (CloudWatch + EventBridge) ──
 module "observability" {
-  source                = "./modules/observability"
-  state_machine_arn     = module.orchestration.state_machine_arn
-  public_subnet_ids     = module.networking.public_subnet_ids
+  source            = "./modules/observability"
+  state_machine_arn = module.orchestration.state_machine_arn
+  public_subnet_ids = module.networking.public_subnet_ids
   lambda_function_names = [
     "nexus-research", "nexus-script", "nexus-thumbnail",
     "nexus-upload", "nexus-notify",

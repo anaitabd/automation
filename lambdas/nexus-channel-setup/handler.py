@@ -147,17 +147,26 @@ def lambda_handler(event: dict, context) -> dict:
         log.info("Logo generated: %s", brand["logo_s3"])
 
         # ── Step 3: Intro / Outro (Nova Reel + FFmpeg) ────────────
+        # TODO: implement nexus-intro-outro — currently non-fatal if missing/failing
         log.info("Step 3/3: Intro / Outro")
-        intro_outro_result = _invoke_lambda(INTRO_OUTRO_FUNCTION, {
-            "channel_id": channel_id,
-            "channel_name": channel_name,
-            "niche": niche,
-            "profile": profile,
-            "brand": brand,
-        })
-        brand["intro_s3"] = intro_outro_result.get("intro_s3_key", "")
-        brand["outro_s3"] = intro_outro_result.get("outro_s3_key", "")
-        log.info("Intro/outro generated: intro=%s outro=%s", brand["intro_s3"], brand["outro_s3"])
+        try:
+            intro_outro_result = _invoke_lambda(INTRO_OUTRO_FUNCTION, {
+                "channel_id": channel_id,
+                "channel_name": channel_name,
+                "niche": niche,
+                "profile": profile,
+                "brand": brand,
+            })
+            brand["intro_s3"] = intro_outro_result.get("intro_s3_key", "")
+            brand["outro_s3"] = intro_outro_result.get("outro_s3_key", "")
+            log.info("Intro/outro generated: intro=%s outro=%s", brand["intro_s3"], brand["outro_s3"])
+        except Exception as intro_exc:
+            log.warning(
+                "Intro/outro generation failed (non-fatal): %s — channel setup will continue without intro/outro",
+                intro_exc,
+            )
+            brand["intro_s3"] = ""
+            brand["outro_s3"] = ""
 
         # ── Update channel to active ──────────────────────────────
         _update_channel(channel_id, brand, voice_id, "active")

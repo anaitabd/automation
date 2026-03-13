@@ -2,8 +2,8 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 locals {
-  account_id = data.aws_caller_identity.current.account_id
-  region     = data.aws_region.current.name
+  account_id         = data.aws_caller_identity.current.account_id
+  region             = data.aws_region.current.name
   secrets_arn_prefix = "arn:aws:secretsmanager:${local.region}:${local.account_id}:secret:nexus/"
 }
 
@@ -114,11 +114,11 @@ resource "aws_iam_role_policy" "thumbnail" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
         Resource = [
           var.outputs_bucket_arn, "${var.outputs_bucket_arn}/*",
-          var.assets_bucket_arn,  "${var.assets_bucket_arn}/*",
+          var.assets_bucket_arn, "${var.assets_bucket_arn}/*",
         ]
       },
       {
@@ -289,10 +289,10 @@ resource "aws_iam_role_policy" "ecs_task" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject", "s3:ListBucket", "s3:DeleteObject"]
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket", "s3:DeleteObject"]
         Resource = [
-          var.assets_bucket_arn,  "${var.assets_bucket_arn}/*",
+          var.assets_bucket_arn, "${var.assets_bucket_arn}/*",
           var.outputs_bucket_arn, "${var.outputs_bucket_arn}/*",
         ]
       },
@@ -312,8 +312,8 @@ resource "aws_iam_role_policy" "ecs_task" {
         Resource = ["*"]
       },
       {
-        Effect   = "Allow"
-        Action   = [
+        Effect = "Allow"
+        Action = [
           "elasticfilesystem:ClientMount",
           "elasticfilesystem:ClientWrite",
           "elasticfilesystem:ClientRootAccess",
@@ -321,8 +321,8 @@ resource "aws_iam_role_policy" "ecs_task" {
         Resource = ["*"]
       },
       {
-        Effect   = "Allow"
-        Action   = [
+        Effect = "Allow"
+        Action = [
           "bedrock:InvokeModel",
           "bedrock:StartAsyncInvoke",
           "bedrock:GetAsyncInvoke",
@@ -356,7 +356,7 @@ resource "aws_iam_role_policy" "mediaconvert" {
       Effect = "Allow"
       Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
       Resource = [
-        var.assets_bucket_arn,  "${var.assets_bucket_arn}/*",
+        var.assets_bucket_arn, "${var.assets_bucket_arn}/*",
         var.outputs_bucket_arn, "${var.outputs_bucket_arn}/*",
       ]
     }]
@@ -397,19 +397,19 @@ resource "aws_iam_role_policy" "sfn" {
         Resource = ["arn:aws:ecs:${local.region}:${local.account_id}:task-definition/nexus-*"]
       },
       {
-        Sid      = "PassECSRoles"
-        Effect   = "Allow"
-        Action   = ["iam:PassRole"]
+        Sid    = "PassECSRoles"
+        Effect = "Allow"
+        Action = ["iam:PassRole"]
         Resource = [
           aws_iam_role.ecs_execution.arn,
           aws_iam_role.ecs_task.arn,
         ]
       },
       {
-        Sid    = "ECSSync"
-        Effect = "Allow"
-        Action = ["ecs:DescribeTasks", "ecs:StopTask"]
-        Resource = ["*"]
+        Sid      = "ECSSync"
+        Effect   = "Allow"
+        Action   = ["ecs:DescribeTasks", "ecs:StopTask"]
+        Resource = ["arn:aws:ecs:${local.region}:${local.account_id}:task/nexus-*"]
       },
       {
         Sid    = "EventBridgeForSync"
@@ -430,7 +430,11 @@ resource "aws_iam_role_policy" "sfn" {
           "logs:DescribeResourcePolicies", "logs:DescribeLogGroups",
           "logs:PutLogEvents", "logs:CreateLogStream",
         ]
-        Resource = ["*"]
+        Resource = [
+          "arn:aws:logs:${local.region}:${local.account_id}:log-group:/aws/vendedlogs/nexus-*",
+          "arn:aws:logs:${local.region}:${local.account_id}:log-group:/aws/vendedlogs/nexus-*:*",
+          "arn:aws:logs:${local.region}:${local.account_id}:log-group:*",
+        ]
       },
     ]
   })

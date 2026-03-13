@@ -2,26 +2,32 @@ import json
 import os
 import time
 import uuid
+from datetime import datetime
+
 import boto3
+
+import db
 
 STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
 OUTPUTS_BUCKET = os.environ["OUTPUTS_BUCKET"]
 ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
 ECS_SUBNETS = json.loads(os.environ.get("ECS_SUBNETS", "[]"))
 REQUIRE_API_KEY = os.environ.get("REQUIRE_API_KEY", "false").lower() == "true"
+CHANNEL_SETUP_FUNCTION = os.environ.get("CHANNEL_SETUP_FUNCTION", "nexus-channel-setup")
 
 sfn = boto3.client("stepfunctions")
 s3 = boto3.client("s3")
 
-PIPELINE_STEPS = ["Research", "Script", "Audio", "Visuals", "Editor", "Thumbnail", "Upload", "Notify"]
+PIPELINE_STEPS = ["Research", "Script", "Audio", "Visuals", "Editor", "Shorts", "Thumbnail", "Upload", "Notify"]
 VALID_SHORTS_TIERS = {"micro", "short", "mid", "full"}
-_PARALLEL_CONTAINER_STATES = frozenset(["AudioVisuals"])
+_PARALLEL_CONTAINER_STATES = frozenset(["AudioVisuals", "ContentAssembly"])
 _TRACKABLE_STATES = frozenset(PIPELINE_STEPS) | _PARALLEL_CONTAINER_STATES
 _SKIP_STATE_NAMES = frozenset([
     "NotifyError", "PipelineFailed", "MergeParallelOutputs",
     "MergeContentOutputs", "SetAudioKeys", "SetEditorKeys",
+    "SetShortsKeys", "ShortsSkipped", "CheckShortsEnabled",
     "ResearchError", "ScriptError", "AudioVisualsError",
-    "EditorError", "ThumbnailError", "UploadError",
+    "EditorError", "ShortsError", "ThumbnailError", "UploadError",
 ])
 
 
@@ -32,7 +38,7 @@ def _response(status_code: int, body: dict) -> dict:
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "Content-Type,x-api-key",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+            "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
         },
         "body": json.dumps(body, default=str),
     }
@@ -82,7 +88,7 @@ def _build_step_history(execution_arn: str) -> list[dict]:
                         "exited_at": None,
                         "duration_sec": None,
                         "error": None,
-                        "parallel": name in ("Audio", "Visuals", "AudioVisuals"),
+                        "parallel": name in ("Audio", "Visuals", "AudioVisuals", "Editor", "Shorts", "ContentAssembly"),
                     }
                     running_steps.add(name)
 
@@ -92,7 +98,6 @@ def _build_step_history(execution_arn: str) -> list[dict]:
                 step_data[name]["status"] = "done"
                 step_data[name]["exited_at"] = ts_str
                 if step_data[name]["entered_at"] and ts:
-                    from datetime import datetime
                     try:
                         entered = datetime.fromisoformat(step_data[name]["entered_at"])
                         step_data[name]["duration_sec"] = round((ts - entered).total_seconds(), 1)
@@ -124,7 +129,6 @@ def _build_step_history(execution_arn: str) -> list[dict]:
                         "stack_trace": stack_trace[:1000] if stack_trace else None,
                     }
                     if step_data[step_name]["entered_at"] and ts:
-                        from datetime import datetime
                         try:
                             entered = datetime.fromisoformat(step_data[step_name]["entered_at"])
                             step_data[step_name]["duration_sec"] = round((ts - entered).total_seconds(), 1)
@@ -143,7 +147,7 @@ def _build_step_history(execution_arn: str) -> list[dict]:
                 "exited_at": None,
                 "duration_sec": None,
                 "error": None,
-                "parallel": step_name in ("Audio", "Visuals"),
+                "parallel": step_name in ("Audio", "Visuals", "Editor", "Shorts"),
             })
 
     return steps
@@ -364,7 +368,7 @@ def _handle_resume(body: dict) -> dict:
     if not run_id:
         return _response(400, {"error": "run_id is required"})
 
-    STEP_ORDER = ["Research", "Script", "AudioVisuals", "Editor", "Thumbnail", "Notify"]
+    STEP_ORDER = ["Research", "Script", "AudioVisuals", "Editor", "Thumbnail", "Upload", "Notify"]
     VALID_STEPS = set(STEP_ORDER)
     if resume_from and resume_from not in VALID_STEPS:
         return _response(400, {"error": f"resume_from must be one of {STEP_ORDER}"})
@@ -435,6 +439,9 @@ def _handle_resume(body: dict) -> dict:
         "dry_run": dry_run,
         "subnets": ECS_SUBNETS,
         "resume_from": resume_from,
+        "generate_shorts": bool(body.get("generate_shorts", False)),
+        "shorts_tiers": body.get("shorts_tiers", "micro,short,mid,full"),
+        "channel_id": body.get("channel_id") or None,
     }
 
     if resume_from == "Script":
@@ -449,6 +456,17 @@ def _handle_resume(body: dict) -> dict:
         payload.update(script_meta)
         payload["final_video_s3_key"] = f"{run_id}/review/final_video.mp4"
         payload["video_duration_sec"] = script_meta.get("total_duration_estimate", 600)
+    elif resume_from == "Upload":
+        payload.update(script_meta)
+        payload["final_video_s3_key"] = f"{run_id}/review/final_video.mp4"
+        payload["video_duration_sec"] = script_meta.get("total_duration_estimate", 600)
+        thumb_keys = [
+            f"{run_id}/review/thumbnail_{i}.jpg"
+            for i in range(3)
+            if s3_exists(OUTPUTS_BUCKET, f"{run_id}/review/thumbnail_{i}.jpg")
+        ]
+        payload["thumbnail_s3_keys"] = thumb_keys
+        payload["primary_thumbnail_s3_key"] = thumb_keys[0] if thumb_keys else ""
     elif resume_from == "Notify":
         payload.update(script_meta)
         payload["final_video_s3_key"] = f"{run_id}/review/final_video.mp4"
@@ -530,5 +548,41 @@ def lambda_handler(event: dict, context) -> dict:
     elif method == "GET" and "/outputs/" in path:
         run_id = path_params.get("run_id", path.split("/outputs/")[-1])
         return _handle_outputs(run_id)
+
+    # ── Channel CRUD routes (FIX 4) ──
+    elif method == "POST" and path == "/channel/create":
+        body = json.loads(event.get("body") or "{}")
+        return _handle_channel_create(body)
+
+    elif method == "GET" and path == "/channel/list":
+        params = event.get("queryStringParameters") or {}
+        return _handle_channel_list(params)
+
+    elif method == "GET" and "/channel/" in path and path.endswith("/videos"):
+        channel_id = path_params.get("id", "")
+        if not channel_id:
+            parts = path.split("/channel/")[-1].split("/")
+            channel_id = parts[0] if parts else ""
+        return _handle_channel_videos(channel_id)
+
+    elif method == "PUT" and "/channel/" in path and path.endswith("/brand"):
+        channel_id = path_params.get("id", "")
+        if not channel_id:
+            parts = path.split("/channel/")[-1].split("/")
+            channel_id = parts[0] if parts else ""
+        body = json.loads(event.get("body") or "{}")
+        return _handle_channel_brand_update(channel_id, body)
+
+    elif method == "DELETE" and "/channel/" in path:
+        channel_id = path_params.get("id", "")
+        if not channel_id:
+            channel_id = path.split("/channel/")[-1].rstrip("/")
+        return _handle_channel_delete(channel_id)
+
+    elif method == "GET" and "/channel/" in path:
+        channel_id = path_params.get("id", "")
+        if not channel_id:
+            channel_id = path.split("/channel/")[-1].rstrip("/")
+        return _handle_channel_get(channel_id)
 
     return _response(404, {"error": "Not found"})
