@@ -16,9 +16,19 @@ from config import FFMPEG_BIN, SCRATCH_DIR
 _cache: dict = {}
 
 POLLY_VOICE_MAP = {
-    "documentary": "Matthew",
+    "documentary": "Gregory",
     "finance": "Matthew",
-    "entertainment": "Joanna",
+    "entertainment": "Stephen",
+}
+
+SSML_EMOTION_MAP = {
+    "tense":         {"rate": "slow",   "pitch": "-2st"},
+    "excited":       {"rate": "fast",   "pitch": "+3st"},
+    "reflective":    {"rate": "x-slow", "pitch": "-3st"},
+    "authoritative": {"rate": "medium", "pitch": "-1st"},
+    "somber":        {"rate": "slow",   "pitch": "-4st"},
+    "hopeful":       {"rate": "medium", "pitch": "+1st"},
+    "neutral":       {"rate": "medium", "pitch": "0st"},
 }
 
 
@@ -65,19 +75,10 @@ def _extract_tts_error(exc: Exception) -> tuple[int | None, dict]:
 
 def _should_fallback_to_polly(exc: Exception) -> bool:
     status_code, payload = _extract_tts_error(exc)
-    if status_code in {401, 402, 403, 429}:
+    if status_code in {401, 429}:
         return True
-
-    detail = payload.get("detail") if isinstance(payload, dict) else None
-    if isinstance(detail, dict):
-        status = str(detail.get("status", "")).lower()
-        message = str(detail.get("message", "")).lower()
-        return any(
-            token in f"{status} {message}"
-            for token in ("quota_exceeded", "unauthorized", "voice_not", "forbidden")
-        )
-
-    return False
+    body_str = json.dumps(payload).lower() if isinstance(payload, dict) else str(payload).lower()
+    return "quota_exceeded" in body_str or "credits_used" in body_str
 
 
 def _get_polly_voice_id(profile: dict) -> str:
@@ -89,13 +90,40 @@ def _get_polly_voice_id(profile: dict) -> str:
     )
 
 
-def _synthesize_with_polly(narration: str, profile: dict) -> bytes:
+def _build_ssml(text: str, emotion: str) -> str:
+    mapping = SSML_EMOTION_MAP.get(emotion, SSML_EMOTION_MAP["neutral"])
+    rate = mapping["rate"]
+    pitch = mapping["pitch"]
+    return (
+        f'<speak><prosody rate="{rate}" pitch="{pitch}">'
+        f'<amazon:effect name="drc">{text}</amazon:effect>'
+        f'</prosody></speak>'
+    )
+
+
+def _synthesize_with_polly_neural(narration: str, emotion: str, profile: dict) -> bytes:
     polly = boto3.client("polly")
+    voice_id = _get_polly_voice_id(profile)
+    ssml_text = _build_ssml(narration, emotion)
     response = polly.synthesize_speech(
         Engine="neural",
-        VoiceId=_get_polly_voice_id(profile),
+        VoiceId=voice_id,
         OutputFormat="mp3",
         SampleRate="24000",
+        Text=ssml_text,
+        TextType="ssml",
+    )
+    return response["AudioStream"].read()
+
+
+def _synthesize_with_polly_standard(narration: str, profile: dict) -> bytes:
+    polly = boto3.client("polly")
+    voice_id = _get_polly_voice_id(profile)
+    response = polly.synthesize_speech(
+        Engine="standard",
+        VoiceId=voice_id,
+        OutputFormat="mp3",
+        SampleRate="22050",
         Text=narration,
         TextType="text",
     )
@@ -153,7 +181,10 @@ def generate_voiceover(
     except Exception as exc:
         if not _should_fallback_to_polly(exc):
             raise
-        audio_bytes = _synthesize_with_polly(narration, profile)
+        try:
+            audio_bytes = _synthesize_with_polly_neural(narration, "neutral", profile)
+        except Exception:
+            audio_bytes = _synthesize_with_polly_standard(narration, profile)
 
     mp3_path = os.path.join(tmpdir, f"vo_{short_id}.mp3")
     with open(mp3_path, "wb") as f:
