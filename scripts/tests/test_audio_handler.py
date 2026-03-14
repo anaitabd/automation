@@ -1,8 +1,10 @@
 import importlib.util
+import io
 import json
 import os
 import sys
 from unittest.mock import MagicMock, patch
+import urllib.error
 
 import pytest
 
@@ -208,3 +210,52 @@ class TestPacingMap:
         assert "[PAUSE]" in h.PACING_MAP
         assert "[BEAT]" in h.PACING_MAP
         assert "[BREATH]" in h.PACING_MAP
+
+
+class TestPollyFallback:
+    def test_quota_exceeded_falls_back_to_polly(self):
+        h = _load()
+        error_body = json.dumps(
+            {
+                "detail": {
+                    "status": "quota_exceeded",
+                    "message": "No credits remaining",
+                }
+            }
+        ).encode("utf-8")
+        http_error = urllib.error.HTTPError(
+            url="https://api.elevenlabs.io/v1/text-to-speech/test-voice",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(error_body),
+        )
+        polly = MagicMock()
+        polly.synthesize_speech.return_value = {"AudioStream": io.BytesIO(b"polly-bytes")}
+
+        with patch.object(h, "_synthesize_sentence", side_effect=http_error), \
+             patch("boto3.client", return_value=polly):
+            result = h._synthesize_sentence_with_fallback(
+                "hello world",
+                "test-voice",
+                {},
+                "test-key",
+                "documentary",
+                {"voice": {}},
+            )
+
+        assert result == b"polly-bytes"
+        polly.synthesize_speech.assert_called_once()
+
+    def test_non_auth_error_does_not_fallback(self):
+        h = _load()
+        with patch.object(h, "_synthesize_sentence", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                h._synthesize_sentence_with_fallback(
+                    "hello world",
+                    "test-voice",
+                    {},
+                    "test-key",
+                    "documentary",
+                    {"voice": {}},
+                )

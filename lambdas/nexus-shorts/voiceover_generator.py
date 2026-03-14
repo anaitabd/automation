@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import time
+import urllib.error
 import urllib.request
 
 import boto3
@@ -13,6 +14,12 @@ import boto3
 from config import FFMPEG_BIN, SCRATCH_DIR
 
 _cache: dict = {}
+
+POLLY_VOICE_MAP = {
+    "documentary": "Matthew",
+    "finance": "Matthew",
+    "entertainment": "Joanna",
+}
 
 
 def get_secret(name: str) -> dict:
@@ -38,6 +45,61 @@ def _http_post_bytes(url: str, headers: dict, body: dict, retries: int = 3) -> b
                 raise
             time.sleep(5 * (3 ** attempt))  # 5 / 15 / 45s
     raise RuntimeError("Unreachable")
+
+
+def _extract_tts_error(exc: Exception) -> tuple[int | None, dict]:
+    status_code = getattr(exc, "code", None)
+    payload: dict = {}
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            raw = exc.read()
+        except Exception:
+            raw = b""
+        if raw:
+            try:
+                payload = json.loads(raw.decode("utf-8", errors="replace"))
+            except Exception:
+                payload = {"raw": raw.decode("utf-8", errors="replace")}
+    return status_code, payload
+
+
+def _should_fallback_to_polly(exc: Exception) -> bool:
+    status_code, payload = _extract_tts_error(exc)
+    if status_code in {401, 402, 403, 429}:
+        return True
+
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, dict):
+        status = str(detail.get("status", "")).lower()
+        message = str(detail.get("message", "")).lower()
+        return any(
+            token in f"{status} {message}"
+            for token in ("quota_exceeded", "unauthorized", "voice_not", "forbidden")
+        )
+
+    return False
+
+
+def _get_polly_voice_id(profile: dict) -> str:
+    voice_cfg = profile.get("voice", {})
+    return (
+        voice_cfg.get("polly_voice_id")
+        or os.environ.get("POLLY_VOICE_ID")
+        or POLLY_VOICE_MAP.get(profile.get("name", ""), "Matthew")
+    )
+
+
+def _synthesize_with_polly(narration: str, profile: dict) -> bytes:
+    polly = boto3.client("polly")
+    response = polly.synthesize_speech(
+        Engine="neural",
+        VoiceId=_get_polly_voice_id(profile),
+        OutputFormat="mp3",
+        SampleRate="24000",
+        Text=narration,
+        TextType="text",
+    )
+    return response["AudioStream"].read()
 
 
 def generate_voiceover(
@@ -86,7 +148,12 @@ def generate_voiceover(
         "voice_settings": voice_settings,
     }
 
-    audio_bytes = _http_post_bytes(url, headers, body)
+    try:
+        audio_bytes = _http_post_bytes(url, headers, body)
+    except Exception as exc:
+        if not _should_fallback_to_polly(exc):
+            raise
+        audio_bytes = _synthesize_with_polly(narration, profile)
 
     mp3_path = os.path.join(tmpdir, f"vo_{short_id}.mp3")
     with open(mp3_path, "wb") as f:

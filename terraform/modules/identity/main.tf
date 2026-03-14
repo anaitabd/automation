@@ -348,6 +348,7 @@ resource "aws_iam_role_policy" "ecs_task" {
           "bedrock:InvokeModel",
           "bedrock:StartAsyncInvoke",
           "bedrock:GetAsyncInvoke",
+          "polly:SynthesizeSpeech",
         ]
         Resource = ["*"]
       },

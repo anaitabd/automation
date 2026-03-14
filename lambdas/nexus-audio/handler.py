@@ -5,6 +5,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
+import urllib.error
 import urllib.request
 import urllib.parse
 from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
@@ -40,6 +41,12 @@ MUSIC_MOOD_KEYWORDS = {
     "tension_atmospheric": "tension atmospheric",
     "corporate_upbeat_subtle": "corporate upbeat",
     "energetic_hype": "energetic upbeat",
+}
+
+POLLY_VOICE_MAP = {
+    "documentary": "Matthew",
+    "finance": "Matthew",
+    "entertainment": "Joanna",
 }
 
 def _find_ffmpeg() -> str:
@@ -170,7 +177,114 @@ def _synthesize_sentence(
     raise RuntimeError("Unreachable")
 
 
-def _generate_voiceover(script: dict, profile: dict, api_key: str, tmpdir: str) -> str:
+def _extract_tts_error(exc: Exception) -> tuple[int | None, dict]:
+    status_code = getattr(exc, "code", None)
+    payload: dict = {}
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            raw = exc.read()
+        except Exception:
+            raw = b""
+        if raw:
+            try:
+                payload = json.loads(raw.decode("utf-8", errors="replace"))
+            except Exception:
+                payload = {"raw": raw.decode("utf-8", errors="replace")}
+    return status_code, payload
+
+
+def _should_fallback_to_polly(exc: Exception) -> bool:
+    status_code, payload = _extract_tts_error(exc)
+    if status_code in {401, 402, 403, 429}:
+        return True
+
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, dict):
+        status = str(detail.get("status", "")).lower()
+        message = str(detail.get("message", "")).lower()
+        return any(
+            token in f"{status} {message}"
+            for token in ("quota_exceeded", "unauthorized", "voice_not", "forbidden")
+        )
+
+    return False
+
+
+def _format_tts_error(exc: Exception) -> str:
+    status_code, payload = _extract_tts_error(exc)
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, dict):
+        status = detail.get("status", "")
+        message = detail.get("message", "")
+        parts = [str(part) for part in (status_code, status, message) if part]
+        if parts:
+            return " | ".join(parts)
+    if status_code:
+        return f"HTTP {status_code}: {exc}"
+    return str(exc)
+
+
+def _get_polly_voice_id(profile_name: str, profile: dict) -> str:
+    voice_cfg = profile.get("voice", {})
+    return (
+        voice_cfg.get("polly_voice_id")
+        or os.environ.get("POLLY_VOICE_ID")
+        or POLLY_VOICE_MAP.get(profile_name, "Matthew")
+    )
+
+
+def _synthesize_sentence_polly(text: str, profile_name: str, profile: dict, retries: int = 2) -> bytes:
+    polly = boto3.client("polly")
+    voice_id = _get_polly_voice_id(profile_name, profile)
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            response = polly.synthesize_speech(
+                Engine="neural",
+                VoiceId=voice_id,
+                OutputFormat="mp3",
+                SampleRate="24000",
+                Text=text,
+                TextType="text",
+            )
+            return response["AudioStream"].read()
+        except Exception as exc:
+            last_exc = exc
+            if attempt == retries - 1:
+                raise
+            time.sleep(2 ** attempt)
+    raise RuntimeError(f"Polly synthesis failed: {last_exc}")
+
+
+def _synthesize_sentence_with_fallback(
+    text: str,
+    voice_id: str,
+    voice_settings: dict,
+    api_key: str,
+    profile_name: str,
+    profile: dict,
+) -> bytes:
+    try:
+        return _synthesize_sentence(text, voice_id, voice_settings, api_key)
+    except Exception as exc:
+        if not _should_fallback_to_polly(exc):
+            raise
+        voice_name = _get_polly_voice_id(profile_name, profile)
+        log.warning(
+            "ElevenLabs unavailable (%s). Falling back to Polly voice %s",
+            _format_tts_error(exc),
+            voice_name,
+        )
+        return _synthesize_sentence_polly(_clean_text(text), profile_name, profile)
+
+
+def _generate_voiceover(
+    script: dict,
+    profile: dict,
+    api_key: str,
+    tmpdir: str,
+    profile_name: str,
+) -> str:
     voice_id = profile.get("voice", {}).get("voice_id")
     if not voice_id:
         raise ValueError("Profile missing voice.voice_id — check profile JSON in CONFIG_BUCKET")
@@ -211,7 +325,14 @@ def _generate_voiceover(script: dict, profile: dict, api_key: str, tmpdir: str) 
         cleaned = _clean_text(sent)
         emotion = _detect_emotion(cleaned, default_emotion)
         voice_settings = _get_voice_settings(profile, emotion)
-        audio_bytes = _synthesize_sentence(cleaned, voice_id, voice_settings, api_key)
+        audio_bytes = _synthesize_sentence_with_fallback(
+            cleaned,
+            voice_id,
+            voice_settings,
+            api_key,
+            profile_name,
+            profile,
+        )
         seg_path = os.path.join(tmpdir, f"seg_{idx:04d}.mp3")
         with open(seg_path, "wb") as f:
             f.write(audio_bytes)
@@ -554,7 +675,7 @@ def lambda_handler(event: dict, context) -> dict:
 
         with tempfile.TemporaryDirectory(dir=SCRATCH_DIR if os.path.isdir(SCRATCH_DIR) else None) as tmpdir:
             log.info("Generating voiceover via ElevenLabs (%d sections)", len(script.get("sections") or script.get("scenes", [])))
-            voiceover_raw = _generate_voiceover(script, profile, el_api_key, tmpdir)
+            voiceover_raw = _generate_voiceover(script, profile, el_api_key, tmpdir, profile_name)
 
             log.info("Applying audio processing")
             voiceover_processed = _apply_audio_processing(
