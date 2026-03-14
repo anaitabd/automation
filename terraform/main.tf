@@ -90,6 +90,7 @@ module "orchestration" {
   notify_arn           = module.compute.notify_arn
   notify_error_arn     = module.compute.notify_error_arn
   upload_queue_url     = module.compute.upload_queue_url
+  notification_topic_arn = module.compute.notification_topic_arn
 }
 
 # ── API + CloudFront ──

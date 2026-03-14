@@ -22,6 +22,7 @@ resource "aws_sfn_state_machine" "pipeline" {
     NexusNotifyArn         = var.notify_arn
     NexusNotifyErrorArn    = var.notify_error_arn
     UploadQueueUrl         = var.upload_queue_url
+    NotificationTopicArn   = var.notification_topic_arn
   })
 
   logging_configuration {
