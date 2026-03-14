@@ -614,13 +614,17 @@ def _submit_mediaconvert_job(
                             "CodecSettings": {
                                 "Codec": "H_264",
                                 "H264Settings": {
-                                    "Bitrate": 6000000,
-                                    "CodecLevel": "AUTO",
+                                    "Bitrate": 8000000,
+                                    "MaxBitrate": 10000000,
+                                    "CodecLevel": "LEVEL_4_1",
                                     "CodecProfile": "HIGH",
                                     "RateControlMode": "CBR",
                                     "FramerateControl": "INITIALIZE_FROM_SOURCE",
                                     "GopSize": 2.0,
                                     "GopSizeUnits": "SECONDS",
+                                    "NumberBFramesBetweenReferenceFrames": 2,
+                                    "QualityTuningLevel": "MULTI_PASS_HQ",
+                                    "SceneChangeDetect": "ENABLED",
                                 },
                             },
                             "Width": 1920,
@@ -628,20 +632,26 @@ def _submit_mediaconvert_job(
                         },
                         "AudioDescriptions": [
                             {
+                                "AudioNormalizationSettings": {
+                                    "Algorithm": "ITU_BS_1770_3",
+                                    "AlgorithmControl": "CORRECT_AUDIO",
+                                    "TargetLkfs": -14.0,
+                                },
                                 "CodecSettings": {
                                     "Codec": "AAC",
                                     "AacSettings": {
-                                        "Bitrate": 192000,
+                                        "Bitrate": 320000,
                                         "CodingMode": "CODING_MODE_2_0",
                                         "SampleRate": 48000,
                                     },
-                                }
+                                },
                             }
                         ],
                         "ContainerSettings": {
                             "Container": "MP4",
                             "Mp4Settings": {},
                         },
+                        "Extension": "mp4",
                     }
                 ],
             }
