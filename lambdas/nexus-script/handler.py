@@ -279,10 +279,15 @@ def get_secret(name: str) -> dict:
 
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
-BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-3-sonnet-20240229-v1:0"
-
-# Set dynamically per-invocation from the profile's llm.script_model
-_active_model_id: str = BEDROCK_MODEL_ID_DEFAULT
+BEDROCK_MODEL_SONNET = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+BEDROCK_MODEL_OPUS = "anthropic.claude-opus-4-5-20251101-v1:0"
+BEDROCK_SYSTEM_CACHED = [
+    {
+        "type": "text",
+        "text": "You are an expert YouTube content strategist and script writer specializing in educational documentary-style videos.",
+        "cache_control": {"type": "ephemeral"},
+    }
+]
 
 SCRIPT_JSON_SCHEMA = """{
   "title": "string",
@@ -358,16 +363,17 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     raise RuntimeError("Unreachable")
 
 
-def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3, model_id: str = "") -> str:
+def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3, model_id: str = "", system: list = None) -> str:
     client = boto3.client("bedrock-runtime")
-    bedrock_model = model_id or _active_model_id
-    body = json.dumps(
-        {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-    )
+    bedrock_model = model_id or BEDROCK_MODEL_SONNET
+    body_dict = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if system:
+        body_dict["system"] = system
+    body = json.dumps(body_dict)
     for attempt in range(retries):
         try:
             response = client.invoke_model(
@@ -506,7 +512,7 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
     )
     last_err: Exception | None = None
     for attempt in range(max_attempts):
-        raw = _bedrock_call(prompt, max_tokens=32768)
+        raw = _bedrock_call(prompt, max_tokens=32768, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
         try:
             result = _extract_json(raw)
             edl_errors = _validate_edl_schema(result)
@@ -547,7 +553,7 @@ def _pass2_hook_rewrite(script: dict) -> dict:
         f"Mood: {script.get('mood', 'neutral')}\n"
         f"Script summary: {script.get('description', '')}"
     )
-    raw = _bedrock_call(prompt, max_tokens=512)
+    raw = _bedrock_call(prompt, max_tokens=512, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
     try:
         rewrite = _extract_json(raw)
         script["hook"] = rewrite.get("hook", script["hook"])
@@ -598,7 +604,7 @@ def _pass_fact_integrity(script: dict) -> dict:
         "CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
         f"{json.dumps(script, indent=2)}"
     )
-    raw = _bedrock_call(prompt, max_tokens=32768)
+    raw = _bedrock_call(prompt, max_tokens=32768, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
     try:
         audited = _extract_json(raw)
         audited.setdefault("factual_confidence", "medium")
@@ -648,7 +654,7 @@ def _pass3_visual_cues(script: dict, profile: dict) -> dict:
             '  "overlay_type": "none|lower_third|stat_counter|quote_card"\n'
             "}\n"
         )
-        raw = _bedrock_call(prompt, max_tokens=256)
+        raw = _bedrock_call(prompt, max_tokens=256, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
         try:
             cue = _extract_json(raw)
         except json.JSONDecodeError:
@@ -677,7 +683,7 @@ def _pass4_pacing(script: dict, profile: dict) -> dict:
         "- CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
         f"{json.dumps(script, indent=2)}"
     )
-    raw = _bedrock_call(prompt, max_tokens=32768)
+    raw = _bedrock_call(prompt, max_tokens=32768, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
     try:
         paced = _extract_json(raw)
         orig_scenes = script.get("scenes", [])
@@ -690,6 +696,35 @@ def _pass4_pacing(script: dict, profile: dict) -> dict:
             print("[WARN] _pass4_pacing: scenes corrupted — keeping originals")
             paced["scenes"] = orig_scenes
         return paced
+    except json.JSONDecodeError:
+        return script
+
+
+def _pass6_final_polish(script: dict) -> dict:
+    prompt = (
+        "You are the final quality reviewer for a YouTube video script. "
+        "Perform a final polish pass to ensure the script is cohesive, compelling, and production-ready.\n\n"
+        "RULES:\n"
+        "- Fix any grammar, flow, or consistency issues\n"
+        "- Ensure [NEEDS SOURCE] and [UNVERIFIED] markers are preserved where present\n"
+        "- Do NOT add new factual claims or invent details\n"
+        "- Do NOT change the JSON schema or structure\n"
+        "- CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
+        f"{json.dumps(script, indent=2)}"
+    )
+    raw = _bedrock_call(prompt, max_tokens=32768, model_id=BEDROCK_MODEL_OPUS)
+    try:
+        polished = _extract_json(raw)
+        orig_scenes = script.get("scenes", [])
+        new_scenes = polished.get("scenes", [])
+        if (
+            not new_scenes
+            or not isinstance(new_scenes, list)
+            or not all(isinstance(s, dict) for s in new_scenes)
+        ):
+            print("[WARN] _pass6_final_polish: scenes corrupted — keeping originals")
+            polished["scenes"] = orig_scenes
+        return polished
     except json.JSONDecodeError:
         return script
 
@@ -781,11 +816,6 @@ def lambda_handler(event: dict, context) -> dict:
         profile_obj = s3.get_object(Bucket=S3_CONFIG_BUCKET, Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
 
-        # Use the model configured in the profile (falls back to default)
-        global _active_model_id
-        _active_model_id = profile.get("llm", {}).get("script_model", BEDROCK_MODEL_ID_DEFAULT)
-        log.info("Using Bedrock model: %s", _active_model_id)
-
         if dry_run:
             log.info("DRY RUN mode — returning stub script")
             script = {
@@ -819,22 +849,25 @@ def lambda_handler(event: dict, context) -> dict:
         else:
             perplexity_key = get_secret("nexus/perplexity_api_key")["api_key"]
 
-            log.info("Pass 1/6: Generating script structure for '%s'", topic)
+            log.info("Pass 1/7: Generating script structure for '%s'", topic)
             script = _pass1_structure(topic, angle, trending_context, profile)
 
-            log.info("Pass 2/6: Fact integrity self-audit")
+            log.info("Pass 2/7: Fact integrity self-audit")
             script = _pass_fact_integrity(script)
 
-            log.info("Pass 3/6: Hook rewrite")
+            log.info("Pass 3/7: Hook rewrite")
             script = _pass2_hook_rewrite(script)
 
-            log.info("Pass 4/6: Visual cues")
+            log.info("Pass 4/7: Visual cues")
             script = _pass3_visual_cues(script, profile)
 
-            log.info("Pass 5/6: Pacing polish")
+            log.info("Pass 5/7: Pacing polish")
             script = _pass4_pacing(script, profile)
 
-            log.info("Pass 6/6: Perplexity fact-check (web-verified)")
+            log.info("Pass 6/7: Final polish (Opus)")
+            script = _pass6_final_polish(script)
+
+            log.info("Pass 7/7: Perplexity fact-check (web-verified)")
             script = _pass5_fact_check(script, perplexity_key)
 
             confidence = script.get("factual_confidence", "unknown")
