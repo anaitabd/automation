@@ -177,11 +177,13 @@ def update_channel_brand(channel_id: str, brand: dict, voice_id: str = "", statu
                 cur.execute(
                     """
                     UPDATE nexus_channels
-                    SET brand = %s, voice_id = %s, status = %s, updated_at = NOW()
+                    SET brand = %s, voice_id = %s, status = %s,
+                        stats = jsonb_set(COALESCE(stats, '{}'), '{status}', %s::jsonb),
+                        updated_at = NOW()
                     WHERE channel_id = %s
                     RETURNING *
                     """,
-                    (json.dumps(brand), voice_id, status, channel_id),
+                    (json.dumps(brand), voice_id, status, json.dumps(status), channel_id),
                 )
                 row = cur.fetchone()
                 return dict(row) if row else None

@@ -8,6 +8,7 @@ variable "thumbnail_role_arn"    { type = string }
 variable "upload_role_arn"       { type = string }
 variable "notify_role_arn"       { type = string }
 variable "api_role_arn"          { type = string }
+variable "channel_setup_role_arn" { type = string }
 variable "ecs_execution_role_arn" { type = string }
 variable "ecs_task_role_arn"     { type = string }
 variable "mediaconvert_role_arn" { type = string }

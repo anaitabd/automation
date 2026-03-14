@@ -7,4 +7,5 @@ output "api_role_arn" { value = aws_iam_role.api.arn }
 output "ecs_execution_role_arn" { value = aws_iam_role.ecs_execution.arn }
 output "ecs_task_role_arn" { value = aws_iam_role.ecs_task.arn }
 output "mediaconvert_role_arn" { value = aws_iam_role.mediaconvert.arn }
-output "sfn_role_arn" { value = aws_iam_role.sfn.arn }
+output "sfn_role_arn"           { value = aws_iam_role.sfn.arn }
+output "channel_setup_role_arn" { value = aws_iam_role.channel_setup.arn }

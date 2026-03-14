@@ -239,6 +239,28 @@ resource "aws_iam_role_policy" "api" {
         Action   = ["s3:GetObject", "s3:ListBucket"]
         Resource = [var.outputs_bucket_arn, "${var.outputs_bucket_arn}/*"]
       },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:ListBucket"]
+        Resource = [var.assets_bucket_arn, "${var.assets_bucket_arn}/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = ["arn:aws:secretsmanager:${local.region}:${local.account_id}:secret:nexus/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["bedrock:ListFoundationModels"]
+        Resource = ["*"]
+      },
+      {
+        Effect = "Allow"
+        Action = ["lambda:InvokeFunction"]
+        Resource = [
+          "arn:aws:lambda:${local.region}:${local.account_id}:function:nexus-channel-setup",
+        ]
+      },
     ]
   })
 }
@@ -360,6 +382,63 @@ resource "aws_iam_role_policy" "mediaconvert" {
         var.outputs_bucket_arn, "${var.outputs_bucket_arn}/*",
       ]
     }]
+  })
+}
+
+# ── Channel Setup role (orchestrates brand-designer, logo-gen, intro-outro) ──
+
+resource "aws_iam_role" "channel_setup" {
+  name               = "nexus-channel-setup-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+resource "aws_iam_role_policy_attachment" "channel_setup_basic" {
+  role       = aws_iam_role.channel_setup.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+resource "aws_iam_role_policy" "channel_setup" {
+  name = "nexus-channel-setup-policy"
+  role = aws_iam_role.channel_setup.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = "arn:aws:secretsmanager:${local.region}:${local.account_id}:secret:nexus/*"
+      },
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
+        Resource = [
+          var.assets_bucket_arn, "${var.assets_bucket_arn}/*",
+          var.config_bucket_arn, "${var.config_bucket_arn}/*",
+          var.outputs_bucket_arn, "${var.outputs_bucket_arn}/*",
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = ["lambda:InvokeFunction"]
+        Resource = [
+          "arn:aws:lambda:${local.region}:${local.account_id}:function:nexus-brand-designer",
+          "arn:aws:lambda:${local.region}:${local.account_id}:function:nexus-logo-gen",
+          "arn:aws:lambda:${local.region}:${local.account_id}:function:nexus-intro-outro",
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = ["bedrock:InvokeModel"]
+        Resource = [
+          "arn:aws:bedrock:${local.region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
+          "arn:aws:bedrock:${local.region}::foundation-model/amazon.nova-canvas-v1:0",
+          "arn:aws:bedrock:${local.region}::foundation-model/amazon.nova-reel-v1:0",
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = ["bedrock:StartAsyncInvoke", "bedrock:GetAsyncInvoke"]
+        Resource = "arn:aws:bedrock:${local.region}:${local.account_id}:async-invoke/*"
+      },
+    ]
   })
 }
 

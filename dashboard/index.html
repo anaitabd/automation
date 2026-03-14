@@ -60,6 +60,7 @@
     input:focus, textarea:focus, select:focus { outline: none; }
     video { border-radius: 8px; }
   </style>
+  <script>window.__NEXUS_API_BASE__ = '%%NEXUS_API_BASE%%';</script>
 </head>
 <body>
 <div id="root"></div>
@@ -217,76 +218,69 @@ function Toasts() {
   );
 }
 
-// ── SSE Manager ──────────────────────────────────────────────────────────────
-// Manages SSE connections with automatic reconnect and status tracking.
-// On disconnect: waits 3s then retries up to 3 times.
-// After 3 failures: status = "unreachable".
-// On reconnect: re-syncs run state via GET /status/:run_id.
+// ── SSE Manager (polling-based) ──────────────────────────────────────────────
+// API Gateway + Lambda cannot sustain long-lived SSE connections (29s timeout).
+// This hook polls GET /status/{run_id} every 5s and dispatches synthetic events
+// to keep the PipelineMonitor API unchanged.
 function useSSE() {
   const [sseStatus, setSseStatus] = useState('connected');
-  const connectionsRef = useRef({});
-  const retriesRef = useRef({});
+  const connectionsRef = useRef({});  // runId → intervalId
+  const prevDataRef = useRef({});     // runId → last status snapshot
 
   const connectSSE = useCallback((runId, onEvent) => {
     if (connectionsRef.current[runId]) {
-      connectionsRef.current[runId].close();
+      clearInterval(connectionsRef.current[runId]);
     }
-    retriesRef.current[runId] = retriesRef.current[runId] || 0;
-    const url = `${API_BASE}/events/${runId}`;
-    const es = new EventSource(url);
+    setSseStatus('connected');
 
-    es.onopen = () => {
-      retriesRef.current[runId] = 0;
-      setSseStatus('connected');
-    };
-
-    const handleEvent = (e) => {
+    const poll = async () => {
       try {
-        const data = JSON.parse(e.data);
-        onEvent(e.type || 'message', data);
-        if (e.type === 'pipeline_done' || data.type === 'pipeline_done') {
-          es.close();
-          delete connectionsRef.current[runId];
+        const data = await api(`/status/${runId}`);
+        const prev = prevDataRef.current[runId];
+
+        // Always dispatch a snapshot so the monitor stays updated
+        onEvent('snapshot', data);
+        setSseStatus('connected');
+
+        // Detect step transitions
+        if (prev && prev.current_step !== data.current_step && data.current_step) {
+          if (data.current_step && (!prev.current_step || prev.status === 'RUNNING')) {
+            onEvent('step_start', data);
+          }
         }
-      } catch {}
-    };
+        if (prev && prev.status === 'RUNNING' && data.status !== 'RUNNING') {
+          onEvent('pipeline_done', data);
+          clearInterval(connectionsRef.current[runId]);
+          delete connectionsRef.current[runId];
+          delete prevDataRef.current[runId];
+          return;
+        }
 
-    ['snapshot', 'step_start', 'step_done', 'step_error', 'log', 'pipeline_done', 'message'].forEach(t => {
-      es.addEventListener(t, handleEvent);
-    });
-    es.onmessage = handleEvent;
-
-    es.onerror = () => {
-      es.close();
-      delete connectionsRef.current[runId];
-      retriesRef.current[runId] = (retriesRef.current[runId] || 0) + 1;
-      if (retriesRef.current[runId] >= 3) {
+        prevDataRef.current[runId] = data;
+      } catch {
         setSseStatus('unreachable');
-      } else {
-        setSseStatus('reconnecting');
-        setTimeout(() => connectSSE(runId, onEvent), 3000);
       }
     };
 
-    connectionsRef.current[runId] = es;
+    poll(); // immediate first poll
+    connectionsRef.current[runId] = setInterval(poll, 5000);
   }, []);
 
   const disconnectSSE = useCallback((runId) => {
     if (connectionsRef.current[runId]) {
-      connectionsRef.current[runId].close();
+      clearInterval(connectionsRef.current[runId]);
       delete connectionsRef.current[runId];
+      delete prevDataRef.current[runId];
     }
   }, []);
 
   const disconnectAll = useCallback(() => {
-    Object.keys(connectionsRef.current).forEach(id => {
-      connectionsRef.current[id].close();
-    });
+    Object.values(connectionsRef.current).forEach(id => clearInterval(id));
     connectionsRef.current = {};
+    prevDataRef.current = {};
   }, []);
 
   const reconnect = useCallback(() => {
-    retriesRef.current = {};
     setSseStatus('reconnecting');
   }, []);
 
@@ -780,6 +774,263 @@ function CreateChannelDrawer({ onClose }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// CHANNEL SETUP WIZARD
+// ═════════════════════════════════════════════════════════════════════════════
+function ChannelSetupWizard({ channelId, onComplete }) {
+  const { addNotification } = useContext(AppContext);
+  const [channel, setChannel] = useState(null);
+  const [triggering, setTriggering] = useState(false);
+  const [triggered, setTriggered] = useState(false);
+
+  // Poll channel every 3s while setting_up
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const data = await api(`/channel/${channelId}`);
+        if (!cancelled) {
+          setChannel(data.channel || data);
+          if ((data.channel || data)?.stats?.status !== 'setting_up') {
+            onComplete && onComplete(data.channel || data);
+          }
+        }
+      } catch {}
+    };
+    poll();
+    const iv = setInterval(poll, 3000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [channelId]);
+
+  const handleTrigger = async () => {
+    setTriggering(true);
+    try {
+      await api(`/channel/${channelId}/setup`, { method: 'POST' });
+      setTriggered(true);
+      addNotification('info', 'Channel setup started');
+    } catch (err) {
+      addNotification('error', `Setup trigger failed: ${err.error || 'Unknown error'}`);
+    } finally { setTriggering(false); }
+  };
+
+  const ch = channel;
+  const brand = ch?.brand || {};
+  const hasBrand = Boolean(brand.primary_color);
+  const hasLogo = Boolean(brand.logo_s3);
+  const hasIntro = Boolean(brand.intro_s3);
+  const hasVoice = Boolean(ch?.voice_id);
+
+  const steps = [
+    { label: 'Brand Design', sublabel: 'AI generates color palette, font & LUT', done: hasBrand, icon: '🎨' },
+    { label: 'Logo Generation', sublabel: 'Nova Canvas creates channel logo', done: hasLogo, icon: '🖼️' },
+    { label: 'Intro / Outro', sublabel: 'Nova Reel renders bumpers', done: hasIntro, icon: '🎬' },
+    { label: 'Voice Setup', sublabel: 'Select your ElevenLabs narrator voice', done: hasVoice, icon: '🎙️' },
+  ];
+
+  const doneCount = steps.filter(s => s.done).length;
+  const allDone = doneCount === steps.length;
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <div className="border border-accent-purple/30 rounded-2xl bg-accent-purple/5 p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-sm font-semibold text-text-primary">Channel Setup In Progress</h3>
+            <p className="text-xs text-text-muted mt-0.5">AI is building your brand identity — this takes ~2-3 minutes</p>
+          </div>
+          <span className="text-xs font-mono text-accent-purple">{doneCount}/{steps.length}</span>
+        </div>
+
+        {/* Progress bar */}
+        <div className="w-full bg-raised rounded-full h-1.5 mb-5">
+          <div className="h-1.5 rounded-full bg-accent-purple transition-all duration-700" style={{ width: `${(doneCount / steps.length) * 100}%` }} />
+        </div>
+
+        <div className="space-y-3">
+          {steps.map((s, i) => (
+            <div key={i} className={`flex items-start gap-3 p-3 rounded-xl transition-colors ${s.done ? 'bg-accent-green/5 border border-accent-green/20' : i === doneCount ? 'bg-accent-purple/10 border border-accent-purple/20' : 'bg-raised/30 border border-border/50'}`}>
+              <span className="text-base mt-0.5">{s.icon}</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className={`text-sm font-medium ${s.done ? 'text-accent-green' : i === doneCount ? 'text-text-primary' : 'text-text-muted'}`}>{s.label}</span>
+                  {s.done && <span className="text-accent-green text-xs">✓</span>}
+                  {!s.done && i === doneCount && <span className="inline-block w-3 h-3 rounded-full bg-accent-purple animate-pulse" />}
+                </div>
+                <p className="text-[11px] text-text-muted">{s.sublabel}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {!triggered && !hasBrand && (
+          <button onClick={handleTrigger} disabled={triggering}
+            className="mt-4 px-5 py-2 rounded-xl text-sm font-semibold text-white disabled:opacity-40 hover:opacity-90 transition-opacity"
+            style={{ background: 'linear-gradient(135deg, #8B5CF6, #6366F1)' }}>
+            {triggering ? 'Starting...' : '▶ Start Setup Now'}
+          </button>
+        )}
+      </div>
+
+      {/* Brand preview when ready */}
+      {hasBrand && (
+        <div className="border border-border rounded-2xl bg-surface p-5">
+          <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">Brand Kit Preview</h3>
+          <div className="flex items-center gap-4 mb-4">
+            <div className="w-16 h-16 rounded-xl overflow-hidden flex items-center justify-center border border-border" style={{ background: `linear-gradient(135deg, ${brand.primary_color || '#4F6EF7'}, ${brand.accent_color || '#8B5CF6'})` }}>
+              {hasLogo ? (
+                <img src={brand.logo_url || ''} alt="Logo" className="w-full h-full object-contain p-2" />
+              ) : (
+                <span className="text-white font-bold text-lg">{(ch?.name || 'N').split(' ').map(w => w[0]).join('').slice(0, 2)}</span>
+              )}
+            </div>
+            <div>
+              <div className="flex gap-2 mb-1">
+                {[brand.primary_color, brand.secondary_color, brand.accent_color].filter(Boolean).map((c, i) => (
+                  <div key={i} className="w-6 h-6 rounded-full border border-border/50" style={{ background: c }} title={c} />
+                ))}
+              </div>
+              <p className="text-xs text-text-muted">Font: <span className="text-text-secondary">{brand.font || '—'}</span></p>
+              <p className="text-xs text-text-muted">LUT: <span className="text-accent-cyan font-mono">{brand.lut_preset || '—'}</span></p>
+            </div>
+          </div>
+          {hasIntro && (
+            <div className="mb-3">
+              <p className="text-[10px] text-text-muted uppercase tracking-widest mb-1.5">Intro</p>
+              <video controls preload="none" className="w-full rounded-lg bg-black" style={{ maxHeight: '100px' }}>
+                <source src={brand.intro_url || ''} type="video/mp4" />
+              </video>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Voice picker — always shown during setup, even if brand is done */}
+      <VoicePicker channelId={channelId} currentVoiceId={ch?.voice_id} />
+    </div>
+  );
+}
+
+// ── Voice Picker ─────────────────────────────────────────────────────────────
+function VoicePicker({ channelId, currentVoiceId }) {
+  const { addNotification } = useContext(AppContext);
+  const [voices, setVoices] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState(currentVoiceId || null);
+  const [saving, setSaving] = useState(false);
+  const [playing, setPlaying] = useState(null);
+  const [filter, setFilter] = useState('');
+  const audioRef = React.useRef(null);
+
+  useEffect(() => { setSelected(currentVoiceId || null); }, [currentVoiceId]);
+
+  const loadVoices = async () => {
+    setLoading(true);
+    try {
+      const data = await api('/channel/voices');
+      setVoices(data.voices || []);
+    } catch (err) {
+      addNotification('error', `Failed to load voices: ${err.error || 'Unknown error'}`);
+    } finally { setLoading(false); }
+  };
+
+  const handlePlay = (voice) => {
+    if (playing === voice.voice_id) {
+      audioRef.current?.pause();
+      setPlaying(null);
+      return;
+    }
+    if (audioRef.current) { audioRef.current.pause(); }
+    if (voice.preview_url) {
+      audioRef.current = new Audio(voice.preview_url);
+      audioRef.current.play().catch(() => {});
+      audioRef.current.onended = () => setPlaying(null);
+      setPlaying(voice.voice_id);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      await api(`/channel/${channelId}/brand`, { method: 'PUT', body: JSON.stringify({ voice_id: selected }) });
+      addNotification('success', 'Voice saved successfully');
+    } catch (err) {
+      addNotification('error', `Failed to save voice: ${err.error || 'Unknown error'}`);
+    } finally { setSaving(false); }
+  };
+
+  const filtered = voices.filter(v =>
+    !filter || v.name.toLowerCase().includes(filter.toLowerCase()) ||
+    Object.values(v.labels || {}).some(l => String(l).toLowerCase().includes(filter.toLowerCase()))
+  );
+
+  return (
+    <div className="border border-border rounded-2xl bg-surface p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest">Voice Selection</h3>
+          {currentVoiceId && <p className="text-xs text-accent-cyan font-mono mt-0.5">Current: {currentVoiceId}</p>}
+        </div>
+        {voices.length === 0 ? (
+          <button onClick={loadVoices} disabled={loading}
+            className="px-4 py-1.5 rounded-xl text-xs font-semibold border border-accent-blue/30 text-accent-blue hover:bg-accent-blue/10 transition-colors disabled:opacity-40">
+            {loading ? 'Loading...' : '🎙️ Load Voices'}
+          </button>
+        ) : (
+          <span className="text-xs text-text-muted">{voices.length} voices</span>
+        )}
+      </div>
+
+      {voices.length > 0 && (
+        <>
+          <input type="text" value={filter} onChange={e => setFilter(e.target.value)}
+            placeholder="Filter by name, accent, gender..."
+            className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-text-primary placeholder:text-text-muted focus:border-accent-blue mb-3" />
+
+          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+            {filtered.map(v => (
+              <div key={v.voice_id}
+                onClick={() => setSelected(v.voice_id)}
+                className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer border transition-all ${selected === v.voice_id ? 'border-accent-blue bg-accent-blue/10' : 'border-border hover:border-border-bright hover:bg-raised/50'}`}>
+                <button onClick={e => { e.stopPropagation(); handlePlay(v); }}
+                  className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm border transition-colors ${playing === v.voice_id ? 'bg-accent-cyan/20 border-accent-cyan text-accent-cyan' : 'bg-raised border-border text-text-muted hover:text-text-primary'}`}
+                  title="Preview voice">
+                  {playing === v.voice_id ? '⏸' : '▶'}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-text-primary truncate">{v.name}</span>
+                    {selected === v.voice_id && <span className="text-accent-blue text-xs shrink-0">✓</span>}
+                  </div>
+                  {v.labels && Object.keys(v.labels).length > 0 && (
+                    <div className="flex gap-1.5 mt-1 flex-wrap">
+                      {Object.entries(v.labels).slice(0, 4).map(([k, val]) => (
+                        <span key={k} className="px-1.5 py-0.5 rounded text-[10px] bg-raised border border-border text-text-muted capitalize">{val}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {filtered.length === 0 && <p className="text-sm text-text-muted text-center py-3">No voices match "{filter}"</p>}
+          </div>
+
+          {selected && (
+            <div className="mt-4 pt-4 border-t border-border flex items-center justify-between">
+              <span className="text-xs text-text-muted">Selected: <span className="text-text-primary font-mono">{voices.find(v => v.voice_id === selected)?.name || selected}</span></span>
+              <button onClick={handleSave} disabled={saving || selected === currentVoiceId}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-white disabled:opacity-40 hover:opacity-90 transition-opacity"
+                style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
+                {saving ? 'Saving...' : selected === currentVoiceId ? 'Already Set' : 'Save Voice'}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // VIEW 3 — CHANNEL DETAIL
 // ═════════════════════════════════════════════════════════════════════════════
 function ChannelDetail({ channelId }) {
@@ -790,22 +1041,19 @@ function ChannelDetail({ channelId }) {
   const [videos, setVideos] = useState([]);
   const [videosLoading, setVideosLoading] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      setLoading(true);
-      try {
-        const data = await api(`/channel/${channelId}`);
-        if (!cancelled) setChannel(data);
-      } catch {
-        if (!cancelled) addNotification('error', 'Failed to load channel');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    load();
-    return () => { cancelled = true; };
+  const loadChannel = React.useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    try {
+      const data = await api(`/channel/${channelId}`);
+      setChannel(data.channel || data);
+    } catch {
+      if (!silent) addNotification('error', 'Failed to load channel');
+    } finally {
+      if (!silent) setLoading(false);
+    }
   }, [channelId]);
+
+  useEffect(() => { loadChannel(); }, [loadChannel]);
 
   useEffect(() => {
     if (tab === 'videos' && channel) {
@@ -884,10 +1132,16 @@ function ChannelDetail({ channelId }) {
         ))}
       </div>
 
-      {tab === 'overview' && <OverviewTab channel={ch} />}
-      {tab === 'videos' && <VideosTab channel={ch} videos={videos} loading={videosLoading} />}
-      {tab === 'shorts' && <ShortsTab channel={ch} />}
-      {tab === 'settings' && <SettingsTab channel={ch} />}
+      {status === 'setting_up' ? (
+        <ChannelSetupWizard channelId={channelId} onComplete={() => loadChannel()} />
+      ) : (
+        <>
+          {tab === 'overview' && <OverviewTab channel={ch} />}
+          {tab === 'videos' && <VideosTab channel={ch} videos={videos} loading={videosLoading} />}
+          {tab === 'shorts' && <ShortsTab channel={ch} />}
+          {tab === 'settings' && <SettingsTab channel={ch} onUpdated={() => loadChannel(true)} />}
+        </>
+      )}
     </div>
   );
 }
@@ -896,6 +1150,23 @@ function ChannelDetail({ channelId }) {
 function OverviewTab({ channel }) {
   const ch = channel;
   const brand = ch.brand || {};
+  const { addNotification } = useContext(AppContext);
+  const [setupLoading, setSetupLoading] = React.useState(false);
+
+  const triggerBrandSetup = async () => {
+    setSetupLoading(true);
+    try {
+      await api(`/channel/${ch.channel_id}/setup`, { method: 'POST' });
+      addNotification('info', 'Brand kit generation started — logo, intro & outro will appear in ~2 min. Refresh to see updates.');
+    } catch (err) {
+      addNotification('error', `Brand setup failed: ${err.error || 'Unknown error'}`);
+    } finally {
+      setSetupLoading(false);
+    }
+  };
+
+  const hasBrand = !!(brand.logo_s3 || brand.intro_s3 || brand.outro_s3);
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
       <div className="lg:col-span-2 space-y-5">
@@ -939,6 +1210,27 @@ function OverviewTab({ channel }) {
               </video>
             </div>
           )}
+
+          <div className="mt-4 pt-3 border-t border-border/50">
+            <button
+              onClick={triggerBrandSetup}
+              disabled={setupLoading}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/30 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {setupLoading ? (
+                <><span className="animate-spin text-base">⟳</span> Generating…</>
+              ) : hasBrand ? (
+                <><span>🔄</span> Regenerate Logo &amp; Intro/Outro</>
+              ) : (
+                <><span>✨</span> Generate Logo &amp; Intro/Outro</>
+              )}
+            </button>
+            {!hasBrand && (
+              <p className="text-[10px] text-text-muted text-center mt-1">
+                Generates logo, intro &amp; outro using Claude + Nova
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1158,7 +1450,7 @@ function ShortsTab({ channel }) {
 }
 
 // ── Settings Tab ──────────────────────────────────────────────────────────────
-function SettingsTab({ channel }) {
+function SettingsTab({ channel, onUpdated }) {
   const { addNotification, navigate } = useContext(AppContext);
   const [name, setName] = useState(channel.name || '');
   const [niche, setNiche] = useState(channel.niche || '');
@@ -1212,7 +1504,7 @@ function SettingsTab({ channel }) {
 
       <div className="border border-border rounded-2xl bg-surface p-5">
         <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest mb-4">Voice</h3>
-        <p className="text-sm text-text-secondary">ElevenLabs voice_id: <span className="font-mono text-accent-cyan">{channel.voice_id || 'Not configured'}</span></p>
+        <VoicePicker channelId={channel.channel_id} currentVoiceId={channel.voice_id} />
       </div>
 
       <div className="border border-border rounded-2xl bg-surface p-5">
@@ -1820,6 +2112,10 @@ function SystemStatus() {
         const data = await api('/health');
         setHealth(data);
       } catch { setHealth({ status: 'unreachable', checks: {} }); }
+      try {
+        const runsData = await api('/runs');
+        setRecentRuns(runsData.runs || []);
+      } catch {}
       finally { setLoading(false); }
     };
     load();

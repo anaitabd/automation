@@ -75,6 +75,30 @@ data "archive_file" "api" {
   output_path = "${var.project_root}/terraform/.build/lambdas/nexus-api.zip"
   excludes    = ["__pycache__", "*.pyc"]
 }
+data "archive_file" "channel_setup" {
+  type        = "zip"
+  source_dir  = "${var.project_root}/lambdas/nexus-channel-setup"
+  output_path = "${var.project_root}/terraform/.build/lambdas/nexus-channel-setup.zip"
+  excludes    = ["__pycache__", "*.pyc"]
+}
+data "archive_file" "brand_designer" {
+  type        = "zip"
+  source_dir  = "${var.project_root}/lambdas/nexus-brand-designer"
+  output_path = "${var.project_root}/terraform/.build/lambdas/nexus-brand-designer.zip"
+  excludes    = ["__pycache__", "*.pyc"]
+}
+data "archive_file" "logo_gen" {
+  type        = "zip"
+  source_dir  = "${var.project_root}/lambdas/nexus-logo-gen"
+  output_path = "${var.project_root}/terraform/.build/lambdas/nexus-logo-gen.zip"
+  excludes    = ["__pycache__", "*.pyc"]
+}
+data "archive_file" "intro_outro" {
+  type        = "zip"
+  source_dir  = "${var.project_root}/lambdas/nexus-intro-outro"
+  output_path = "${var.project_root}/terraform/.build/lambdas/nexus-intro-outro.zip"
+  excludes    = ["__pycache__", "*.pyc"]
+}
 
 resource "aws_lambda_function" "research" {
   function_name    = "nexus-research"
@@ -178,13 +202,73 @@ resource "aws_lambda_function" "api_handler" {
   memory_size      = 256
   timeout          = 30
   role             = var.api_role_arn
+  layers           = [aws_lambda_layer_version.api.arn]
   environment {
     variables = {
       STATE_MACHINE_ARN = var.state_machine_arn
       OUTPUTS_BUCKET    = var.outputs_bucket_name
+      ASSETS_BUCKET     = var.assets_bucket_name
+      CONFIG_BUCKET     = var.config_bucket_name
       ECS_SUBNETS       = jsonencode(var.public_subnet_ids)
     }
   }
+}
+
+# ── Channel brand/setup Lambdas ──────────────────────────────────────────────
+resource "aws_lambda_function" "channel_setup" {
+  function_name    = "nexus-channel-setup"
+  filename         = data.archive_file.channel_setup.output_path
+  source_code_hash = data.archive_file.channel_setup.output_base64sha256
+  handler          = "handler.lambda_handler"
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  memory_size      = 256
+  timeout          = 300
+  role             = var.channel_setup_role_arn
+  layers           = [aws_lambda_layer_version.api.arn]
+  environment { variables = local.common_env }
+}
+
+resource "aws_lambda_function" "brand_designer" {
+  function_name    = "nexus-brand-designer"
+  filename         = data.archive_file.brand_designer.output_path
+  source_code_hash = data.archive_file.brand_designer.output_base64sha256
+  handler          = "handler.lambda_handler"
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  memory_size      = 512
+  timeout          = 300
+  role             = var.channel_setup_role_arn
+  layers           = [aws_lambda_layer_version.api.arn]
+  environment { variables = local.common_env }
+}
+
+resource "aws_lambda_function" "logo_gen" {
+  function_name    = "nexus-logo-gen"
+  filename         = data.archive_file.logo_gen.output_path
+  source_code_hash = data.archive_file.logo_gen.output_base64sha256
+  handler          = "handler.lambda_handler"
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  memory_size      = 512
+  timeout          = 300
+  role             = var.channel_setup_role_arn
+  layers           = [aws_lambda_layer_version.api.arn]
+  environment { variables = local.common_env }
+}
+
+resource "aws_lambda_function" "intro_outro" {
+  function_name    = "nexus-intro-outro"
+  filename         = data.archive_file.intro_outro.output_path
+  source_code_hash = data.archive_file.intro_outro.output_base64sha256
+  handler          = "handler.lambda_handler"
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  memory_size      = 1024
+  timeout          = 600
+  role             = var.channel_setup_role_arn
+  layers           = [aws_lambda_layer_version.ffmpeg.arn, aws_lambda_layer_version.api.arn]
+  environment { variables = local.common_env }
 }
 
 # ═══════════════════════════════════════════════════════════

@@ -279,7 +279,7 @@ def get_secret(name: str) -> dict:
 
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
-BEDROCK_MODEL_ID_DEFAULT = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-3-sonnet-20240229-v1:0"
 
 # Set dynamically per-invocation from the profile's llm.script_model
 _active_model_id: str = BEDROCK_MODEL_ID_DEFAULT
@@ -874,6 +874,7 @@ def lambda_handler(event: dict, context) -> dict:
             "tags": script.get("tags", []),
             "total_duration_estimate": script.get("total_duration_estimate", 0),
             "scene_count": len(script.get("scenes", [])),
+            "section_count": len(script.get("scenes", [])),
             "factual_confidence": script.get("factual_confidence", "unknown"),
         }
 

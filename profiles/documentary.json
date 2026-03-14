@@ -1,11 +1,11 @@
 {
   "name": "documentary",
   "llm": {
-    "script_model": "anthropic.claude-sonnet-4-20250514-v1:0",
-    "hook_model": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "script_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
+    "hook_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
     "research_model": "perplexity/sonar-pro",
-    "visual_cue_model": "anthropic.claude-sonnet-4-20250514-v1:0",
-    "condenser_model": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "visual_cue_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
+    "condenser_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
     "script_passes": ["structure", "depth", "hook_polish", "fact_integrity", "pacing"]
   },
   "voice": {

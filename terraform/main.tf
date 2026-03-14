@@ -61,6 +61,7 @@ module "compute" {
   upload_role_arn        = module.identity.upload_role_arn
   notify_role_arn        = module.identity.notify_role_arn
   api_role_arn           = module.identity.api_role_arn
+  channel_setup_role_arn = module.identity.channel_setup_role_arn
   ecs_execution_role_arn = module.identity.ecs_execution_role_arn
   ecs_task_role_arn      = module.identity.ecs_task_role_arn
   mediaconvert_role_arn  = module.identity.mediaconvert_role_arn

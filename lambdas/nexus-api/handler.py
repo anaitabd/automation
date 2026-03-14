@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import urllib.request
 import uuid
 from datetime import datetime
 
@@ -21,6 +22,32 @@ CHANNEL_SETUP_FUNCTION = os.environ.get("CHANNEL_SETUP_FUNCTION", "nexus-channel
 
 sfn = boto3.client("stepfunctions")
 s3 = boto3.client("s3")
+
+
+def _enrich_channel(channel: dict) -> dict:
+    """Add presigned URLs (logo_url, intro_url, outro_url) from ASSETS_BUCKET to a channel dict."""
+    brand = channel.get("brand") or {}
+    if isinstance(brand, str):
+        try:
+            brand = json.loads(brand)
+        except Exception:
+            brand = {}
+    for s3_field, url_field in (("logo_s3", "logo_url"), ("intro_s3", "intro_url"), ("outro_s3", "outro_url")):
+        key = brand.get(s3_field, "")
+        if key:
+            try:
+                brand[url_field] = s3.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": ASSETS_BUCKET, "Key": key},
+                    ExpiresIn=3600,
+                )
+            except Exception:
+                brand[url_field] = ""
+        else:
+            brand[url_field] = ""
+    channel["brand"] = brand
+    return channel
+
 
 PIPELINE_STEPS = ["Research", "Script", "Audio", "Visuals", "Editor", "Shorts", "Thumbnail", "Upload", "Notify"]
 VALID_SHORTS_TIERS = {"micro", "short", "mid", "full"}
@@ -443,7 +470,7 @@ def _handle_resume(body: dict) -> dict:
         script_meta = {
             "script_s3_key": f"{run_id}/script.json",
             "title": sd.get("title", ""),
-            "section_count": sd.get("section_count", len(sd.get("sections", []))),
+            "section_count": sd.get("section_count") or sd.get("scene_count") or len(sd.get("scenes", sd.get("sections", []))),
             "total_duration_estimate": sd.get("total_duration_estimate", 600),
             "niche": sd.get("niche", ""),
             "profile": sd.get("profile", "documentary"),
@@ -555,6 +582,37 @@ def _handle_health() -> dict:
     )
 
 
+def _handle_run_list() -> dict:
+    """List recent pipeline executions across RUNNING, SUCCEEDED, FAILED."""
+    try:
+        all_runs = []
+        for status_filter in ("RUNNING", "SUCCEEDED", "FAILED"):
+            resp = sfn.list_executions(
+                stateMachineArn=STATE_MACHINE_ARN,
+                statusFilter=status_filter,
+                maxResults=15,
+            )
+            for ex in resp.get("executions", []):
+                start = ex.get("startDate")
+                stop = ex.get("stopDate")
+                elapsed = None
+                if start:
+                    end_ts = stop or datetime.now(start.tzinfo)
+                    elapsed = round((end_ts - start).total_seconds(), 1)
+                all_runs.append({
+                    "run_id": ex["name"],
+                    "status": ex["status"],
+                    "start_date": start.isoformat() if start else None,
+                    "stop_date": stop.isoformat() if stop else None,
+                    "elapsed_sec": elapsed,
+                })
+        all_runs.sort(key=lambda r: r.get("start_date") or "", reverse=True)
+        return _response(200, {"runs": all_runs[:30]})
+    except Exception as exc:
+        log.exception("runs list error")
+        return _response(500, {"error": str(exc)})
+
+
 def lambda_handler(event: dict, context) -> dict:
     method = event.get("httpMethod", "")
     path = event.get("path", "")
@@ -565,6 +623,9 @@ def lambda_handler(event: dict, context) -> dict:
 
     if method == "GET" and path == "/health":
         return _handle_health()
+
+    if method == "GET" and path == "/runs":
+        return _handle_run_list()
 
     if not _check_api_key(event):
         return _response(401, {"error": "Missing or invalid x-api-key header"})
@@ -590,6 +651,16 @@ def lambda_handler(event: dict, context) -> dict:
         return _handle_outputs(run_id)
 
     # ── Channel CRUD routes (FIX 4) ──
+    elif method == "GET" and path == "/channel/voices":
+        return _handle_voices_list()
+
+    elif method == "POST" and "/channel/" in path and path.endswith("/setup"):
+        channel_id = path_params.get("id", "")
+        if not channel_id:
+            parts = path.split("/channel/")[-1].split("/")
+            channel_id = parts[0] if parts else ""
+        return _handle_channel_setup_trigger(channel_id)
+
     elif method == "POST" and path == "/channel/create":
         body = json.loads(event.get("body") or "{}")
         return _handle_channel_create(body)
@@ -623,6 +694,196 @@ def lambda_handler(event: dict, context) -> dict:
         channel_id = path_params.get("id", "")
         if not channel_id:
             channel_id = path.split("/channel/")[-1].rstrip("/")
-        return _handle_channel_get(channel_id)
+            return _handle_channel_get(channel_id)
 
     return _response(404, {"error": "Not found"})
+
+
+# ── Channel CRUD implementations ──────────────────────────────────────────────
+
+def _handle_channel_list(params: dict) -> dict:
+    try:
+        db.bootstrap_schema()
+        status_filter = params.get("status") or None
+        channels = db.list_channels(status_filter=status_filter)
+        return _response(200, {"channels": [_enrich_channel(c) for c in channels]})
+    except Exception as exc:
+        log.exception("channel list error")
+        return _response(500, {"error": str(exc)})
+
+
+def _handle_channel_create(body: dict) -> dict:
+    name = (body.get("name") or body.get("channel_name") or "").strip()
+    niche = (body.get("niche") or "").strip()
+    profile = body.get("profile", "documentary")
+    if not name or not niche:
+        return _response(400, {"error": "name and niche are required"})
+    if profile not in ("documentary", "finance", "entertainment"):
+        return _response(400, {"error": "profile must be documentary, finance, or entertainment"})
+    try:
+        db.bootstrap_schema()
+        channel_id = f"ch_{uuid.uuid4().hex[:12]}"
+        channel = db.create_channel(
+            channel_id=channel_id,
+            name=name,
+            niche=niche,
+            profile=profile,
+            style_hints=body.get("style_hints", ""),
+            schedule=body.get("schedule"),
+        )
+        # Trigger channel setup asynchronously (brand design, logo, intro/outro)
+        try:
+            lam = boto3.client("lambda")
+            lam.invoke(
+                FunctionName=CHANNEL_SETUP_FUNCTION,
+                InvocationType="Event",
+                Payload=json.dumps({
+                    "channel_id": channel_id,
+                    "channel_name": name,
+                    "niche": niche,
+                    "profile": profile,
+                    "style_hints": body.get("style_hints", ""),
+                }).encode(),
+            )
+        except Exception as setup_exc:
+            log.warning("Failed to auto-trigger channel setup: %s", setup_exc)
+        return _response(201, {"channel": channel})
+    except Exception as exc:
+        log.exception("channel create error")
+        return _response(500, {"error": str(exc)})
+
+
+def _handle_channel_get(channel_id: str) -> dict:
+    if not channel_id:
+        return _response(400, {"error": "channel_id is required"})
+    try:
+        db.bootstrap_schema()
+        channel = db.get_channel(channel_id)
+        if channel is None:
+            return _response(404, {"error": "Channel not found"})
+        return _response(200, {"channel": _enrich_channel(channel)})
+    except Exception as exc:
+        log.exception("channel get error")
+        return _response(500, {"error": str(exc)})
+
+
+def _handle_channel_delete(channel_id: str) -> dict:
+    if not channel_id:
+        return _response(400, {"error": "channel_id is required"})
+    try:
+        db.bootstrap_schema()
+        deleted = db.archive_channel(channel_id)
+        if not deleted:
+            return _response(404, {"error": "Channel not found"})
+        return _response(200, {"deleted": True, "channel_id": channel_id})
+    except Exception as exc:
+        log.exception("channel delete error")
+        return _response(500, {"error": str(exc)})
+
+
+def _handle_channel_brand_update(channel_id: str, body: dict) -> dict:
+    if not channel_id:
+        return _response(400, {"error": "channel_id is required"})
+    incoming_brand = body.get("brand") or {}
+    voice_id = body.get("voice_id", "")
+    status = body.get("status", "")
+    try:
+        db.bootstrap_schema()
+        # Fetch existing channel to merge brand (avoid wiping logo/colors when only voice_id is sent)
+        existing = db.get_channel(channel_id)
+        if existing is None:
+            return _response(404, {"error": "Channel not found"})
+        existing_brand = existing.get("brand") or {}
+        if isinstance(existing_brand, str):
+            try:
+                existing_brand = json.loads(existing_brand)
+            except Exception:
+                existing_brand = {}
+        merged_brand = {**existing_brand, **incoming_brand}
+        effective_voice = voice_id or existing.get("voice_id", "")
+        effective_status = status or existing.get("status", "active")
+        channel = db.update_channel_brand(channel_id, brand=merged_brand, voice_id=effective_voice, status=effective_status)
+        if channel is None:
+            return _response(404, {"error": "Channel not found"})
+        return _response(200, {"channel": _enrich_channel(channel)})
+    except Exception as exc:
+        log.exception("channel brand update error")
+        return _response(500, {"error": str(exc)})
+
+
+def _handle_channel_videos(channel_id: str) -> dict:
+    if not channel_id:
+        return _response(400, {"error": "channel_id is required"})
+    try:
+        db.bootstrap_schema()
+        videos = db.get_channel_videos(channel_id)
+        return _response(200, {"videos": videos})
+    except Exception as exc:
+        log.exception("channel videos error")
+        return _response(500, {"error": str(exc)})
+
+
+# ── Voices ─────────────────────────────────────────────────────────────────────
+
+def _handle_voices_list() -> dict:
+    sm = boto3.client("secretsmanager")
+    try:
+        secret = json.loads(sm.get_secret_value(SecretId="nexus/elevenlabs_api_key")["SecretString"])
+        api_key = secret.get("api_key", "")
+    except Exception:
+        return _response(503, {"error": "ElevenLabs API key not configured"})
+
+    if not api_key:
+        return _response(503, {"error": "ElevenLabs API key is empty"})
+
+    try:
+        req = urllib.request.Request(
+            "https://api.elevenlabs.io/v1/voices",
+            headers={"xi-api-key": api_key},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310 — URL is hardcoded, not user-supplied
+            data = json.loads(resp.read())
+        voices = [
+            {
+                "voice_id": v["voice_id"],
+                "name": v["name"],
+                "preview_url": v.get("preview_url", ""),
+                "labels": v.get("labels", {}),
+                "category": v.get("category", ""),
+                "description": v.get("description", ""),
+            }
+            for v in data.get("voices", [])
+        ]
+        return _response(200, {"voices": voices})
+    except Exception as exc:
+        log.warning("ElevenLabs voices fetch failed: %s", exc)
+        return _response(502, {"error": "Failed to fetch voices from ElevenLabs"})
+
+
+# ── Channel Setup Trigger ───────────────────────────────────────────────────────
+
+def _handle_channel_setup_trigger(channel_id: str) -> dict:
+    if not channel_id:
+        return _response(400, {"error": "channel_id is required"})
+    try:
+        db.bootstrap_schema()
+        channel = db.get_channel(channel_id)
+        if not channel:
+            return _response(404, {"error": "Channel not found"})
+        lam = boto3.client("lambda")
+        payload = {
+            "channel_id": channel_id,
+            "channel_name": channel.get("name", ""),
+            "niche": channel.get("niche", ""),
+            "profile": channel.get("profile", "documentary"),
+            "style_hints": channel.get("style_hints", ""),
+        }
+        lam.invoke(
+            FunctionName=CHANNEL_SETUP_FUNCTION,
+            InvocationType="Event",
+            Payload=json.dumps(payload).encode(),
+        )
+        return _response(200, {"started": True, "channel_id": channel_id})
+    except Exception as exc:
+        log.exception("channel setup trigger error")
+        return _response(500, {"error": str(exc)})

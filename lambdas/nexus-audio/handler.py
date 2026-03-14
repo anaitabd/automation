@@ -195,8 +195,8 @@ def _generate_voiceover(script: dict, profile: dict, api_key: str, tmpdir: str) 
     silence_600ms = _make_silence(600, "600ms")
 
     sentences: list[tuple[str, str, str]] = []
-    for section in script.get("sections", []):
-        content = section.get("content", "")
+    for section in (script.get("sections") or script.get("scenes", [])):
+        content = section.get("content") or section.get("narration_text", "")
         default_emotion = section.get("emotion", "neutral")
         parts = content.replace("! ", "!\x00").replace("? ", "?\x00").replace(". ", ".\x00").split("\x00")
         for sent in parts:
@@ -454,11 +454,11 @@ def _inject_sfx(
 
     events: list[tuple[float, str]] = []
     current_time = 5.0
-    for section in script.get("sections", []):
+    for section in (script.get("sections") or script.get("scenes", [])):
         overlay = section.get("visual_cue", {}).get("overlay_type", "none")
         if overlay in sfx_local:
             events.append((current_time, sfx_local[overlay]))
-        current_time += section.get("duration_estimate_sec", 30)
+        current_time += section.get("duration_estimate_sec") or section.get("estimated_duration", 30)
 
     if not events:
         return mixed_path
@@ -553,7 +553,7 @@ def lambda_handler(event: dict, context) -> dict:
         music_mood = profile.get("sound_design", {}).get("music_mood", "tension_atmospheric")
 
         with tempfile.TemporaryDirectory(dir=SCRATCH_DIR if os.path.isdir(SCRATCH_DIR) else None) as tmpdir:
-            log.info("Generating voiceover via ElevenLabs (%d sections)", len(script.get("sections", [])))
+            log.info("Generating voiceover via ElevenLabs (%d sections)", len(script.get("sections") or script.get("scenes", [])))
             voiceover_raw = _generate_voiceover(script, profile, el_api_key, tmpdir)
 
             log.info("Applying audio processing")
