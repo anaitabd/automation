@@ -30,6 +30,7 @@ S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 
 s3 = boto3.client("s3")
+transcribe = boto3.client("transcribe")
 
 PACING_MAP = {
     "[PAUSE]": "...",
@@ -650,6 +651,59 @@ def _upload_to_s3(s3, local_path: str, run_id: str, filename: str) -> str:
     return key
 
 
+def _run_transcribe(run_id: str, mixed_audio_s3_uri: str) -> None:
+    job_name = f"nexus-{run_id}"
+    try:
+        transcribe.start_transcription_job(
+            TranscriptionJobName=job_name,
+            MediaFormat="wav",
+            Media={"MediaFileUri": mixed_audio_s3_uri},
+            OutputBucketName=S3_OUTPUTS_BUCKET,
+            OutputKey=f"{run_id}/audio/transcribe_timestamps.json",
+            Settings={"ShowWordConfidence": True},
+        )
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            time.sleep(5)
+            resp = transcribe.get_transcription_job(TranscriptionJobName=job_name)
+            status = resp["TranscriptionJob"]["TranscriptionJobStatus"]
+            if status == "COMPLETED":
+                break
+            if status == "FAILED":
+                log.warning("[%s] Transcribe job failed — skipping word timestamps", run_id)
+                return
+        else:
+            log.warning("[%s] Transcribe job timed out after 120s — skipping word timestamps", run_id)
+            return
+
+        raw_obj = s3.get_object(
+            Bucket=S3_OUTPUTS_BUCKET,
+            Key=f"{run_id}/audio/transcribe_timestamps.json",
+        )
+        raw = json.loads(raw_obj["Body"].read())
+        items = raw.get("results", {}).get("items", [])
+        words = []
+        for item in items:
+            if item.get("type") != "pronunciation":
+                continue
+            alt = (item.get("alternatives") or [{}])[0]
+            words.append({
+                "word": alt.get("content", ""),
+                "start": float(item.get("start_time", 0)),
+                "end": float(item.get("end_time", 0)),
+                "confidence": float(alt.get("confidence", 0)),
+            })
+        s3.put_object(
+            Bucket=S3_OUTPUTS_BUCKET,
+            Key=f"{run_id}/audio/word_timestamps.json",
+            Body=json.dumps({"words": words}).encode("utf-8"),
+            ContentType="application/json",
+        )
+        log.info("[%s] Word timestamps written to S3 (%d words)", run_id, len(words))
+    except Exception as exc:
+        log.warning("[%s] Transcribe step failed (non-fatal): %s", run_id, exc)
+
+
 def _write_error(run_id: str, step: str, exc: Exception) -> None:
     try:
         s3.put_object(
@@ -728,6 +782,9 @@ def lambda_handler(event: dict, context) -> dict:
                 s3, voiceover_processed, run_id, "voiceover.wav"
             )
             mixed_key = _upload_to_s3(s3, final_audio_path, run_id, "mixed_audio.wav")
+
+        log.info("Submitting mixed audio to Transcribe")
+        _run_transcribe(run_id, f"s3://{S3_ASSETS_BUCKET}/{mixed_key}")
 
         elapsed = time.time() - step_start
         notify_step_complete("audio", run_id, [

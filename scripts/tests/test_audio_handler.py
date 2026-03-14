@@ -365,3 +365,97 @@ class TestPollyFallbackExtended:
         called_kwargs = polly_standard.synthesize_speech.call_args[1]
         assert called_kwargs.get("Engine") == "standard"
         assert called_kwargs.get("TextType") == "text"
+
+
+class TestTranscribeTimestamps:
+    @pytest.mark.unit
+    def test_transcribe_timestamps_written_to_s3(self):
+        h = _load()
+
+        transcribe_mock = MagicMock()
+        transcribe_mock.start_transcription_job.return_value = {}
+        transcribe_mock.get_transcription_job.return_value = {
+            "TranscriptionJob": {"TranscriptionJobStatus": "COMPLETED"}
+        }
+
+        raw_output = json.dumps({
+            "results": {
+                "items": [
+                    {
+                        "type": "pronunciation",
+                        "start_time": "0.0",
+                        "end_time": "0.5",
+                        "alternatives": [{"content": "hello", "confidence": "0.99"}],
+                    },
+                    {
+                        "type": "pronunciation",
+                        "start_time": "0.6",
+                        "end_time": "1.1",
+                        "alternatives": [{"content": "world", "confidence": "0.95"}],
+                    },
+                    {
+                        "type": "punctuation",
+                        "alternatives": [{"content": "."}],
+                    },
+                ]
+            }
+        }).encode("utf-8")
+
+        s3_mock = MagicMock()
+        s3_mock.get_object.return_value = {"Body": io.BytesIO(raw_output)}
+
+        written_body = {}
+
+        def fake_put_object(**kwargs):
+            written_body.update(kwargs)
+
+        s3_mock.put_object.side_effect = fake_put_object
+
+        with patch.object(h, "transcribe", transcribe_mock), \
+             patch.object(h, "s3", s3_mock), \
+             patch("time.sleep"):
+            h._run_transcribe("test-run-id", "s3://nexus-assets/test-run-id/audio/mixed_audio.wav")
+
+        transcribe_mock.start_transcription_job.assert_called_once()
+        call_kwargs = transcribe_mock.start_transcription_job.call_args[1]
+        assert call_kwargs["TranscriptionJobName"] == "nexus-test-run-id"
+        assert call_kwargs["MediaFormat"] == "wav"
+        assert call_kwargs["OutputBucketName"] == h.S3_OUTPUTS_BUCKET
+        assert call_kwargs["OutputKey"] == "test-run-id/audio/transcribe_timestamps.json"
+        assert call_kwargs["Settings"]["ShowWordConfidence"] is True
+
+        assert written_body.get("Key") == "test-run-id/audio/word_timestamps.json"
+        result = json.loads(written_body["Body"])
+        assert len(result["words"]) == 2
+        assert result["words"][0] == {"word": "hello", "start": 0.0, "end": 0.5, "confidence": 0.99}
+        assert result["words"][1] == {"word": "world", "start": 0.6, "end": 1.1, "confidence": 0.95}
+
+    @pytest.mark.unit
+    def test_transcribe_timeout_is_nonfatal(self):
+        h = _load()
+
+        transcribe_mock = MagicMock()
+        transcribe_mock.start_transcription_job.return_value = {}
+        transcribe_mock.get_transcription_job.return_value = {
+            "TranscriptionJob": {"TranscriptionJobStatus": "IN_PROGRESS"}
+        }
+
+        s3_mock = MagicMock()
+
+        call_count = [0]
+        real_time = __import__("time").time
+
+        def fake_time():
+            call_count[0] += 1
+            if call_count[0] <= 1:
+                return 0.0
+            return 200.0
+
+        with patch.object(h, "transcribe", transcribe_mock), \
+             patch.object(h, "s3", s3_mock), \
+             patch("time.sleep"), \
+             patch("time.time", side_effect=fake_time):
+            h._run_transcribe("timeout-run", "s3://nexus-assets/timeout-run/audio/mixed_audio.wav")
+
+        s3_mock.put_object.assert_not_called()
+
