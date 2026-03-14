@@ -1,150 +1,486 @@
-# AGENTS.md
+# AGENTS.md — Nexus Cloud Pipeline
 
-## Big Picture Architecture
-- Cloud entrypoint is API Gateway -> `lambdas/nexus-api/handler.py` (`/run`, `/resume`, `/status/{run_id}`, `/outputs/{run_id}`, `/health`).
-- Dashboard is a single-file React 18 app at `dashboard/index.html`; locally served by `scripts/orchestrator.py` on port 3000, deployed to CloudFront via `terraform/modules/api/`.
-- Dashboard has **three pipeline modes**: `video` (full-length only), `shorts` (short-form only), `combined` (legacy backward-compat, Editor ∥ Shorts). Each mode has its own step array, generate modal, cost calculation, and visual identity (gradient/icon/badge).
-- Authoritative orchestration is `statemachine/nexus_pipeline.asl.json`, wired by Terraform (`terraform/modules/orchestration/`) using `templatefile()` for ARN injection.
-- Heavy media steps run on ECS Fargate (`nexus-audio`, `nexus-visuals`, `nexus-editor`, `nexus-shorts`) with EFS scratch at `/mnt/scratch`; lighter steps stay Lambda.
-- `nexus-shorts` is an optional Fargate module producing 15s/30s/45s/60s vertical short-form videos in parallel with `nexus-editor`. Enabled per-run via `generate_shorts: true` in pipeline input; failures never block the main video.
-- Bucket roles are split: `OUTPUTS_BUCKET` (JSON artifacts, review assets, errors), `ASSETS_BUCKET` (media intermediates), `CONFIG_BUCKET` (profile JSON).
-- Infrastructure is defined in `terraform/` (8 modules: storage, secrets, networking, identity, compute, orchestration, api, observability). Legacy CDK stack is in `infrastructure/nexus_stack.py` (frozen).
+Read this fully before making any change to this repository.
+This file is the single source of truth for AI coding agents.
 
-## Critical Workflows
-- **Terraform deploy**: `bash terraform/scripts/deploy_tf.sh` from repo root — reads `.env`, copies shared utils, builds Lambda layers + ECS images, generates `terraform.tfvars`, runs `terraform apply`.
-- **CDK deploy (legacy/frozen)**: `./deploy.sh` — still functional but superseded by Terraform path.
-- `deploy_tf.sh` copies `lambdas/nexus_pipeline_utils.py` into every `lambdas/nexus-*/` folder before packaging; edit the root shared file, not per-lambda copies.
-- Local pipeline path is `docker compose up --build` plus `orchestrator` (`scripts/orchestrator.py`) for a Step-Functions-like flow and SSE dashboard on port 3000.
-- Tests are Python/pytest-centric: `pytest.ini` scopes to `scripts`; AWS integration checks require `RUN_AWS_TESTS=1`.
-- Practical fast loop: run `python -m pytest scripts/test_check_external.py -v` before touching external-API check logic.
-- Post-deploy validation: `cd terraform && bash scripts/validate_deploy.sh` (checks API, SFN, S3, Lambda, ECS, dry-run execution).
+---
 
-## Codebase Conventions (Project-Specific)
-- Step handlers preserve state keys (`run_id`, `profile`, `dry_run`, plus step outputs) because ASL `ResultSelector`/`Pass` states expect exact field names.
-- Most lambdas cache Secrets Manager reads in module-level dicts (`_cache`) and avoid env-stored API keys.
-- Error pattern is consistent: log, write `s3://<outputs>/{run_id}/errors/{step}.json`, then raise (example: `lambdas/nexus-research/handler.py`).
-- Notifications are first-class: start/complete Discord messages come from `notify_step_start` / `notify_step_complete` in `lambdas/nexus_pipeline_utils.py`.
-- Resume behavior is artifact-driven: both API and CLI (`scripts/resume_run.py`) infer next step from existing S3 keys.
-- Shared media helpers live in `lambdas/shared/` (`nova_canvas.py`, `nova_reel.py`, `motion.py`); Fargate Dockerfiles copy them into the image (see `lambdas/nexus-shorts/Dockerfile`).
-- ASL starts with `Initialize → ResumeRouter` (Choice state); `ResumeRouter` branches on `$.resume_from` to skip completed steps. The handler's `_handle_resume` populates `resume_from` based on S3 artifact detection.
-- Dashboard pipeline split: `VIDEO_PIPELINE_STEPS` (Research→Script→AudioVisuals→Editor→Thumbnail→Notify), `SHORTS_PIPELINE_STEPS` (Research→Script→AudioVisuals→Shorts→Notify), `COMBINED_PIPELINE_STEPS` (original with ContentAssembly parallel). `getPipelineType(runData)` infers type from `pipeline_type` field, `generate_shorts`/`generate_video` flags, or step name analysis. `getPipelineSteps(type)` returns the matching step array.
-- Dashboard modals are split: `GenerateVideoModal` sends `pipeline_type: 'video', generate_shorts: false`, `GenerateShortsModal` sends `pipeline_type: 'shorts', generate_shorts: true`. Modal triggers use `setModal('generate-video')` and `setModal('generate-shorts')`.
-- `PIPELINE_TYPE_META` maps each type to icon, label, gradient, badge CSS, and description — used in PipelineMonitor header, OutputsPanel, and sidebar active runs.
+## What this repo is
 
-## Terraform Module Map
-- `terraform/modules/storage/` — imports pre-existing S3 buckets, creates dashboard bucket, uploads profiles.
-- `terraform/modules/secrets/` — manages all `nexus/*` Secrets Manager secrets with JSON payloads matching handler expectations.
-- `terraform/modules/networking/` — default VPC lookup, EFS file system + access point, NFS security group.
-- `terraform/modules/identity/` — all IAM roles (Lambda, ECS execution/task, MediaConvert, SFN, API) with least-privilege policies.
-- `terraform/modules/compute/` — Lambda functions (zip packaging), ECS cluster, ECR repos, Fargate task definitions with EFS mounts.
-- `terraform/modules/orchestration/` — Step Functions state machine via `templatefile()` on `statemachine/nexus_pipeline.asl.json`.
-- `terraform/modules/api/` — API Gateway REST API (5 routes + CORS), CloudFront distribution for dashboard.
-- `terraform/modules/observability/` — EventBridge schedule (disabled by default), CloudWatch dashboard with Lambda metrics.
+Nexus Cloud is a serverless YouTube automation pipeline running on AWS.
+One API call produces a fully edited, uploaded YouTube video.
 
-## Integrations and Boundaries
-- External services in active use: Perplexity, Bedrock, ElevenLabs, Pexels/Pixabay, Discord, PostgreSQL, YouTube OAuth upload.
-- Canonical secret names are in `terraform/modules/secrets/` (e.g., `nexus/perplexity_api_key`, `nexus/db_credentials`, `nexus/freesound_api_key`).
-- API lambda injects ECS subnet IDs via `ECS_SUBNETS` env; ASL ECS tasks consume `$.subnets` for `AwsvpcConfiguration`.
-- SFN role uses wildcard `arn:aws:lambda:REGION:ACCOUNT:function:nexus-*` pattern to avoid circular module dependencies.
+**Pipeline order (Step Functions):**
+```
+Research (Lambda)
+  → Script (Lambda)
+  → AudioVisuals (Parallel)
+      ├── Audio (ECS Fargate)
+      └── Visuals (ECS Fargate)
+  → MergeParallelOutputs
+  → ContentAssembly (Parallel)
+      ├── Editor (ECS Fargate)
+      └── CheckShortsEnabled → Shorts (ECS Fargate)  [optional, non-fatal]
+  → MergeContentOutputs
+  → Thumbnail (Lambda)
+  → Notify (Lambda)
+```
 
-## High-Impact Gotchas
-- Cloud and local flows are not identical: ASL routes `Thumbnail → Notify` (no Upload task), while `scripts/orchestrator.py` still includes an `Upload` step. Both now run Editor ∥ Shorts in parallel (`_PARALLEL_CONTENT_GROUP`).
-- `README.md` references some tests (`test_repair.py`, `test_drawtext.py`) that are not present; current tests are mainly under `scripts/`.
-- Do not edit generated artifacts (`infrastructure/cdk.out/`, `terraform/.build/`, `__pycache__/`); they create noisy diffs and are not source of truth.
-- SFN ARN in the API handler Lambda env is a pre-computed string (`arn:aws:states:REGION:ACCOUNT:stateMachine:nexus-pipeline`) to break a Terraform circular dependency — if you rename the state machine, update `main.tf` accordingly.
-- Lambda layers are built in `terraform/.build/layers/` by `deploy_tf.sh` using Docker for arm64 cross-compilation; they must exist before `terraform apply`.
-- ECS images must be pushed to ECR before `terraform apply` — `deploy_tf.sh` handles this automatically.
-- `lambdas/nexus-api/handler.py` `_handle_run` does **not** pass `generate_shorts`, `shorts_tiers`, or `channel_id` to the SFN execution input, but the ASL `ResultSelector` references them via `$$.Execution.Input`. Shorts won't trigger unless the handler is patched to forward these fields from the request body.
-- The handler's `PIPELINE_STEPS` list is a flat `["Research", "Script", "Audio", "Visuals", "Editor", "Thumbnail", "Upload", "Notify"]` used for status parsing; it does not reflect the ASL parallel states (`AudioVisuals`, `ContentAssembly`, `MergeParallelOutputs`, `MergeContentOutputs`). Step history parsing may miss parallel branch events.
-- Channel CRUD routes (`/channel/create`, `/channel/list`, `/channel/{id}`, etc.) are called by the dashboard but are **not yet implemented** in `lambdas/nexus-api/handler.py`. Channel setup Lambdas are now mostly implemented: `nexus-channel-setup` (185 lines, orchestrates brand→logo→intro/outro), `nexus-brand-designer` (184 lines, Claude brand kit generation), `nexus-logo-gen` (139 lines, Nova Canvas + Pillow fallback). Only `nexus-intro-outro` remains a stub (no `handler.py`).
+ASL starts with `Initialize → ResumeRouter` (Choice state).
+`ResumeRouter` branches on `$.resume_from` to skip completed steps.
+`_handle_resume` in each handler populates `resume_from` from S3 artifact detection.
 
-## nexus-shorts Module
+---
 
-### Status
-Implemented. `lambdas/nexus-shorts/` (handler + 15 modules + Dockerfile), ASL `ContentAssembly` Parallel branch, `docker-compose.yml` service, and Terraform compute resources (ECR repo, log group, ECS task def in `terraform/modules/compute/main.tf`) all exist.
+## Pipeline modes (dashboard)
 
-### Purpose
-Generates a batch of 4 vertical short-form MP4s (15s / 30s / 45s / 60s) from the same script and brand kit used for the long-form video. Outputs are ready for YouTube Shorts, Instagram Reels, and TikTok.
+Three modes — each has its own step array, generate modal, cost calc, and visual identity:
 
-### File Layout
+| Mode | Field sent | Steps |
+|---|---|---|
+| `video` | `pipeline_type: "video", generate_shorts: false` | Research→Script→AudioVisuals→Editor→Thumbnail→Notify |
+| `shorts` | `pipeline_type: "shorts", generate_shorts: true` | Research→Script→AudioVisuals→Shorts→Notify |
+| `combined` | legacy `generate_shorts: true` | Full with ContentAssembly parallel |
+
+`getPipelineType(runData)` infers type from `pipeline_type`, `generate_shorts`/`generate_video` flags,
+or step name analysis.
+`PIPELINE_TYPE_META` maps each type to icon, label, gradient, badge CSS, and description —
+used in PipelineMonitor header, OutputsPanel, and sidebar active runs.
+`GenerateVideoModal` sends `pipeline_type: 'video', generate_shorts: false`.
+`GenerateShortsModal` sends `pipeline_type: 'shorts', generate_shorts: true`.
+
+**Known bug — do not introduce regressions on this:**
+`lambdas/nexus-api/handler.py` `_handle_run` does NOT currently forward
+`generate_shorts`, `shorts_tiers`, or `channel_id` to the SFN execution input.
+ASL references them via `$$.Execution.Input`. Shorts won't trigger unless
+this handler is patched to forward these fields from the request body.
+
+---
+
+## AWS region and confirmed services
+
+Region: `us-east-1`
+
+All services below are confirmed active on this account:
+
+| Service | Used for |
+|---|---|
+| AWS Bedrock | LLM calls (Claude models only) |
+| Amazon Polly Neural | Primary TTS (Gregory / Matthew / Stephen) |
+| Amazon Transcribe | Word-level timestamps from audio |
+| Amazon Rekognition | B-roll image scoring |
+| Amazon SQS | Upload job queue + DLQ |
+| Amazon SNS | Notification fan-out |
+| Amazon DynamoDB | Run log storage |
+| AWS X-Ray | ECS task tracing |
+| AWS MediaConvert | Video transcoding |
+| AWS Step Functions | Pipeline orchestration |
+| AWS ECS Fargate | Audio, Visuals, Editor, Shorts tasks |
+| AWS Secrets Manager | All API keys (never env vars at runtime) |
+| Amazon S3 | Assets, outputs, config (3 buckets) |
+| Amazon EFS | Shared scratch space at /mnt/scratch |
+
+---
+
+## Bedrock models — use these exact IDs
+
+```python
+# Research, Script passes 1-5, Visuals scoring, Thumbnail
+SONNET = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+# Script pass 6 (final polish) ONLY
+OPUS   = "anthropic.claude-opus-4-5-20251101-v1:0"
+```
+
+Never use or introduce:
+- `anthropic.claude-3-5-sonnet-20241022-v2:0` — outdated
+- `anthropic.claude-3-sonnet-20240229-v1:0` — outdated
+- Any NVIDIA NIM endpoint — removed from this project
+- Any OpenAI endpoint — not used in this project
+- `amazon.nova-2-sonic-v1:0` or `amazon.nova-sonic-v1:0` — speech-input conversational
+  models, NOT text-to-speech. Do not use for TTS under any circumstances.
+
+---
+
+## TTS provider hierarchy — always implement as 3-tier cascade
+
+Never call a single TTS provider directly. Always use this cascade:
+
+```
+Tier 1: ElevenLabs        — best quality, use when quota available
+Tier 2: Polly Neural      — SSML emotion mapping, engine="neural", OutputFormat="mp3"
+Tier 3: Polly Standard    — guaranteed fallback, always succeeds, no SSML
+```
+
+Trigger fallback to Tier 2 on ElevenLabs: HTTP 401, HTTP 429,
+or response body containing `"quota_exceeded"` or `"credits_used"`.
+Trigger fallback to Tier 3 if Tier 2 raises any exception.
+The cascade function must never raise unless all 3 tiers fail.
+
+**SSML emotion mapping for Tier 2:**
+```python
+EMOTION_SSML = {
+    "tense":         {"rate": "slow",   "pitch": "-2st"},
+    "excited":       {"rate": "fast",   "pitch": "+3st"},
+    "reflective":    {"rate": "x-slow", "pitch": "-3st"},
+    "authoritative": {"rate": "medium", "pitch": "-1st"},
+    "somber":        {"rate": "slow",   "pitch": "-4st"},
+    "hopeful":       {"rate": "medium", "pitch": "+1st"},
+    "neutral":       {"rate": "medium", "pitch": "0st"},
+}
+```
+
+SSML wrapper:
+```xml
+<speak>
+  <prosody rate="{rate}" pitch="{pitch}">
+    <amazon:effect name="drc">{text}</amazon:effect>
+  </prosody>
+</speak>
+```
+
+**Polly voice per profile** — read `polly_voice_id` from profile dict first,
+use this map as fallback:
+```python
+POLLY_VOICE_DEFAULTS = {
+    "documentary":   "Gregory",
+    "finance":       "Matthew",
+    "entertainment": "Stephen",
+}
+```
+
+---
+
+## Secret fetching — strict rules
+
+All secrets come from AWS Secrets Manager. Never from `os.environ` at runtime.
+
+Every Lambda and ECS handler uses this exact pattern:
+```python
+_cache = {}
+
+def _get_secret(key: str) -> str:
+    if key not in _cache:
+        client = boto3.client('secretsmanager')
+        _cache[key] = json.loads(
+            client.get_secret_value(SecretId=key)['SecretString']
+        )
+    return _cache[key]
+```
+
+Canonical secret names (defined in `terraform/modules/secrets/`):
+- `nexus/elevenlabs_api_key`  → key: `api_key`
+- `nexus/perplexity_api_key`  → key: `api_key`
+- `nexus/pexels_api_key`      → key: `api_key`
+- `nexus/pixabay_api_key`     → key: `api_key`
+- `nexus/freesound_api_key`   → key: `api_key`
+- `nexus/youtube_credentials` → keys: `client_id`, `client_secret`, `refresh_token`, `access_token`
+- `nexus/db_credentials`      → keys: `host`, `port`, `dbname`, `user`, `password`
+- `nexus/api_key`             → key: `key`
+
+Do not add new secrets outside the `nexus/` prefix.
+Do not read secrets from `os.environ` in any Lambda or ECS handler.
+
+---
+
+## Infrastructure — deploy rules
+
+**Primary deploy path: Terraform only.**
+```
+terraform/
+  modules/
+    storage/       ← S3 buckets (imports pre-existing + dashboard bucket + profile uploads)
+    secrets/       ← Secrets Manager (all nexus/* secrets)
+    networking/    ← Default VPC lookup, EFS file system + access point, NFS SG
+    identity/      ← ALL IAM roles — edit here for permissions
+    compute/       ← Lambda zips, ECS cluster, ECR repos, Fargate task definitions
+    orchestration/ ← Step Functions state machine via templatefile()
+    api/           ← API Gateway REST (5 routes + CORS) + CloudFront
+    observability/ ← EventBridge schedule (disabled), CloudWatch dashboard
+```
+
+**Never run `terraform apply` directly.** Always:
+```bash
+bash terraform/scripts/deploy_tf.sh
+```
+
+This script: reads `.env` → copies shared utils → builds Lambda layers (arm64 via Docker)
+→ builds + pushes ECS images to ECR → generates `terraform.tfvars` → runs `terraform apply`.
+
+**Legacy CDK (`infrastructure/nexus_stack.py`) is frozen — never modify it.**
+
+**Shared utils rule:**
+`deploy_tf.sh` copies `lambdas/nexus_pipeline_utils.py` into every `lambdas/nexus-*/` folder.
+Always edit the root shared file — never the per-lambda copies.
+
+**IAM rule:**
+When adding any new AWS service call, always add the IAM action to the correct role
+in `terraform/modules/identity/main.tf` in the same commit.
+
+Roles to edit:
+- **ECS task role** — used by nexus-audio, nexus-visuals, nexus-editor, nexus-shorts
+- **Lambda execution role** — used by all Lambda functions
+- **Step Functions role** — uses wildcard `arn:aws:lambda:REGION:ACCOUNT:function:nexus-*`
+
+**SFN ARN note:**
+The SFN ARN in the API handler Lambda env is pre-computed to break a Terraform circular dependency.
+If you rename the state machine, update `main.tf` accordingly.
+
+---
+
+## State machine rules
+
+File: `statemachine/nexus_pipeline.asl.json`
+Wired by `terraform/modules/orchestration/` via `templatefile()` for ARN injection.
+
+**Never change:**
+- State names
+- Parallel branch structure (AudioVisuals, ContentAssembly, MergeParallelOutputs, MergeContentOutputs)
+- The step order
+- `generate_shorts` and `shorts_tiers` threading through `ResultSelector`/`Parameters`
+  from Research onward — Shorts gating depends on these fields being present everywhere
+
+**You may change:**
+- `Resource` ARN of a state (e.g. Lambda → SQS → SNS)
+- `Parameters` block of a state
+- `.catch` and `.retry` blocks
+
+**ASL integration patterns:**
+- `CheckShortsEnabled` Choice state gates on `$.generate_shorts == true`
+- Shorts branch `Catch` routes all errors to `ShortsSkipped` Pass state — never blocks main pipeline
+- All new AWS service integrations must use `arn:aws:states:::` SDK integration prefix
+
+**Known mismatch — do not fix unless explicitly asked:**
+`lambdas/nexus-api/handler.py` `PIPELINE_STEPS` is a flat list used for status parsing only.
+It does not reflect ASL parallel states. Step history parsing may miss parallel branch events.
+
+---
+
+## ECS Fargate task rules
+
+Each ECS service: `lambdas/nexus-{service}/Dockerfile`
+Shared media helpers: `lambdas/shared/` (`nova_canvas.py`, `nova_reel.py`, `motion.py`)
+Fargate Dockerfiles copy shared helpers into the image at build time.
+
+- Shared scratch: `/mnt/scratch` (EFS mount)
+- Write intermediates to `/mnt/scratch/{run_id}/`
+- Final outputs always go to S3 — never leave files on EFS after a run
+- Always clean up `/mnt/scratch/{run_id}/` on completion
+- Memory-intensive operations (FFmpeg, MediaConvert polling) must have timeouts
+- All steps must be resumable — check S3 for existing output before reprocessing
+
+X-Ray tracing required on all ECS tasks:
+```python
+from aws_xray_sdk.core import xray_recorder, patch_all
+patch_all()
+```
+
+API lambda injects ECS subnet IDs via `ECS_SUBNETS` env var.
+ASL ECS tasks consume `$.subnets` for `AwsvpcConfiguration`.
+
+---
+
+## nexus-shorts module
+
+### File layout
 ```
 lambdas/nexus-shorts/
-├── Dockerfile              ← python:3.12-slim + FFmpeg + shared utils copy
-├── handler.py              ← Fargate entry, wires all modules
-├── config.py               ← Tier defs, LUT presets, constants
-├── section_scorer.py       ← Scores script sections 0–100 across 5 dimensions
-├── script_condenser.py     ← Claude → short narration (30–160 words)
-├── voiceover_generator.py  ← ElevenLabs TTS per channel voice_id
+├── Dockerfile
+├── handler.py
+├── config.py               ← tier defs, LUT presets, constants
+├── section_scorer.py       ← scores script sections 0-100 across 5 dimensions
+├── script_condenser.py     ← Claude → short narration (30-160 words)
+├── voiceover_generator.py  ← TTS per channel voice_id (3-tier cascade required)
 ├── broll_fetcher.py        ← Nova Reel → Pexels → Nova Canvas → gradient
-├── vertical_converter.py   ← Landscape → 1080×1920 (3 strategies)
+├── vertical_converter.py   ← landscape → 1080×1920 (3 strategies)
 ├── motion_renderer.py      ← 7 overlay types as Pillow frame sequences
 ├── beat_syncer.py          ← librosa beat detection + cut snapping
 ├── clip_assembler.py       ← FFmpeg filter_complex assembly
-├── loop_builder.py         ← Seamless loop + pixel similarity ≥ 85%
+├── loop_builder.py         ← seamless loop + pixel similarity ≥ 85%
 ├── audio_mixer.py          ← VO + music mix, master to -14 LUFS
 ├── color_grader.py         ← LUT + vignette + sharpening
-├── watermarker.py          ← Channel logo overlay (top center, 75% opacity)
+├── watermarker.py          ← channel logo overlay (top center, 75% opacity)
 ├── batch_processor.py      ← ThreadPoolExecutor(max_workers=3) + retry
 ├── uploader.py             ← S3 multipart upload + manifest.json
-└── requirements.txt        ← Must include librosa, Pillow, boto3, requests
+└── requirements.txt        ← must include librosa, Pillow, boto3, requests
 ```
 
-### ASL Integration
-The Editor step has been replaced with a `ContentAssembly` Parallel state in `statemachine/nexus_pipeline.asl.json`:
-```
-MergeParallelOutputs → ContentAssembly (Parallel)
-  ├── Editor → SetEditorKeys   → long-form MP4
-  └── CheckShortsEnabled → Shorts → SetShortsKeys (Catch → ShortsSkipped)
-ContentAssembly → MergeContentOutputs → Thumbnail → Notify
-```
-- `CheckShortsEnabled` Choice state gates on `$.generate_shorts == true`; default routes to `ShortsSkipped`.
-- Shorts branch `Catch` routes all errors to `ShortsSkipped` Pass state so main pipeline continues.
-- `generate_shorts` and `shorts_tiers` are threaded through the full ASL state chain (present in all `ResultSelector`/`Parameters` from Research onward).
-- Terraform orchestration module passes `NexusShortsTaskDefArn` via `templatefile()` (see `terraform/modules/orchestration/main.tf`).
+### Duration tiers
+| Tier | Duration | Nova Reel clips |
+|---|---|---|
+| `micro` | 15s | 2 |
+| `short` | 30s | 4 |
+| `mid`   | 45s | 5 |
+| `full`  | 60s | 6 |
 
-### Duration Tiers
-| Tier | Duration | Script Sections | Nova Reel Clips |
-|------|----------|----------------|-----------------|
-| `micro` | 15s | 1 | 2 |
-| `short` | 30s | 2–3 | 4 |
-| `mid` | 45s | 3–4 | 5 |
-| `full` | 60s | 4–6 | 6 |
+### Output specs
+MP4 H.264+AAC, 1080×1920 (9:16), 30fps, CRF 18, AAC 192kbps, −14 LUFS, seamless loop, faststart.
+S3: `{run_id}/shorts/short_{tier}_{n}.mp4` + `manifest.json` + `errors/{short_id}.json`
 
-### Output Specs
-- MP4 H.264+AAC, 1080×1920 (9:16), 30fps, CRF 18, AAC 192kbps, -14 LUFS, seamless loop, faststart.
-- S3 layout: `{run_id}/shorts/short_{tier}_{num}.mp4` + `manifest.json` + `errors/{short_id}.json`.
+### Key design decisions — do not break these
+- All Nova Reel jobs submit in parallel at batch start
+- Nova Reel capped at `NOVA_REEL_SHORTS_BUDGET` (default 6); remaining slots fall to Pexels
+- B-roll 4-tier fallback: Nova Reel → Pexels (portrait-first) → Nova Canvas + motion → brand gradient
+- Beat sync uses profile-specific BPM: documentary 75, finance 95, entertainment 120
+- Cuts snap to nearest beat ±0.4s with 3s minimum gap
+- Loop: render target + 1.5s, crossfade 0.5s at beat-aligned point, verify pixel similarity ≥ 85%
+- Individual short failures never stop the batch — `manifest.json` records per-short status
+- Overlays rendered as Pillow PNG frame sequences (no libfreetype dependency)
 
-### Key Design Decisions
-- **All Nova Reel jobs submit in parallel at batch start** — by the time processing stages complete, results are ready.
-- Nova Reel capped at `NOVA_REEL_SHORTS_BUDGET` (default 6); remaining slots fall through to Pexels.
-- B-roll 4-tier fallback: Nova Reel → Pexels (portrait-first) → Nova Canvas + motion → brand gradient (never fails).
-- Overlays rendered as Pillow PNG frame sequences (no libfreetype dependency), composited via FFmpeg `overlay`.
-- Beat sync uses librosa with profile-specific BPM estimates (documentary 75, finance 95, entertainment 120); cuts snap to nearest beat ±0.4s with 3s minimum gap.
-- Loop: render target + 1.5s, crossfade 0.5s at beat-aligned loop point, verify pixel similarity ≥ 85%.
-- Individual short failures never stop the batch — `manifest.json` records per-short status.
-
-### Environment Variables
-```
-SHORTS_ENABLED=true
-SHORTS_TIERS=micro,short,mid,full
-SHORTS_MAX_WORKERS=3
-NOVA_REEL_SHORTS_BUDGET=6
-SHORTS_LOOP_VERIFY=true
-SHORTS_LOOP_THRESHOLD=0.85
-SHORTS_OUTPUT_PREFIX=shorts/
-```
+### Transcribe timestamp reuse
+Before synthesizing new audio in `voiceover_generator.py`, check if
+`s3://nexus-outputs/{run_id}/audio/word_timestamps.json` exists.
+If it does, read and reuse those timestamps — do not re-synthesize.
 
 ### Docker Compose
-Defined in `docker-compose.yml` — port `9014:8080`, `memory: 8g`, `cpus: 4`, volume `shorts_scratch:/mnt/scratch`, depends on `postgres` (healthy) + `setup-aws` (completed). Volume declared at top level alongside `pg_data`.
+Port `9014:8080`, `memory: 8g`, `cpus: 4`, volume `shorts_scratch:/mnt/scratch`,
+depends on `postgres` (healthy) + `setup-aws` (completed).
 
-### IAM Permissions Required
-Task role needs: `bedrock:InvokeModel`, `bedrock:StartAsyncInvoke`, `bedrock:GetAsyncInvoke`, `s3:GetObject`, `s3:PutObject`, `s3:ListBucket`, `secretsmanager:GetSecretValue`.
+### IAM permissions required (ECS task role)
+`bedrock:InvokeModel`, `bedrock:StartAsyncInvoke`, `bedrock:GetAsyncInvoke`,
+`s3:GetObject`, `s3:PutObject`, `s3:ListBucket`, `secretsmanager:GetSecretValue`,
+`polly:SynthesizeSpeech`, `transcribe:GetTranscriptionJob`
 
-### Conventions (follow existing patterns)
-- Preserve state keys (`run_id`, `profile`, `dry_run`) — same as all other step handlers.
-- Error pattern: log → write `s3://<outputs>/{run_id}/shorts/errors/{short_id}.json` → continue batch (do not raise for individual short failures).
-- Cache Secrets Manager reads in module-level `_cache` dict.
-- Use `notify_step_start` / `notify_step_complete` from `lambdas/nexus_pipeline_utils.py` for Discord notifications.
-- Read brand kit (colors, font, voice_id, LUT) from profile JSON in `CONFIG_BUCKET`; LUT `.cube` files are in `ASSETS_BUCKET` (uploaded by `scripts/setup_luts.py`).
-- ElevenLabs voice settings per profile are in profile JSON (`voice.stability`, `voice.similarity_boost`, `voice.style`), not hardcoded.
+---
 
+## S3 bucket conventions
+
+Three buckets — never cross-write:
+- `nexus-assets`  → source media (stock footage, music, SFX, LUT .cube files)
+- `nexus-outputs` → all run artifacts (`{run_id}/` prefix always)
+- `nexus-config`  → profile JSONs, channel configs
+
+Key pattern for run artifacts:
+```
+{run_id}/research.json
+{run_id}/script.json
+{run_id}/audio/mixed_audio.wav
+{run_id}/audio/word_timestamps.json
+{run_id}/visuals/{clip_id}.mp4
+{run_id}/editor/final.mp4
+{run_id}/shorts/short_{tier}_{n}.mp4
+{run_id}/shorts/manifest.json
+{run_id}/thumbnails/thumb_{n}.jpg
+{run_id}/errors/{step}.json
+```
+
+---
+
+## Profile JSON schema
+
+Profiles live in `profiles/`, uploaded to `nexus-config` S3 by `deploy_tf.sh`.
+
+Required keys — never remove existing keys, only add:
+```json
+{
+  "voice": {
+    "voice_id": "...",
+    "stability": 0.35,
+    "similarity_boost": 0.75,
+    "style": 0.45
+  },
+  "polly_voice_id": "Gregory",
+  "llm": { "script_model": "..." },
+  "script": { "target_duration_min": 10, "target_duration_max": 16 },
+  "editing": { "cuts_per_minute_target": 4 },
+  "visuals": { "color_grade_default": "cinematic_warm" }
+}
+```
+
+Brand kit (colors, font, voice_id, LUT) is read from profile JSON in `CONFIG_BUCKET`.
+LUT `.cube` files are in `ASSETS_BUCKET` (uploaded by `scripts/setup_luts.py`).
+ElevenLabs voice settings per profile: `voice.stability`, `voice.similarity_boost`, `voice.style`
+— never hardcode these values.
+
+---
+
+## Error handling rules
+
+- Every Lambda and ECS handler wraps its logic in `try/except`
+- Errors write to `s3://nexus-outputs/{run_id}/errors/{step}.json`, then raise
+- LLM calls retry up to 3× with exponential backoff: `time.sleep(2 ** attempt)`
+- Notifications are first-class: use `notify_step_start` / `notify_step_complete`
+  from `lambdas/nexus_pipeline_utils.py` for Discord messages
+
+Non-fatal steps — log warning and continue, never raise:
+- Transcribe word timestamps
+- Shorts individual tiers (write to `shorts/errors/{short_id}.json`, continue batch)
+- `nexus-intro-outro` (stub, non-fatal in channel setup)
+
+---
+
+## Testing rules
+
+```bash
+python3 -m pytest scripts/tests/ -q --tb=short          # full suite
+python3 -m pytest scripts/tests/ -m unit -v             # unit only
+RUN_AWS_TESTS=1 python3 -m pytest scripts/tests/ -v     # with AWS integration
+python3 -m pytest scripts/test_check_external.py -v     # fast loop for external-API check logic
+```
+
+**All AWS calls must be mocked in unit tests.** Use `unittest.mock.patch` or `pytest-mock`.
+No test may make a live AWS call. No test may read from `.env`.
+
+Minimum new tests per feature:
+- Happy path (success)
+- Primary failure → fallback triggered
+- All fallbacks exhausted → correct error raised or non-fatal continue
+
+Test markers:
+- `@pytest.mark.unit` — default for all new tests
+- `@pytest.mark.regression` — for previously broken behaviour
+- `@pytest.mark.smoke` — requires `NEXUS_API_URL` env var, post-deploy only
+
+---
+
+## Code style
+
+- Python 3.12+
+- `boto3` clients initialised at module level (outside handler function) for connection reuse
+- `logger = logging.getLogger(__name__)` — no `print()` statements in handlers
+- Log format: `logger.info(f"[{run_id}] step: message")`
+- State keys `run_id`, `profile`, `dry_run` must be preserved in every handler output —
+  ASL `ResultSelector`/`Pass` states expect exact field names
+- Line length: 100 characters max
+
+---
+
+## Channel management
+
+Channel CRUD routes (`/channel/create`, `/channel/list`, `/channel/{id}`, etc.)
+are called by the dashboard but are **not yet implemented** in `lambdas/nexus-api/handler.py`.
+
+Implemented channel Lambdas:
+- `nexus-channel-setup` — orchestrates brand → logo → intro/outro
+- `nexus-brand-designer` — Claude brand kit generation
+- `nexus-logo-gen` — Nova Canvas logo + Pillow fallback
+
+Not yet implemented:
+- `nexus-intro-outro` — stub only, no `handler.py`
+
+---
+
+## Gotchas — read before touching anything
+
+- **Do not edit generated artifacts**: `infrastructure/cdk.out/`, `terraform/.build/`, `__pycache__/`
+- **Lambda layers** built in `terraform/.build/layers/` by `deploy_tf.sh` via Docker arm64 — must exist before `terraform apply`
+- **ECS images** must be pushed to ECR before `terraform apply` — `deploy_tf.sh` handles this
+- **Cloud vs local mismatch**: ASL routes `Thumbnail → Notify` (no Upload task); `scripts/orchestrator.py` still includes Upload — both run Editor ∥ Shorts in parallel
+- **README.md** references `test_repair.py` and `test_drawtext.py` which do not exist — current tests are under `scripts/tests/`
+- **API entrypoint**: `lambdas/nexus-api/handler.py` handles `/run`, `/resume`, `/status/{run_id}`, `/outputs/{run_id}`, `/health`
+- **Dashboard** is a single-file React 18 app at `dashboard/index.html`, locally served by `scripts/orchestrator.py` on port 3000, deployed to CloudFront via `terraform/modules/api/`
+
+---
+
+## What NOT to do
+
+- Do not use `os.environ` for secrets in Lambda/ECS handlers
+- Do not modify `infrastructure/` (legacy CDK — frozen)
+- Do not run `terraform apply` directly — always use `deploy_tf.sh`
+- Do not add Python dependencies without updating the relevant `requirements.txt`
+- Do not change state machine step names or parallel branch structure
+- Do not introduce `openai`, `nvidia`, or `nim` client libraries
+- Do not use Nova Sonic models for TTS — wrong input modality
+- Do not hardcode voice settings — always read from profile dict
+- Do not leave files on EFS after a run — clean up `/mnt/scratch/{run_id}/`
+- Do not edit per-lambda copies of `nexus_pipeline_utils.py` — edit the root file only
