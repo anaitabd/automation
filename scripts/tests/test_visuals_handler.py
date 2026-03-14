@@ -139,6 +139,142 @@ class TestWriteError:
             h._write_error("run-1", "visuals", ValueError("test error"))
 
 
+class TestRekognitionScore:
+    def test_happy_path(self):
+        h = _load()
+        mock_rek = MagicMock()
+        mock_rek.detect_labels.return_value = {
+            "Labels": [
+                {"Name": "City", "Confidence": 99},
+                {"Name": "Building", "Confidence": 95},
+                {"Name": "Sky", "Confidence": 88},
+            ]
+        }
+        with patch.object(h, "rekognition", mock_rek):
+            score = h._rekognition_score(b"fakejpeg", "city building")
+        assert score == 1.0
+
+    def test_no_matching_labels(self):
+        h = _load()
+        mock_rek = MagicMock()
+        mock_rek.detect_labels.return_value = {
+            "Labels": [{"Name": "Ocean", "Confidence": 99}]
+        }
+        with patch.object(h, "rekognition", mock_rek):
+            score = h._rekognition_score(b"fakejpeg", "city building")
+        assert score == 0.0
+
+    def test_partial_match(self):
+        h = _load()
+        mock_rek = MagicMock()
+        mock_rek.detect_labels.return_value = {
+            "Labels": [{"Name": "City", "Confidence": 99}, {"Name": "Ocean", "Confidence": 80}]
+        }
+        with patch.object(h, "rekognition", mock_rek):
+            score = h._rekognition_score(b"fakejpeg", "city building")
+        assert score == pytest.approx(0.5)
+
+
+class TestClaudeVisionScore:
+    def test_happy_path(self):
+        h = _load()
+        mock_bedrock = MagicMock()
+        mock_bedrock.converse.return_value = {
+            "output": {"message": {"content": [{"text": "0.85"}]}}
+        }
+        with patch.object(h, "bedrock", mock_bedrock):
+            score = h._claude_vision_score(b"fakejpeg", "city skyline at night")
+        assert score == pytest.approx(0.85)
+
+    def test_strips_whitespace(self):
+        h = _load()
+        mock_bedrock = MagicMock()
+        mock_bedrock.converse.return_value = {
+            "output": {"message": {"content": [{"text": "  0.72\n"}]}}
+        }
+        with patch.object(h, "bedrock", mock_bedrock):
+            score = h._claude_vision_score(b"fakejpeg", "forest")
+        assert score == pytest.approx(0.72)
+
+
+class TestSelectBestCandidate:
+    def test_returns_none_for_empty_candidates(self):
+        h = _load()
+        result = h._select_best_candidate([], "city skyline")
+        assert result is None
+
+    def test_single_candidate_returns_bytes(self):
+        h = _load()
+        mock_rek = MagicMock()
+        mock_rek.detect_labels.return_value = {"Labels": [{"Name": "City", "Confidence": 99}]}
+        mock_bedrock = MagicMock()
+        mock_bedrock.converse.return_value = {
+            "output": {"message": {"content": [{"text": "0.9"}]}}
+        }
+        with patch.object(h, "rekognition", mock_rek), patch.object(h, "bedrock", mock_bedrock):
+            result = h._select_best_candidate([(b"img1", "id1")], "city")
+        assert result == b"img1"
+
+    def test_best_rekognition_candidate_goes_to_claude(self):
+        h = _load()
+        mock_rek = MagicMock()
+        mock_rek.detect_labels.side_effect = [
+            {"Labels": [{"Name": "City", "Confidence": 99}]},
+            {"Labels": []},
+            {"Labels": []},
+            {"Labels": []},
+            {"Labels": []},
+        ]
+        mock_bedrock = MagicMock()
+        mock_bedrock.converse.return_value = {
+            "output": {"message": {"content": [{"text": "0.95"}]}}
+        }
+        candidates = [(b"img1", "id1"), (b"img2", "id2"), (b"img3", "id3"), (b"img4", "id4"), (b"img5", "id5")]
+        with patch.object(h, "rekognition", mock_rek), patch.object(h, "bedrock", mock_bedrock):
+            result = h._select_best_candidate(candidates, "city")
+        assert result == b"img1"
+
+    def test_rekognition_failure_falls_back_to_zero_score(self):
+        h = _load()
+        mock_rek = MagicMock()
+        mock_rek.detect_labels.side_effect = Exception("Rekognition error")
+        mock_bedrock = MagicMock()
+        mock_bedrock.converse.return_value = {
+            "output": {"message": {"content": [{"text": "0.5"}]}}
+        }
+        candidates = [(b"img1", "id1"), (b"img2", "id2")]
+        with patch.object(h, "rekognition", mock_rek), patch.object(h, "bedrock", mock_bedrock):
+            result = h._select_best_candidate(candidates, "city")
+        assert result in (b"img1", b"img2")
+
+    def test_claude_failure_falls_back_to_zero_score(self):
+        h = _load()
+        mock_rek = MagicMock()
+        mock_rek.detect_labels.side_effect = [
+            {"Labels": [{"Name": "City", "Confidence": 99}]},
+            {"Labels": [{"Name": "Forest", "Confidence": 99}]},
+        ]
+        mock_bedrock = MagicMock()
+        mock_bedrock.converse.side_effect = Exception("Bedrock error")
+        candidates = [(b"img1", "id1"), (b"img2", "id2")]
+        with patch.object(h, "rekognition", mock_rek), patch.object(h, "bedrock", mock_bedrock):
+            result = h._select_best_candidate(candidates, "city")
+        assert result in (b"img1", b"img2")
+
+    def test_top3_only_sent_to_claude(self):
+        h = _load()
+        mock_rek = MagicMock()
+        mock_rek.detect_labels.return_value = {"Labels": []}
+        mock_bedrock = MagicMock()
+        mock_bedrock.converse.return_value = {
+            "output": {"message": {"content": [{"text": "0.5"}]}}
+        }
+        candidates = [(f"img{i}".encode(), f"id{i}") for i in range(5)]
+        with patch.object(h, "rekognition", mock_rek), patch.object(h, "bedrock", mock_bedrock):
+            h._select_best_candidate(candidates, "city")
+        assert mock_bedrock.converse.call_count == 3
+
+
 class TestGetSecret:
     def test_caches_secret(self):
         h = _load()
