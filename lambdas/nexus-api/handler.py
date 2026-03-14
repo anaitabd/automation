@@ -571,10 +571,14 @@ def lambda_handler(event: dict, context) -> dict:
 
     if method == "POST" and path == "/run":
         body = json.loads(event.get("body") or "{}")
+        if not isinstance(body, dict):
+            return _response(400, {"error": "Request body must be a JSON object"})
         return _handle_run(body)
 
     elif method == "POST" and path == "/resume":
         body = json.loads(event.get("body") or "{}")
+        if not isinstance(body, dict):
+            return _response(400, {"error": "Request body must be a JSON object"})
         return _handle_resume(body)
 
     elif method == "GET" and "/status/" in path:
