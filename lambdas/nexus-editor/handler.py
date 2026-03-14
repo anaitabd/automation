@@ -8,7 +8,10 @@ import time
 import urllib.request
 import boto3
 from boto3.s3.transfer import TransferConfig
+from aws_xray_sdk.core import xray_recorder, patch_all
 from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
+
+patch_all()
 
 log = get_logger("nexus-editor")
 
@@ -659,7 +662,8 @@ def _submit_mediaconvert_job(
     }
 
     role_arn = os.environ.get("MEDIACONVERT_ROLE_ARN", "")
-    job = mc.create_job(Role=role_arn, Settings=job_settings)
+    with xray_recorder.in_subsegment("mediaconvert-submit"):
+        job = mc.create_job(Role=role_arn, Settings=job_settings)
     job_id = job["Job"]["Id"]
 
     deadline = time.time() + 1800
@@ -986,14 +990,16 @@ def lambda_handler(event: dict, context) -> dict:
             if video_dur > MEDIACONVERT_THRESHOLD_SECONDS:
                 log.info("Video > %ds — submitting to MediaConvert", MEDIACONVERT_THRESHOLD_SECONDS)
                 raw_s3_key = f"{run_id}/raw_assembled.mp4"
-                s3.upload_file(final_local, S3_OUTPUTS_BUCKET, raw_s3_key, Config=_S3_TRANSFER_CONFIG)
+                with xray_recorder.in_subsegment("s3-upload"):
+                    s3.upload_file(final_local, S3_OUTPUTS_BUCKET, raw_s3_key, Config=_S3_TRANSFER_CONFIG)
                 output_prefix = f"s3://{S3_OUTPUTS_BUCKET}/{run_id}/review/"
                 final_s3_key = _submit_mediaconvert_job(
                     f"s3://{S3_OUTPUTS_BUCKET}/{raw_s3_key}", output_prefix, run_id
                 )
             else:
                 log.info("Uploading final video to S3: %s", final_s3_key)
-                s3.upload_file(final_local, S3_OUTPUTS_BUCKET, final_s3_key, Config=_S3_TRANSFER_CONFIG)
+                with xray_recorder.in_subsegment("s3-upload"):
+                    s3.upload_file(final_local, S3_OUTPUTS_BUCKET, final_s3_key, Config=_S3_TRANSFER_CONFIG)
 
             log.info("Copying script to metadata: %s/metadata/script.txt", run_id)
             try:

@@ -352,6 +352,14 @@ resource "aws_iam_role_policy" "ecs_task" {
         ]
         Resource = ["*"]
       },
+      {
+        Effect = "Allow"
+        Action = [
+          "xray:PutTraceSegments",
+          "xray:PutTelemetryRecords",
+        ]
+        Resource = ["*"]
+      },
     ]
   })
 }

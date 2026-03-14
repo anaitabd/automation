@@ -450,27 +450,40 @@ resource "aws_ecs_task_definition" "editor" {
     }
   }
 
-  container_definitions = jsonencode([{
-    name      = "nexus-editor"
-    image     = "${aws_ecr_repository.editor.repository_url}:latest"
-    essential = true
-    environment = concat(local.fargate_common_env, [
-      { name = "MEDIACONVERT_ROLE_ARN", value = var.mediaconvert_role_arn }
-    ])
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.editor.name
-        "awslogs-region"        = local.region
-        "awslogs-stream-prefix" = "nexus-editor"
+  container_definitions = jsonencode([
+    {
+      name      = "nexus-editor"
+      image     = "${aws_ecr_repository.editor.repository_url}:latest"
+      essential = true
+      environment = concat(local.fargate_common_env, [
+        { name = "MEDIACONVERT_ROLE_ARN", value = var.mediaconvert_role_arn }
+      ])
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.editor.name
+          "awslogs-region"        = local.region
+          "awslogs-stream-prefix" = "nexus-editor"
+        }
       }
+      mountPoints = [{
+        containerPath = "/mnt/scratch"
+        sourceVolume  = "nexus-scratch"
+        readOnly      = false
+      }]
+    },
+    {
+      name      = "xray-daemon"
+      image     = "amazon/aws-xray-daemon"
+      essential = false
+      portMappings = [{
+        containerPort = 2000
+        protocol      = "udp"
+      }]
+      cpu    = 32
+      memory = 256
     }
-    mountPoints = [{
-      containerPath = "/mnt/scratch"
-      sourceVolume  = "nexus-scratch"
-      readOnly      = false
-    }]
-  }])
+  ])
 }
 
 resource "aws_ecs_task_definition" "shorts" {
