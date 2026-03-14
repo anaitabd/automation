@@ -119,48 +119,38 @@ class TestFindFont:
 
 
 class TestGenerateThumbnailConcepts:
-    def test_bedrock_call_returns_concepts(self):
+    def test_bedrock_converse_returns_concepts(self):
         h = _load()
-        fake_concepts = [{"concept": "dark background", "text": "AI Revolution"}]
+        fake_concepts = [
+            {"title": "AI Revolution", "overlay_text": "SHOCKING TRUTH", "mood": "dramatic", "nova_canvas_prompt": "cinematic dark background"},
+        ]
         mock_bedrock = MagicMock()
-        mock_bedrock.invoke_model.return_value = {
-            "body": MagicMock(read=lambda: json.dumps({
-                "content": [{"text": json.dumps(fake_concepts)}]
-            }).encode("utf-8"))
+        mock_bedrock.converse.return_value = {
+            "output": {"message": {"content": [{"text": json.dumps(fake_concepts)}]}}
         }
-        with patch("boto3.client", return_value=mock_bedrock):
-            try:
-                result = h._generate_thumbnail_concepts(
-                    title="AI Revolution",
-                    mood="dramatic",
-                    accent_color="#FF5733",
-                    brand_colors={"primary": "#000000"},
-                    model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-                )
-                assert isinstance(result, list)
-            except Exception:
-                pass
+        original = h.bedrock
+        h.bedrock = mock_bedrock
+        try:
+            result = h._generate_thumbnail_concepts("This is a script summary", "AI Revolution")
+            assert isinstance(result, list)
+        except Exception:
+            pass
+        finally:
+            h.bedrock = original
 
-    def test_returns_list_even_on_parse_error(self):
+    def test_raises_on_invalid_json(self):
         h = _load()
         mock_bedrock = MagicMock()
-        mock_bedrock.invoke_model.return_value = {
-            "body": MagicMock(read=lambda: json.dumps({
-                "content": [{"text": "not valid json"}]
-            }).encode("utf-8"))
+        mock_bedrock.converse.return_value = {
+            "output": {"message": {"content": [{"text": "not valid json"}]}}
         }
-        with patch("boto3.client", return_value=mock_bedrock):
-            try:
-                result = h._generate_thumbnail_concepts(
-                    title="Test",
-                    mood="neutral",
-                    accent_color="#FFFFFF",
-                    brand_colors={},
-                    model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-                )
-                assert isinstance(result, list)
-            except Exception:
-                pass
+        original = h.bedrock
+        h.bedrock = mock_bedrock
+        try:
+            with pytest.raises(Exception):
+                h._generate_thumbnail_concepts("summary", "Test Topic")
+        finally:
+            h.bedrock = original
 
 
 class TestHttpPost:
@@ -182,11 +172,6 @@ class TestHttpPost:
 
 
 class TestConstants:
-    def test_bedrock_model_id_default_is_set(self):
-        h = _load()
-        assert h.BEDROCK_MODEL_ID_DEFAULT != ""
-        assert "anthropic" in h.BEDROCK_MODEL_ID_DEFAULT
-
     def test_stability_api_url_is_valid(self):
         h = _load()
         assert h.STABILITY_API_URL.startswith("https://")

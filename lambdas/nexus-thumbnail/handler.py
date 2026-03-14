@@ -27,12 +27,7 @@ S3_ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
 
-# NVIDIA NIM — takes priority over Bedrock when set
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
-NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-# Vision model for frame scoring; text model for concept generation
-NVIDIA_VISION_MODEL = os.environ.get("NVIDIA_VISION_MODEL", "microsoft/phi-3.5-vision-instruct")
-NVIDIA_TEXT_MODEL = os.environ.get("NVIDIA_TEXT_MODEL", "meta/llama-3.1-70b-instruct")
 
 STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY", "")
 STABILITY_API_URL = "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image"
@@ -54,10 +49,8 @@ def _find_bin(name: str) -> str:
 
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN") or _find_bin("ffmpeg")
 FFPROBE_BIN = os.environ.get("FFPROBE_BIN") or _find_bin("ffprobe")
-BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-3-sonnet-20240229-v1:0"
 
-# Set dynamically per-invocation from the loaded profile
-_active_model_id: str = BEDROCK_MODEL_ID_DEFAULT
+bedrock = boto3.client("bedrock-runtime")
 
 
 def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
@@ -116,196 +109,28 @@ def _extract_keyframes(video_path: str, tmpdir: str, n: int = 6) -> list[str]:
     return frame_paths
 
 
-# ---------------------------------------------------------------------------
-# NVIDIA NIM helpers
-# ---------------------------------------------------------------------------
-
-def _nvidia_chat(messages: list, model: str, max_tokens: int = 1024) -> str:
-    """Call NVIDIA NIM OpenAI-compatible chat endpoint. Returns response text."""
-    body = json.dumps({
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.7,
-    }).encode()
-    req = urllib.request.Request(
-        NVIDIA_BASE_URL,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {NVIDIA_API_KEY}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read())
-    return data["choices"][0]["message"]["content"]
-
-
-def _score_frame_nvidia(frame_path: str) -> float:
-    """Score a video frame for thumbnail quality using NVIDIA vision model."""
-    with open(frame_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("utf-8")
-    messages = [{
-        "role": "user",
-        "content": [
-            {
-                "type": "text",
-                "text": (
-                    "Rate this YouTube thumbnail frame on a scale of 0.0 to 1.0 based on: "
-                    "contrast, subject clarity, emotional impact, and legibility at small size. "
-                    "Respond with ONLY a JSON object: {\"score\": 0.0}"
-                ),
-            },
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-            },
-        ],
-    }]
+def _score_frame(frame_bytes: bytes, topic: str) -> float:
     try:
-        raw = _nvidia_chat(messages, NVIDIA_VISION_MODEL, max_tokens=64)
-        raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        return float(json.loads(raw).get("score", 0.5))
-    except Exception as exc:
-        log.warning("NVIDIA vision score failed: %s", exc)
-        return 0.5
-
-
-def _generate_thumbnail_concepts_nvidia(title: str, mood: str, accent_color: str) -> list[dict]:
-    """Generate 3 thumbnail concepts using NVIDIA NIM text model."""
-    prompt = (
-        f"You are a YouTube thumbnail strategist. Create 3 distinct thumbnail concepts for:\n"
-        f"Title: {title}\nMood: {mood}\nAccent color: {accent_color}\n\n"
-        "For each concept provide:\n"
-        "- top_text: max 4 words, ALL CAPS, high-impact\n"
-        "- sub_text: max 6 words, title case\n"
-        "- emotion_trigger: one word (fear/curiosity/excitement/awe/shock)\n"
-        "- color_scheme: one of (dark_dramatic/bright_energetic/cinematic_cold/warm_epic)\n\n"
-        "Return ONLY a JSON array of 3 objects with these exact keys. No markdown."
-    )
-    for attempt in range(3):
-        try:
-            raw = _nvidia_chat([{"role": "user", "content": prompt}], NVIDIA_TEXT_MODEL, max_tokens=1024)
-            raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-            concepts = json.loads(raw)
-            return concepts[:3]
-        except Exception as exc:
-            log.warning("NVIDIA concept gen attempt %d failed: %s", attempt + 1, exc)
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-    return []
-
-
-# ---------------------------------------------------------------------------
-# Bedrock helpers (fallback when NVIDIA_API_KEY is not set)
-# ---------------------------------------------------------------------------
-
-def _score_frame_bedrock(frame_path: str) -> float:
-    """Score a frame using AWS Bedrock Claude vision. Falls back to 0.5 on error."""
-    if NVIDIA_API_KEY:
-        return _score_frame_nvidia(frame_path)
-
-    with open(frame_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("utf-8")
-
-    client = boto3.client("bedrock-runtime")
-    body = json.dumps(
-        {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 64,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": b64,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": (
-                                "Rate this YouTube thumbnail frame on a scale of 0.0 to 1.0 based on: "
-                                "contrast, subject clarity, emotional impact, and legibility at small size. "
-                                "Respond with ONLY a JSON object: {\"score\": 0.0}"
-                            ),
-                        },
-                    ],
-                }
-            ],
-        }
-    )
-    try:
-        response = client.invoke_model(
-            modelId=_active_model_id,
-            body=body,
-            contentType="application/json",
-            accept="application/json",
+        response = bedrock.converse(
+            modelId="anthropic.claude-sonnet-4-5-20250929-v1:0",
+            messages=[{"role": "user", "content": [
+                {"image": {"format": "jpeg", "source": {"bytes": frame_bytes}}},
+                {"text": f"Rate this frame 0.0-10.0 as a YouTube thumbnail for the topic: '{topic}'. Consider visual clarity, emotional impact, faces/eyes if present. Reply with only the number."}
+            ]}]
         )
-        raw = json.loads(response["body"].read())["content"][0]["text"]
-        raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        data = json.loads(raw)
-        return float(data.get("score", 0.5))
-    except Exception:
+        return float(response["output"]["message"]["content"][0]["text"].strip())
+    except Exception as exc:
+        log.warning("Bedrock frame scoring failed: %s", exc)
         return 0.5
 
 
-def _generate_thumbnail_concepts(
-    title: str, mood: str, accent_color: str
-) -> list[dict]:
-    """Generate thumbnail concepts. Uses NVIDIA NIM if NVIDIA_API_KEY is set, else Bedrock."""
-    if NVIDIA_API_KEY:
-        concepts = _generate_thumbnail_concepts_nvidia(title, mood, accent_color)
-        if concepts:
-            log.info("Thumbnail concepts generated via NVIDIA NIM (%s)", NVIDIA_TEXT_MODEL)
-            return concepts
-        log.warning("NVIDIA concept generation returned empty — falling back to Bedrock")
-
-    client = boto3.client("bedrock-runtime")
-    prompt = (
-        f"You are a YouTube thumbnail strategist. Create 3 distinct thumbnail concepts for:\n"
-        f"Title: {title}\nMood: {mood}\nAccent color: {accent_color}\n\n"
-        "For each concept provide:\n"
-        "- top_text: max 4 words, ALL CAPS, high-impact\n"
-        "- sub_text: max 6 words, title case\n"
-        "- emotion_trigger: one word (fear/curiosity/excitement/awe/shock)\n"
-        "- color_scheme: one of (dark_dramatic/bright_energetic/cinematic_cold/warm_epic)\n\n"
-        "Return ONLY a JSON array of 3 objects with these exact keys. No markdown."
+def _generate_thumbnail_concepts(script_summary: str, topic: str) -> list:
+    response = bedrock.converse(
+        modelId="anthropic.claude-sonnet-4-5-20250929-v1:0",
+        system=[{"text": "You generate YouTube thumbnail concepts. Return valid JSON only. No markdown, no explanation."}],
+        messages=[{"role": "user", "content": [{"text": f"Generate 3 thumbnail concepts for: '{topic}'. Summary: {script_summary[:500]}. Return JSON array: [{{'title': str, 'overlay_text': str, 'mood': str, 'nova_canvas_prompt': str}}]"}]}]
     )
-    body = json.dumps(
-        {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-    )
-    retries = 3
-    for attempt in range(retries):
-        try:
-            response = client.invoke_model(
-                modelId=_active_model_id,
-                body=body,
-                contentType="application/json",
-                accept="application/json",
-            )
-            raw = json.loads(response["body"].read())["content"][0]["text"]
-            raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-            concepts = json.loads(raw)
-            return concepts[:3]
-        except Exception:
-            if attempt == retries - 1:
-                return [
-                    {"top_text": "UNTOLD STORY", "sub_text": title[:30], "emotion_trigger": "curiosity", "color_scheme": "dark_dramatic"},
-                    {"top_text": "SHOCKING TRUTH", "sub_text": title[:30], "emotion_trigger": "shock", "color_scheme": "cinematic_cold"},
-                    {"top_text": "YOU WON'T BELIEVE", "sub_text": title[:30], "emotion_trigger": "awe", "color_scheme": "warm_epic"},
-                ]
-            time.sleep(2 ** attempt)
-    return []
+    return json.loads(response["output"]["message"]["content"][0]["text"].strip())
 
 
 def _hex_to_0x(color: str) -> str:
@@ -521,10 +346,10 @@ def _render_thumbnail(
     out_path = os.path.join(tmpdir, f"thumbnail_{idx}.jpg")
     accent_raw = profile.get("thumbnail", {}).get("accent_color", "#C8A96E")
     channel_name = profile.get("name", "Nexus").upper()
-    top_text = concept.get("top_text", "")[:45]
-    sub_text = concept.get("sub_text", "")[:45]
+    top_text = concept.get("overlay_text", concept.get("top_text", ""))[:45]
+    sub_text = concept.get("title", concept.get("sub_text", ""))[:45]
 
-    concept_desc = f"{concept.get('emotion_trigger', '')} {concept.get('color_scheme', '')} {top_text} {sub_text}".strip()
+    concept_desc = concept.get("nova_canvas_prompt", f"{concept.get('mood', concept.get('emotion_trigger', ''))} {concept.get('color_scheme', '')} {top_text} {sub_text}").strip()
     ai_bg = os.path.join(tmpdir, f"thumb_bg_{idx}.jpg")
 
     used_ai_bg = _generate_nvidia_flux_background(concept_desc, ai_bg)
@@ -641,10 +466,6 @@ def lambda_handler(event: dict, context) -> dict:
         profile_obj = s3.get_object(Bucket=S3_CONFIG_BUCKET, Key=f"{profile_name}.json")
         profile: dict = json.loads(profile_obj["Body"].read())
 
-        # Use the model configured in the profile
-        global _active_model_id
-        _active_model_id = profile.get("llm", {}).get("script_model", BEDROCK_MODEL_ID_DEFAULT)
-
         title = script.get("title", "") or title_passthrough
         mood = script.get("mood", "neutral")
         accent_color = profile.get("thumbnail", {}).get("accent_color", "#C8A96E")
@@ -676,13 +497,19 @@ def lambda_handler(event: dict, context) -> dict:
             frames = _extract_keyframes(video_local, tmpdir, n=6)
 
             log.info("Scoring %d frames via Bedrock", len(frames))
-            scores = [_score_frame_bedrock(f) for f in frames]
+            def _read_frame(path: str) -> bytes:
+                with open(path, "rb") as fh:
+                    return fh.read()
+            scores = [_score_frame(_read_frame(f), title) for f in frames]
             best_frame_idx = scores.index(max(scores))
             best_frame = frames[best_frame_idx]
             log.info("Best frame: index=%d score=%.2f", best_frame_idx, max(scores))
 
             log.info("Generating thumbnail concepts")
-            concepts = _generate_thumbnail_concepts(title, mood, accent_color)
+            script_summary = script.get("summary", script.get("body", script.get("topic", title)))
+            if not isinstance(script_summary, str):
+                script_summary = json.dumps(script_summary)
+            concepts = _generate_thumbnail_concepts(script_summary, title)
             if len(concepts) < 3:
                 concepts += [concepts[0]] * (3 - len(concepts))
 
