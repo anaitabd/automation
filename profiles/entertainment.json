@@ -8,6 +8,7 @@
     "condenser_model": "us.anthropic.claude-3-sonnet-20240229-v1:0",
     "script_passes": ["structure", "virality_boost", "hook_polish", "retention_optimization", "pacing"]
   },
+  "polly_voice_id": "Stephen",
   "voice": {
     "model_id": "eleven_turbo_v2_5",
     "voice_id": "EXAVITQu4vr4xnSDxMaL",
