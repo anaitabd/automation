@@ -90,6 +90,30 @@ class TestResearchHandler(unittest.TestCase):
 
         self.assertIn("selected_topic", result)
 
+    def test_research_uses_sonnet_4_5_model(self):
+        h = _load_research_handler()
+        fake_response = json.dumps({
+            "selected_topic": "AI advancements",
+            "angle": "economic impact",
+            "trending_context": "GPT-5 launch",
+            "search_volume_estimate": "100k/month",
+        })
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = {
+            "body": MagicMock(read=lambda: json.dumps({
+                "content": [{"text": fake_response}]
+            }).encode("utf-8"))
+        }
+
+        with patch("boto3.client", return_value=mock_bedrock):
+            h._bedrock_select_topic("AI", "trending context")
+
+        call_kwargs = mock_bedrock.invoke_model.call_args
+        self.assertIsNotNone(call_kwargs)
+        actual_model_id = call_kwargs.kwargs.get("modelId")
+        self.assertEqual(actual_model_id, "anthropic.claude-sonnet-4-5-20250929-v1:0")
+
 
 if __name__ == "__main__":
     unittest.main()
