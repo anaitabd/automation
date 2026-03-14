@@ -11,11 +11,11 @@ from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_comp
 log = get_logger("nexus-upload")
 
 _cache: dict = {}
-_S3_MULTIPART_THRESHOLD = 100 * 1024 * 1024  # 100 MB
+_S3_MULTIPART_THRESHOLD = 100 * 1024 * 1024
 _S3_TRANSFER_CONFIG = TransferConfig(
     multipart_threshold=_S3_MULTIPART_THRESHOLD,
     max_concurrency=10,
-    multipart_chunksize=16 * 1024 * 1024,  # 16 MB chunks
+    multipart_chunksize=16 * 1024 * 1024,
 )
 
 
@@ -139,159 +139,163 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
-def lambda_handler(event: dict, context) -> dict:
-    run_id: str = event["run_id"]
-    profile_name: str = event.get("profile", "documentary")
-    niche: str = event.get("niche", "")
-    final_video_s3_key: str = event["final_video_s3_key"]
-    primary_thumbnail_s3_key: str = event["primary_thumbnail_s3_key"]
-    script_s3_key: str = event["script_s3_key"]
-    dry_run: bool = event.get("dry_run", False)
-    thumbnail_s3_keys: list = event.get("thumbnail_s3_keys", [primary_thumbnail_s3_key])
-    video_duration_sec: float = float(event.get("video_duration_sec", 0))
+def _process_record(body: dict) -> dict:
+    run_id: str = body["run_id"]
+    video_s3_key: str = body["s3_key"]
+    metadata: dict = body.get("metadata", {})
+    dry_run: bool = metadata.get("dry_run", False)
+    profile_name: str = metadata.get("profile", "documentary")
+    niche: str = metadata.get("niche", "")
+    primary_thumbnail_s3_key: str = metadata.get("primary_thumbnail_s3_key", "")
+    thumbnail_s3_keys: list = metadata.get("thumbnail_s3_keys", [primary_thumbnail_s3_key])
+    video_duration_sec: float = float(metadata.get("video_duration_sec", 0))
 
-    step_start = notify_step_start("upload", run_id, niche=event.get("niche", ""), profile=profile_name, dry_run=dry_run)
+    step_start = notify_step_start("upload", run_id, niche=niche, profile=profile_name, dry_run=dry_run)
 
-    try:
-        s3 = boto3.client("s3")
+    title = metadata.get("title", "Untitled")
+    description = metadata.get("description", "")
+    tags = metadata.get("tags", [])
 
-        log.info("Loading script from S3: %s", script_s3_key)
-        script_obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=script_s3_key)
-        script: dict = json.loads(script_obj["Body"].read())
-
-        title = script.get("title", "Untitled")
-        description = script.get("description", "")
-        tags = script.get("tags", [])
-        cta = script.get("cta", "")
-        if cta:
-            description = f"{description}\n\n{cta}"
-
-        if dry_run:
-            log.info("DRY RUN mode — returning stub upload result")
-            return {
-                "run_id": run_id,
-                "profile": profile_name,
-                "niche": niche,
-                "dry_run": True,
-                "title": title,
-                "video_id": "DRY_RUN_VIDEO_ID",
-                "video_url": "https://youtube.com/watch?v=DRY_RUN_VIDEO_ID",
-                "thumbnail_s3_keys": thumbnail_s3_keys,
-                "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
-                "final_video_s3_key": final_video_s3_key,
-                "script_s3_key": script_s3_key,
-                "video_duration_sec": video_duration_sec,
-            }
-
-        auto_publish = os.environ.get("YOUTUBE_AUTO_PUBLISH", "false").lower() == "true"
-        log.info("auto_publish=%s", auto_publish)
-
-        if not auto_publish:
-            # ── Manual approval mode ──
-            log.info("Manual approval mode — saving pending_upload.json to S3")
-            pending = {
-                "run_id": run_id,
-                "profile": profile_name,
-                "title": title,
-                "description": description,
-                "tags": tags,
-                "final_video_s3_key": final_video_s3_key,
-                "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
-                "thumbnail_s3_keys": thumbnail_s3_keys,
-                "video_duration_sec": video_duration_sec,
-                "status": "pending_approval",
-            }
-            s3.put_object(
-                Bucket=S3_OUTPUTS_BUCKET,
-                Key=f"{run_id}/pending_upload.json",
-                Body=json.dumps(pending, indent=2).encode("utf-8"),
-                ContentType="application/json",
-            )
-
-            elapsed = time.time() - step_start
-            notify_step_complete("upload", run_id, [
-                {"name": "Title", "value": title[:100], "inline": False},
-                {"name": "Status", "value": "⏳ pending approval", "inline": True},
-                {"name": "Profile", "value": profile_name, "inline": True},
-            ], elapsed_sec=elapsed, dry_run=dry_run, color=0xF39C12)
-
-            return {
-                "run_id": run_id,
-                "profile": profile_name,
-                "niche": niche,
-                "dry_run": False,
-                "video_id": "PENDING_MANUAL_APPROVAL",
-                "video_url": "pending://manual-approval-required",
-                "title": title,
-                "thumbnail_s3_keys": thumbnail_s3_keys,
-                "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
-                "final_video_s3_key": final_video_s3_key,
-                "script_s3_key": script_s3_key,
-                "video_duration_sec": video_duration_sec,
-                "auto_publish": False,
-            }
-
-        log.info("Refreshing YouTube access token")
-        yt_credentials = get_secret("nexus/youtube_credentials")
-        access_token = _refresh_access_token(yt_credentials)
-
-        video_metadata = {
-            "snippet": {
-                "title": title[:100],
-                "description": description[:5000],
-                "tags": tags[:500],
-                "categoryId": "22",
-            },
-            "status": {
-                "privacyStatus": "private",
-                "selfDeclaredMadeForKids": False,
-            },
+    if dry_run:
+        log.info("[%s] DRY RUN mode — returning stub upload result", run_id)
+        return {
+            "run_id": run_id,
+            "profile": profile_name,
+            "niche": niche,
+            "dry_run": True,
+            "title": title,
+            "video_id": "DRY_RUN_VIDEO_ID",
+            "video_url": "https://youtube.com/watch?v=DRY_RUN_VIDEO_ID",
+            "thumbnail_s3_keys": thumbnail_s3_keys,
+            "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
+            "final_video_s3_key": video_s3_key,
+            "video_duration_sec": video_duration_sec,
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            log.info("Downloading video from S3: %s", final_video_s3_key)
-            video_local = os.path.join(tmpdir, "final_video.mp4")
-            s3.download_file(S3_OUTPUTS_BUCKET, final_video_s3_key, video_local, Config=_S3_TRANSFER_CONFIG)
+    auto_publish = os.environ.get("YOUTUBE_AUTO_PUBLISH", "false").lower() == "true"
+    log.info("[%s] auto_publish=%s", run_id, auto_publish)
 
-            log.info("Downloading thumbnail from S3: %s", primary_thumbnail_s3_key)
-            thumbnail_local = os.path.join(tmpdir, "thumbnail.jpg")
-            s3.download_file(S3_OUTPUTS_BUCKET, primary_thumbnail_s3_key, thumbnail_local)
-
-            log.info("Uploading video to YouTube")
-            upload_result = _upload_video(video_local, video_metadata, access_token)
-            video_id = upload_result.get("id", "")
-            if not video_id:
-                raise RuntimeError("YouTube upload returned no video ID")
-            log.info("YouTube video ID: %s", video_id)
-
-            log.info("Setting thumbnail on YouTube")
-            _upload_thumbnail(video_id, thumbnail_local, access_token)
-
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
+    if not auto_publish:
+        log.info("[%s] Manual approval mode — saving pending_upload.json to S3", run_id)
+        s3 = boto3.client("s3")
+        pending = {
+            "run_id": run_id,
+            "profile": profile_name,
+            "title": title,
+            "description": description,
+            "tags": tags,
+            "final_video_s3_key": video_s3_key,
+            "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
+            "thumbnail_s3_keys": thumbnail_s3_keys,
+            "video_duration_sec": video_duration_sec,
+            "status": "pending_approval",
+        }
+        s3.put_object(
+            Bucket=S3_OUTPUTS_BUCKET,
+            Key=f"{run_id}/pending_upload.json",
+            Body=json.dumps(pending, indent=2).encode("utf-8"),
+            ContentType="application/json",
+        )
 
         elapsed = time.time() - step_start
         notify_step_complete("upload", run_id, [
             {"name": "Title", "value": title[:100], "inline": False},
-            {"name": "YouTube URL", "value": video_url, "inline": False},
+            {"name": "Status", "value": "⏳ pending approval", "inline": True},
             {"name": "Profile", "value": profile_name, "inline": True},
-        ], elapsed_sec=elapsed, dry_run=dry_run, color=0x2ECC71)
+        ], elapsed_sec=elapsed, dry_run=dry_run, color=0xF39C12)
 
         return {
             "run_id": run_id,
             "profile": profile_name,
             "niche": niche,
             "dry_run": False,
-            "video_id": video_id,
-            "video_url": video_url,
+            "video_id": "PENDING_MANUAL_APPROVAL",
+            "video_url": "pending://manual-approval-required",
             "title": title,
             "thumbnail_s3_keys": thumbnail_s3_keys,
             "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
-            "final_video_s3_key": final_video_s3_key,
-            "script_s3_key": script_s3_key,
+            "final_video_s3_key": video_s3_key,
             "video_duration_sec": video_duration_sec,
+            "auto_publish": False,
         }
 
-    except Exception as exc:
-        log.error("Upload step FAILED: %s", exc, exc_info=True)
-        _write_error(run_id, "upload", exc)
-        raise
+    log.info("[%s] Refreshing YouTube access token", run_id)
+    if not primary_thumbnail_s3_key:
+        raise ValueError("primary_thumbnail_s3_key is required in metadata for auto-publish mode")
+    yt_credentials = get_secret("nexus/youtube_credentials")
+    access_token = _refresh_access_token(yt_credentials)
+
+    video_metadata = {
+        "snippet": {
+            "title": title[:100],
+            "description": description[:5000],
+            "tags": tags[:500],
+            "categoryId": "22",
+        },
+        "status": {
+            "privacyStatus": "private",
+            "selfDeclaredMadeForKids": False,
+        },
+    }
+
+    s3 = boto3.client("s3")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log.info("[%s] Downloading video from S3: %s", run_id, video_s3_key)
+        video_local = os.path.join(tmpdir, "final_video.mp4")
+        s3.download_file(S3_OUTPUTS_BUCKET, video_s3_key, video_local, Config=_S3_TRANSFER_CONFIG)
+
+        log.info("[%s] Uploading video to YouTube", run_id)
+        upload_result = _upload_video(video_local, video_metadata, access_token)
+        video_id = upload_result.get("id", "")
+        if not video_id:
+            raise RuntimeError("YouTube upload returned no video ID")
+        log.info("[%s] YouTube video ID: %s", run_id, video_id)
+
+        log.info("[%s] Downloading thumbnail from S3: %s", run_id, primary_thumbnail_s3_key)
+        thumbnail_local = os.path.join(tmpdir, "thumbnail.jpg")
+        s3.download_file(S3_OUTPUTS_BUCKET, primary_thumbnail_s3_key, thumbnail_local)
+        log.info("[%s] Setting thumbnail on YouTube", run_id)
+        _upload_thumbnail(video_id, thumbnail_local, access_token)
+
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    elapsed = time.time() - step_start
+    notify_step_complete("upload", run_id, [
+        {"name": "Title", "value": title[:100], "inline": False},
+        {"name": "YouTube URL", "value": video_url, "inline": False},
+        {"name": "Profile", "value": profile_name, "inline": True},
+    ], elapsed_sec=elapsed, dry_run=dry_run, color=0x2ECC71)
+
+    return {
+        "run_id": run_id,
+        "profile": profile_name,
+        "niche": niche,
+        "dry_run": False,
+        "video_id": video_id,
+        "video_url": video_url,
+        "title": title,
+        "thumbnail_s3_keys": thumbnail_s3_keys,
+        "primary_thumbnail_s3_key": primary_thumbnail_s3_key,
+        "final_video_s3_key": video_s3_key,
+        "video_duration_sec": video_duration_sec,
+    }
+
+
+def lambda_handler(event: dict, context) -> None:
+    sfn = boto3.client("stepfunctions")
+    for record in event["Records"]:
+        body = json.loads(record["body"])
+        run_id = body.get("run_id", "unknown")
+        task_token = body["task_token"]
+        try:
+            result = _process_record(body)
+            sfn.send_task_success(taskToken=task_token, output=json.dumps(result))
+        except Exception as exc:
+            log.error("[%s] Upload step FAILED: %s", run_id, exc, exc_info=True)
+            _write_error(run_id, "upload", exc)
+            sfn.send_task_failure(
+                taskToken=task_token,
+                error=type(exc).__name__,
+                cause=str(exc),
+            )
+

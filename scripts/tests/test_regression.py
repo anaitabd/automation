@@ -224,40 +224,35 @@ class TestUploadDryRunNotCallsYouTube:
             spec.loader.exec_module(mod)
         return mod
 
+    def _make_sqs_event(self, run_id="r1", dry_run=True):
+        body = {
+            "run_id": run_id,
+            "s3_key": f"{run_id}/v.mp4",
+            "metadata": {
+                "title": "T", "description": "", "tags": [],
+                "dry_run": dry_run, "profile": "documentary", "niche": "tech",
+                "primary_thumbnail_s3_key": f"{run_id}/t.jpg",
+                "thumbnail_s3_keys": [f"{run_id}/t.jpg"],
+                "video_duration_sec": 0.0,
+            },
+            "task_token": "tok-regression",
+        }
+        return {"Records": [{"body": json.dumps(body)}]}
+
     def test_dry_run_does_not_call_refresh_token(self):
         h = self._load_upload()
-        script = {"title": "T", "description": "", "tags": [], "cta": ""}
-        s3_mock = MagicMock()
-        s3_mock.get_object.return_value = {
-            "Body": MagicMock(read=lambda: json.dumps(script).encode())
-        }
-        with patch("boto3.client", return_value=s3_mock), \
+        sfn_mock = MagicMock()
+        with patch("boto3.client", return_value=sfn_mock), \
              patch.object(h, "_refresh_access_token") as mock_refresh:
-            h.lambda_handler({
-                "run_id": "r1", "profile": "documentary", "niche": "tech",
-                "final_video_s3_key": "r1/v.mp4",
-                "primary_thumbnail_s3_key": "r1/t.jpg",
-                "script_s3_key": "r1/s.json",
-                "dry_run": True,
-            }, None)
+            h.lambda_handler(self._make_sqs_event(dry_run=True), None)
         mock_refresh.assert_not_called()
 
     def test_dry_run_does_not_call_upload_video(self):
         h = self._load_upload()
-        script = {"title": "T", "description": "", "tags": [], "cta": ""}
-        s3_mock = MagicMock()
-        s3_mock.get_object.return_value = {
-            "Body": MagicMock(read=lambda: json.dumps(script).encode())
-        }
-        with patch("boto3.client", return_value=s3_mock), \
+        sfn_mock = MagicMock()
+        with patch("boto3.client", return_value=sfn_mock), \
              patch.object(h, "_upload_video") as mock_upload:
-            h.lambda_handler({
-                "run_id": "r1", "profile": "documentary", "niche": "tech",
-                "final_video_s3_key": "r1/v.mp4",
-                "primary_thumbnail_s3_key": "r1/t.jpg",
-                "script_s3_key": "r1/s.json",
-                "dry_run": True,
-            }, None)
+            h.lambda_handler(self._make_sqs_event(dry_run=True), None)
         mock_upload.assert_not_called()
 
 

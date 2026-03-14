@@ -154,21 +154,24 @@ class TestUploadDryRunContract:
             "nexus-upload",
             os.path.join(LAMBDAS_DIR, "nexus-upload", "handler.py"),
         )
-        script = {"title": "My Video", "description": "Desc", "tags": ["a"], "cta": ""}
-        s3_mock = MagicMock()
-        s3_mock.get_object.return_value = {
-            "Body": MagicMock(read=lambda: json.dumps(script).encode())
-        }
-        with patch("boto3.client", return_value=s3_mock):
-            result = h.lambda_handler({
-                "run_id": "r1",
-                "profile": "documentary",
-                "niche": "tech",
-                "final_video_s3_key": "r1/video.mp4",
+        sfn_mock = MagicMock()
+        body = {
+            "run_id": "r1",
+            "s3_key": "r1/video.mp4",
+            "metadata": {
+                "title": "My Video", "description": "Desc", "tags": ["a"],
+                "dry_run": True, "profile": "documentary", "niche": "tech",
                 "primary_thumbnail_s3_key": "r1/thumb.jpg",
-                "script_s3_key": "r1/script.json",
-                "dry_run": True,
-            }, None)
+                "thumbnail_s3_keys": ["r1/thumb.jpg"],
+                "video_duration_sec": 600.0,
+            },
+            "task_token": "tok-1",
+        }
+        sqs_event = {"Records": [{"body": json.dumps(body)}]}
+        with patch("boto3.client", return_value=sfn_mock):
+            h.lambda_handler(sqs_event, None)
+        call_kwargs = sfn_mock.send_task_success.call_args[1]
+        result = json.loads(call_kwargs["output"])
         notify_fields = {"run_id", "video_url", "title"}
         for field in notify_fields:
             assert field in result, f"Missing field for Notify: {field!r}"
@@ -182,21 +185,24 @@ class TestPipelineStateKeyPreservation:
             "nexus-upload",
             os.path.join(LAMBDAS_DIR, "nexus-upload", "handler.py"),
         )
-        script = {"title": "T", "description": "", "tags": [], "cta": ""}
-        s3_mock = MagicMock()
-        s3_mock.get_object.return_value = {
-            "Body": MagicMock(read=lambda: json.dumps(script).encode())
-        }
-        with patch("boto3.client", return_value=s3_mock):
-            result = h.lambda_handler({
-                "run_id": "preserved-id",
-                "profile": "finance",
-                "niche": "finance",
-                "final_video_s3_key": "x/v.mp4",
+        sfn_mock = MagicMock()
+        body = {
+            "run_id": "preserved-id",
+            "s3_key": "x/v.mp4",
+            "metadata": {
+                "title": "T", "description": "", "tags": [],
+                "dry_run": True, "profile": "finance", "niche": "finance",
                 "primary_thumbnail_s3_key": "x/t.jpg",
-                "script_s3_key": "x/s.json",
-                "dry_run": True,
-            }, None)
+                "thumbnail_s3_keys": ["x/t.jpg"],
+                "video_duration_sec": 0.0,
+            },
+            "task_token": "tok-2",
+        }
+        sqs_event = {"Records": [{"body": json.dumps(body)}]}
+        with patch("boto3.client", return_value=sfn_mock):
+            h.lambda_handler(sqs_event, None)
+        call_kwargs = sfn_mock.send_task_success.call_args[1]
+        result = json.loads(call_kwargs["output"])
         assert result["run_id"] == "preserved-id"
         assert result["profile"] == "finance"
         assert result["dry_run"] is True

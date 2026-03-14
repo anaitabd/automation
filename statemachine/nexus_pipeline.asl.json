@@ -1,64 +1,97 @@
 {
-  "Comment": "Nexus Cloud — serverless YouTube automation pipeline",
+  "Comment": "Nexus Cloud \u2014 serverless YouTube automation pipeline",
   "StartAt": "Initialize",
   "States": {
-
     "Initialize": {
       "Type": "Pass",
       "Comment": "Pass-through: run_id is always provided by the API or resume handler in the execution input.",
       "Next": "ResumeRouter"
     },
-
     "ResumeRouter": {
       "Type": "Choice",
       "Comment": "Route to the correct step when resume_from is set; default to Research for new runs.",
       "Choices": [
         {
           "And": [
-            { "Variable": "$.resume_from", "IsPresent": true },
-            { "Variable": "$.resume_from", "StringEquals": "Script" }
+            {
+              "Variable": "$.resume_from",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.resume_from",
+              "StringEquals": "Script"
+            }
           ],
           "Next": "Script"
         },
         {
           "And": [
-            { "Variable": "$.resume_from", "IsPresent": true },
-            { "Variable": "$.resume_from", "StringEquals": "AudioVisuals" }
+            {
+              "Variable": "$.resume_from",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.resume_from",
+              "StringEquals": "AudioVisuals"
+            }
           ],
           "Next": "AudioVisuals"
         },
         {
           "And": [
-            { "Variable": "$.resume_from", "IsPresent": true },
-            { "Variable": "$.resume_from", "StringEquals": "ContentAssembly" }
+            {
+              "Variable": "$.resume_from",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.resume_from",
+              "StringEquals": "ContentAssembly"
+            }
           ],
           "Next": "ContentAssembly"
         },
         {
           "And": [
-            { "Variable": "$.resume_from", "IsPresent": true },
-            { "Variable": "$.resume_from", "StringEquals": "Editor" }
+            {
+              "Variable": "$.resume_from",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.resume_from",
+              "StringEquals": "Editor"
+            }
           ],
           "Next": "ContentAssembly"
         },
         {
           "And": [
-            { "Variable": "$.resume_from", "IsPresent": true },
-            { "Variable": "$.resume_from", "StringEquals": "Thumbnail" }
+            {
+              "Variable": "$.resume_from",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.resume_from",
+              "StringEquals": "Thumbnail"
+            }
           ],
           "Next": "Thumbnail"
         },
         {
           "And": [
-            { "Variable": "$.resume_from", "IsPresent": true },
-            { "Variable": "$.resume_from", "StringEquals": "Notify" }
+            {
+              "Variable": "$.resume_from",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.resume_from",
+              "StringEquals": "Notify"
+            }
           ],
           "Next": "Notify"
         }
       ],
       "Default": "Research"
     },
-
     "Research": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
@@ -88,7 +121,11 @@
       "ResultPath": "$",
       "Retry": [
         {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException"
+          ],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -96,14 +133,15 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "ResultPath": "$.error",
           "Next": "ResearchError"
         }
       ],
       "Next": "Script"
     },
-
     "ResearchError": {
       "Type": "Pass",
       "Parameters": {
@@ -117,7 +155,6 @@
       "ResultPath": "$",
       "Next": "NotifyError"
     },
-
     "Script": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
@@ -152,7 +189,11 @@
       "ResultPath": "$",
       "Retry": [
         {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException"
+          ],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -160,14 +201,15 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "ResultPath": "$.error",
           "Next": "ScriptError"
         }
       ],
       "Next": "AudioVisuals"
     },
-
     "ScriptError": {
       "Type": "Pass",
       "Parameters": {
@@ -181,7 +223,6 @@
       "ResultPath": "$",
       "Next": "NotifyError"
     },
-
     "AudioVisuals": {
       "Type": "Parallel",
       "Branches": [
@@ -206,13 +247,34 @@
                     {
                       "Name": "nexus-audio",
                       "Environment": [
-                        { "Name": "RUN_ID", "Value.$": "$.run_id" },
-                        { "Name": "PROFILE", "Value.$": "$.profile" },
-                        { "Name": "DRY_RUN", "Value.$": "States.Format('{}', $.dry_run)" },
-                        { "Name": "NICHE", "Value.$": "$.niche" },
-                        { "Name": "SCRIPT_S3_KEY", "Value.$": "$.script_s3_key" },
-                        { "Name": "TITLE", "Value.$": "$.title" },
-                        { "Name": "TOTAL_DURATION_ESTIMATE", "Value.$": "States.Format('{}', $.total_duration_estimate)" }
+                        {
+                          "Name": "RUN_ID",
+                          "Value.$": "$.run_id"
+                        },
+                        {
+                          "Name": "PROFILE",
+                          "Value.$": "$.profile"
+                        },
+                        {
+                          "Name": "DRY_RUN",
+                          "Value.$": "States.Format('{}', $.dry_run)"
+                        },
+                        {
+                          "Name": "NICHE",
+                          "Value.$": "$.niche"
+                        },
+                        {
+                          "Name": "SCRIPT_S3_KEY",
+                          "Value.$": "$.script_s3_key"
+                        },
+                        {
+                          "Name": "TITLE",
+                          "Value.$": "$.title"
+                        },
+                        {
+                          "Name": "TOTAL_DURATION_ESTIMATE",
+                          "Value.$": "States.Format('{}', $.total_duration_estimate)"
+                        }
                       ]
                     }
                   ]
@@ -221,7 +283,10 @@
               "ResultPath": "$.ecs_result",
               "Retry": [
                 {
-                  "ErrorEquals": ["ECS.AmazonECSException", "States.TaskFailed"],
+                  "ErrorEquals": [
+                    "ECS.AmazonECSException",
+                    "States.TaskFailed"
+                  ],
                   "IntervalSeconds": 10,
                   "MaxAttempts": 2,
                   "BackoffRate": 2.0
@@ -273,13 +338,34 @@
                     {
                       "Name": "nexus-visuals",
                       "Environment": [
-                        { "Name": "RUN_ID", "Value.$": "$.run_id" },
-                        { "Name": "PROFILE", "Value.$": "$.profile" },
-                        { "Name": "DRY_RUN", "Value.$": "States.Format('{}', $.dry_run)" },
-                        { "Name": "NICHE", "Value.$": "$.niche" },
-                        { "Name": "SCRIPT_S3_KEY", "Value.$": "$.script_s3_key" },
-                        { "Name": "TITLE", "Value.$": "$.title" },
-                        { "Name": "TOTAL_DURATION_ESTIMATE", "Value.$": "States.Format('{}', $.total_duration_estimate)" }
+                        {
+                          "Name": "RUN_ID",
+                          "Value.$": "$.run_id"
+                        },
+                        {
+                          "Name": "PROFILE",
+                          "Value.$": "$.profile"
+                        },
+                        {
+                          "Name": "DRY_RUN",
+                          "Value.$": "States.Format('{}', $.dry_run)"
+                        },
+                        {
+                          "Name": "NICHE",
+                          "Value.$": "$.niche"
+                        },
+                        {
+                          "Name": "SCRIPT_S3_KEY",
+                          "Value.$": "$.script_s3_key"
+                        },
+                        {
+                          "Name": "TITLE",
+                          "Value.$": "$.title"
+                        },
+                        {
+                          "Name": "TOTAL_DURATION_ESTIMATE",
+                          "Value.$": "States.Format('{}', $.total_duration_estimate)"
+                        }
                       ]
                     }
                   ]
@@ -288,7 +374,10 @@
               "ResultPath": "$.ecs_result",
               "Retry": [
                 {
-                  "ErrorEquals": ["ECS.AmazonECSException", "States.TaskFailed"],
+                  "ErrorEquals": [
+                    "ECS.AmazonECSException",
+                    "States.TaskFailed"
+                  ],
                   "IntervalSeconds": 10,
                   "MaxAttempts": 2,
                   "BackoffRate": 2.0
@@ -302,14 +391,15 @@
       "ResultPath": "$",
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "ResultPath": "$.error",
           "Next": "AudioVisualsError"
         }
       ],
       "Next": "MergeParallelOutputs"
     },
-
     "AudioVisualsError": {
       "Type": "Pass",
       "Parameters": {
@@ -323,7 +413,6 @@
       "ResultPath": "$",
       "Next": "NotifyError"
     },
-
     "MergeParallelOutputs": {
       "Type": "Pass",
       "Parameters": {
@@ -343,7 +432,6 @@
       "ResultPath": "$",
       "Next": "ContentAssembly"
     },
-
     "ContentAssembly": {
       "Type": "Parallel",
       "Comment": "Editor (long-form) and Shorts (short-form) run in parallel.",
@@ -370,14 +458,38 @@
                     {
                       "Name": "nexus-editor",
                       "Environment": [
-                        { "Name": "RUN_ID", "Value.$": "$.run_id" },
-                        { "Name": "PROFILE", "Value.$": "$.profile" },
-                        { "Name": "DRY_RUN", "Value.$": "States.Format('{}', $.dry_run)" },
-                        { "Name": "NICHE", "Value.$": "$.niche" },
-                        { "Name": "SCRIPT_S3_KEY", "Value.$": "$.script_s3_key" },
-                        { "Name": "MIXED_AUDIO_S3_KEY", "Value.$": "$.mixed_audio_s3_key" },
-                        { "Name": "TITLE", "Value.$": "$.title" },
-                        { "Name": "TOTAL_DURATION_ESTIMATE", "Value.$": "States.Format('{}', $.total_duration_estimate)" }
+                        {
+                          "Name": "RUN_ID",
+                          "Value.$": "$.run_id"
+                        },
+                        {
+                          "Name": "PROFILE",
+                          "Value.$": "$.profile"
+                        },
+                        {
+                          "Name": "DRY_RUN",
+                          "Value.$": "States.Format('{}', $.dry_run)"
+                        },
+                        {
+                          "Name": "NICHE",
+                          "Value.$": "$.niche"
+                        },
+                        {
+                          "Name": "SCRIPT_S3_KEY",
+                          "Value.$": "$.script_s3_key"
+                        },
+                        {
+                          "Name": "MIXED_AUDIO_S3_KEY",
+                          "Value.$": "$.mixed_audio_s3_key"
+                        },
+                        {
+                          "Name": "TITLE",
+                          "Value.$": "$.title"
+                        },
+                        {
+                          "Name": "TOTAL_DURATION_ESTIMATE",
+                          "Value.$": "States.Format('{}', $.total_duration_estimate)"
+                        }
                       ]
                     }
                   ]
@@ -386,7 +498,10 @@
               "ResultPath": null,
               "Retry": [
                 {
-                  "ErrorEquals": ["ECS.AmazonECSException", "States.TaskFailed"],
+                  "ErrorEquals": [
+                    "ECS.AmazonECSException",
+                    "States.TaskFailed"
+                  ],
                   "IntervalSeconds": 15,
                   "MaxAttempts": 2,
                   "BackoffRate": 2.0
@@ -446,15 +561,42 @@
                     {
                       "Name": "nexus-shorts",
                       "Environment": [
-                        { "Name": "RUN_ID", "Value.$": "$.run_id" },
-                        { "Name": "PROFILE", "Value.$": "$.profile" },
-                        { "Name": "DRY_RUN", "Value.$": "States.Format('{}', $.dry_run)" },
-                        { "Name": "NICHE", "Value.$": "$.niche" },
-                        { "Name": "SCRIPT_S3_KEY", "Value.$": "$.script_s3_key" },
-                        { "Name": "MIXED_AUDIO_S3_KEY", "Value.$": "$.mixed_audio_s3_key" },
-                        { "Name": "TITLE", "Value.$": "$.title" },
-                        { "Name": "CHANNEL_ID", "Value.$": "$.channel_id" },
-                        { "Name": "SHORTS_TIERS", "Value.$": "$.shorts_tiers" }
+                        {
+                          "Name": "RUN_ID",
+                          "Value.$": "$.run_id"
+                        },
+                        {
+                          "Name": "PROFILE",
+                          "Value.$": "$.profile"
+                        },
+                        {
+                          "Name": "DRY_RUN",
+                          "Value.$": "States.Format('{}', $.dry_run)"
+                        },
+                        {
+                          "Name": "NICHE",
+                          "Value.$": "$.niche"
+                        },
+                        {
+                          "Name": "SCRIPT_S3_KEY",
+                          "Value.$": "$.script_s3_key"
+                        },
+                        {
+                          "Name": "MIXED_AUDIO_S3_KEY",
+                          "Value.$": "$.mixed_audio_s3_key"
+                        },
+                        {
+                          "Name": "TITLE",
+                          "Value.$": "$.title"
+                        },
+                        {
+                          "Name": "CHANNEL_ID",
+                          "Value.$": "$.channel_id"
+                        },
+                        {
+                          "Name": "SHORTS_TIERS",
+                          "Value.$": "$.shorts_tiers"
+                        }
                       ]
                     }
                   ]
@@ -463,7 +605,10 @@
               "ResultPath": null,
               "Retry": [
                 {
-                  "ErrorEquals": ["ECS.AmazonECSException", "States.TaskFailed"],
+                  "ErrorEquals": [
+                    "ECS.AmazonECSException",
+                    "States.TaskFailed"
+                  ],
                   "IntervalSeconds": 15,
                   "MaxAttempts": 2,
                   "BackoffRate": 2.0
@@ -471,7 +616,9 @@
               ],
               "Catch": [
                 {
-                  "ErrorEquals": ["States.ALL"],
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
                   "ResultPath": "$.shorts_error",
                   "Next": "ShortsSkipped"
                 }
@@ -504,14 +651,15 @@
       "ResultPath": "$",
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "ResultPath": "$.error",
           "Next": "EditorError"
         }
       ],
       "Next": "MergeContentOutputs"
     },
-
     "EditorError": {
       "Type": "Pass",
       "Parameters": {
@@ -525,7 +673,6 @@
       "ResultPath": "$",
       "Next": "NotifyError"
     },
-
     "MergeContentOutputs": {
       "Type": "Pass",
       "Comment": "Merge editor (branch 0) and shorts (branch 1) outputs.",
@@ -544,7 +691,6 @@
       "ResultPath": "$",
       "Next": "Thumbnail"
     },
-
     "Thumbnail": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
@@ -576,7 +722,11 @@
       "ResultPath": "$",
       "Retry": [
         {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException"
+          ],
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2.0
@@ -584,14 +734,15 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "ResultPath": "$.error",
           "Next": "ThumbnailError"
         }
       ],
       "Next": "Upload"
     },
-
     "ThumbnailError": {
       "Type": "Pass",
       "Parameters": {
@@ -605,57 +756,30 @@
       "ResultPath": "$",
       "Next": "NotifyError"
     },
-
     "Upload": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
       "Parameters": {
-        "FunctionName": "${NexusUploadArn}",
-        "Payload": {
+        "QueueUrl": "${UploadQueueUrl}",
+        "MessageBody": {
           "run_id.$": "$.run_id",
-          "profile.$": "$.profile",
-          "dry_run.$": "$.dry_run",
-          "niche.$": "$.niche",
-          "script_s3_key.$": "$.script_s3_key",
-          "final_video_s3_key.$": "$.final_video_s3_key",
-          "primary_thumbnail_s3_key.$": "$.primary_thumbnail_s3_key",
-          "thumbnail_s3_keys.$": "$.thumbnail_s3_keys",
-          "title.$": "$.title",
-          "video_duration_sec.$": "$.video_duration_sec"
+          "s3_key.$": "$.video_s3_key",
+          "metadata.$": "$.video_metadata",
+          "task_token.$": "$$.Task.Token"
         }
       },
-      "ResultSelector": {
-        "run_id.$": "$.Payload.run_id",
-        "profile.$": "$.Payload.profile",
-        "dry_run.$": "$.Payload.dry_run",
-        "niche.$": "$.Payload.niche",
-        "title.$": "$.Payload.title",
-        "final_video_s3_key.$": "$.Payload.final_video_s3_key",
-        "video_duration_sec.$": "$.Payload.video_duration_sec",
-        "thumbnail_s3_keys.$": "$.Payload.thumbnail_s3_keys",
-        "primary_thumbnail_s3_key.$": "$.Payload.primary_thumbnail_s3_key",
-        "video_url.$": "$.Payload.video_url",
-        "video_id.$": "$.Payload.video_id"
-      },
-      "ResultPath": "$",
-      "Retry": [
-        {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 2,
-          "BackoffRate": 2.0
-        }
-      ],
+      "HeartbeatSeconds": 3600,
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "ResultPath": "$.error",
           "Next": "UploadError"
         }
       ],
       "Next": "Notify"
     },
-
     "UploadError": {
       "Type": "Pass",
       "Parameters": {
@@ -669,7 +793,6 @@
       "ResultPath": "$",
       "Next": "NotifyError"
     },
-
     "Notify": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
@@ -693,7 +816,10 @@
       "End": true,
       "Retry": [
         {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"],
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException"
+          ],
           "IntervalSeconds": 2,
           "MaxAttempts": 2,
           "BackoffRate": 2.0
@@ -701,13 +827,14 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "ResultPath": "$.error",
           "Next": "NotifyError"
         }
       ]
     },
-
     "NotifyError": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
@@ -725,14 +852,15 @@
       "Next": "PipelineFailed",
       "Retry": [
         {
-          "ErrorEquals": ["Lambda.ServiceException"],
+          "ErrorEquals": [
+            "Lambda.ServiceException"
+          ],
           "IntervalSeconds": 2,
           "MaxAttempts": 2,
           "BackoffRate": 2.0
         }
       ]
     },
-
     "PipelineFailed": {
       "Type": "Fail",
       "Error": "PipelineFailed",
