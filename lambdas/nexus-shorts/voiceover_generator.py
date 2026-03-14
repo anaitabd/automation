@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import time
@@ -14,6 +15,10 @@ import boto3
 from config import FFMPEG_BIN, SCRATCH_DIR
 
 _cache: dict = {}
+
+log = logging.getLogger(__name__)
+
+S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 
 POLLY_VOICE_MAP = {
     "documentary": "Gregory",
@@ -39,6 +44,16 @@ def get_secret(name: str) -> dict:
             client.get_secret_value(SecretId=name)["SecretString"]
         )
     return _cache[name]
+
+
+def _load_cached_timestamps(run_id: str) -> dict | None:
+    s3 = boto3.client("s3")
+    key = f"{run_id}/audio/word_timestamps.json"
+    try:
+        obj = s3.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=key)
+        return json.loads(obj["Body"].read())
+    except Exception:
+        return None
 
 
 def _http_post_bytes(url: str, headers: dict, body: dict, retries: int = 3) -> bytes:
@@ -136,12 +151,19 @@ def generate_voiceover(
     profile: dict,
     target_duration: float,
     tmpdir: str,
-) -> str:
+    run_id: str = "",
+) -> tuple[str, dict | None]:
     """Generate a voiceover WAV file for a short-form narration.
 
     Uses voice settings from the profile (not hardcoded).
-    Returns the local path to the output WAV.
+    Returns (local WAV path, cached word timestamps or None).
     """
+    cached_timestamps = None
+    if run_id:
+        cached_timestamps = _load_cached_timestamps(run_id)
+        if cached_timestamps is not None:
+            log.info("[%s] word_timestamps.json found — reusing cached timestamps", run_id)
+
     el_secret = get_secret("nexus/elevenlabs_api_key")
     api_key = el_secret["api_key"]
 
@@ -209,9 +231,9 @@ def generate_voiceover(
              sped_path],
             check=True, capture_output=True,
         )
-        return sped_path
+        return sped_path, cached_timestamps
 
-    return wav_path
+    return wav_path, cached_timestamps
 
 
 def _get_duration(path: str) -> float:

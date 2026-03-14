@@ -175,8 +175,8 @@ def _process_single_short(
 
             # 3. Generate voiceover
             log.info("[%s] Generating voiceover", short_id)
-            vo_path = generate_voiceover(
-                narration, short_id, profile, target_duration, tmpdir
+            vo_path, _ = generate_voiceover(
+                narration, short_id, profile, target_duration, tmpdir, run_id
             )
 
             # 4. Detect beats
