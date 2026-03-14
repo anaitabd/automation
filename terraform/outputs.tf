@@ -19,3 +19,9 @@ output "config_bucket" {
 output "ecs_cluster_arn" {
   value = module.compute.ecs_cluster_arn
 }
+output "upload_queue_url" {
+  value = module.compute.upload_queue_url
+}
+output "upload_dlq_url" {
+  value = module.compute.upload_dlq_url
+}

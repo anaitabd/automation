@@ -170,6 +170,24 @@ resource "aws_iam_role_policy" "upload" {
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = ["${local.secrets_arn_prefix}youtube_credentials*"]
       },
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:SendMessage",
+        ]
+        Resource = ["*"]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "states:SendTaskSuccess",
+          "states:SendTaskFailure",
+        ]
+        Resource = ["*"]
+      },
     ]
   })
 }
@@ -477,6 +495,12 @@ resource "aws_iam_role_policy" "sfn" {
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]
         Resource = ["arn:aws:lambda:${local.region}:${local.account_id}:function:nexus-*"]
+      },
+      {
+        Sid      = "SendSQSMessages"
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = ["arn:aws:sqs:${local.region}:${local.account_id}:nexus-*"]
       },
       {
         Sid      = "RunECSTasks"

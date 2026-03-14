@@ -41,103 +41,118 @@ def _load():
     return mod
 
 
-def _make_event(**overrides):
-    base = {
-        "run_id": "run-001",
+def _make_sqs_event(run_id="run-001", s3_key="run-001/review/final_video.mp4",
+                    task_token="token-123", **metadata_overrides):
+    metadata = {
+        "title": "Test Video",
+        "description": "Test description",
+        "tags": [],
+        "dry_run": False,
         "profile": "documentary",
         "niche": "technology",
-        "final_video_s3_key": "run-001/review/final_video.mp4",
         "primary_thumbnail_s3_key": "run-001/thumbnails/thumbnail_0.jpg",
-        "script_s3_key": "run-001/script.json",
-        "dry_run": False,
+        "thumbnail_s3_keys": ["run-001/thumbnails/thumbnail_0.jpg"],
         "video_duration_sec": 600.0,
     }
-    base.update(overrides)
-    return base
+    metadata.update(metadata_overrides)
+    body = {"run_id": run_id, "s3_key": s3_key, "metadata": metadata, "task_token": task_token}
+    return {"Records": [{"body": json.dumps(body)}]}
 
 
-def _make_script_s3(s3_mock, script):
-    s3_mock.get_object.return_value = {
-        "Body": MagicMock(read=lambda: json.dumps(script).encode("utf-8"))
-    }
+def _get_success_output(sfn_mock):
+    call_kwargs = sfn_mock.send_task_success.call_args[1]
+    return json.loads(call_kwargs["output"])
 
 
 class TestDryRun:
     def test_dry_run_returns_stub_video_id(self):
         h = _load()
-        script = {"title": "Test", "description": "Desc", "tags": [], "cta": ""}
-        s3_mock = MagicMock()
-        _make_script_s3(s3_mock, script)
-        with patch("boto3.client", return_value=s3_mock):
-            result = h.lambda_handler(_make_event(dry_run=True), None)
+        sfn_mock = MagicMock()
+        with patch("boto3.client", return_value=sfn_mock):
+            h.lambda_handler(_make_sqs_event(dry_run=True), None)
+        result = _get_success_output(sfn_mock)
         assert result["video_id"] == "DRY_RUN_VIDEO_ID"
         assert result["dry_run"] is True
 
     def test_dry_run_url_is_stub(self):
         h = _load()
-        script = {"title": "Test", "description": "", "tags": [], "cta": ""}
-        s3_mock = MagicMock()
-        _make_script_s3(s3_mock, script)
-        with patch("boto3.client", return_value=s3_mock):
-            result = h.lambda_handler(_make_event(dry_run=True), None)
+        sfn_mock = MagicMock()
+        with patch("boto3.client", return_value=sfn_mock):
+            h.lambda_handler(_make_sqs_event(dry_run=True), None)
+        result = _get_success_output(sfn_mock)
         assert "DRY_RUN" in result["video_url"]
 
     def test_dry_run_preserves_run_id(self):
         h = _load()
-        script = {"title": "Test", "description": "", "tags": [], "cta": ""}
-        s3_mock = MagicMock()
-        _make_script_s3(s3_mock, script)
-        with patch("boto3.client", return_value=s3_mock):
-            result = h.lambda_handler(_make_event(run_id="my-run", dry_run=True), None)
+        sfn_mock = MagicMock()
+        with patch("boto3.client", return_value=sfn_mock):
+            h.lambda_handler(_make_sqs_event(run_id="my-run", dry_run=True), None)
+        result = _get_success_output(sfn_mock)
         assert result["run_id"] == "my-run"
 
     def test_dry_run_preserves_s3_keys(self):
         h = _load()
-        script = {"title": "T", "description": "", "tags": [], "cta": ""}
-        s3_mock = MagicMock()
-        _make_script_s3(s3_mock, script)
-        with patch("boto3.client", return_value=s3_mock):
-            result = h.lambda_handler(_make_event(dry_run=True), None)
+        sfn_mock = MagicMock()
+        with patch("boto3.client", return_value=sfn_mock):
+            h.lambda_handler(_make_sqs_event(s3_key="run-001/review/final_video.mp4", dry_run=True), None)
+        result = _get_success_output(sfn_mock)
         assert result["final_video_s3_key"] == "run-001/review/final_video.mp4"
-        assert result["script_s3_key"] == "run-001/script.json"
 
 
 class TestManualApprovalMode:
     def test_pending_approval_returned_when_auto_publish_false(self):
         h = _load()
-        script = {"title": "My Video", "description": "Desc", "tags": ["a"], "cta": ""}
+        sfn_mock = MagicMock()
         s3_mock = MagicMock()
-        _make_script_s3(s3_mock, script)
-        with patch("boto3.client", return_value=s3_mock), \
+
+        def client_factory(service, **kwargs):
+            if service == "stepfunctions":
+                return sfn_mock
+            return s3_mock
+
+        with patch("boto3.client", side_effect=client_factory), \
              patch.dict(os.environ, {"YOUTUBE_AUTO_PUBLISH": "false"}):
-            result = h.lambda_handler(_make_event(dry_run=False), None)
+            h.lambda_handler(_make_sqs_event(dry_run=False), None)
+        result = _get_success_output(sfn_mock)
         assert result["video_id"] == "PENDING_MANUAL_APPROVAL"
 
     def test_pending_approval_writes_json_to_s3(self):
         h = _load()
-        script = {"title": "My Video", "description": "", "tags": [], "cta": ""}
+        sfn_mock = MagicMock()
         s3_mock = MagicMock()
-        _make_script_s3(s3_mock, script)
-        with patch("boto3.client", return_value=s3_mock), \
+
+        def client_factory(service, **kwargs):
+            if service == "stepfunctions":
+                return sfn_mock
+            return s3_mock
+
+        with patch("boto3.client", side_effect=client_factory), \
              patch.dict(os.environ, {"YOUTUBE_AUTO_PUBLISH": "false"}):
-            h.lambda_handler(_make_event(dry_run=False), None)
+            h.lambda_handler(_make_sqs_event(dry_run=False), None)
         put_calls = [c for c in s3_mock.put_object.call_args_list
                      if "pending_upload.json" in str(c)]
         assert len(put_calls) > 0
 
-    def test_cta_appended_to_description(self):
+    def test_description_available_in_pending_payload(self):
         h = _load()
-        script = {"title": "T", "description": "Base", "tags": [], "cta": "Subscribe!"}
+        sfn_mock = MagicMock()
         s3_mock = MagicMock()
-        _make_script_s3(s3_mock, script)
         put_calls = []
+
         def capturing_put(**kwargs):
             put_calls.append(kwargs)
             return {}
+
         s3_mock.put_object.side_effect = capturing_put
-        with patch("boto3.client", return_value=s3_mock), \
+
+        def client_factory(service, **kwargs):
+            if service == "stepfunctions":
+                return sfn_mock
+            return s3_mock
+
+        with patch("boto3.client", side_effect=client_factory), \
              patch.dict(os.environ, {"YOUTUBE_AUTO_PUBLISH": "false"}):
-            h.lambda_handler(_make_event(dry_run=False), None)
+            h.lambda_handler(_make_sqs_event(dry_run=False, description="Base desc"), None)
         pending_calls = [c for c in put_calls if "pending_upload.json" in c.get("Key", "")]
         assert len(pending_calls) > 0, "pending_upload.json was not written to S3"
 
@@ -186,3 +201,4 @@ class TestConstants:
     def test_multipart_threshold_at_least_50mb(self):
         h = _load()
         assert h._S3_MULTIPART_THRESHOLD >= 50 * 1024 * 1024
+

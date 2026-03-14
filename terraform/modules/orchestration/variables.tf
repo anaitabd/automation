@@ -11,3 +11,4 @@ variable "thumbnail_arn"        { type = string }
 variable "upload_arn"           { type = string }
 variable "notify_arn"           { type = string }
 variable "notify_error_arn"     { type = string }
+variable "upload_queue_url"     { type = string }

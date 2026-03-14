@@ -37,3 +37,6 @@ output "all_ecs_task_def_arns" {
     aws_ecs_task_definition.shorts.arn,
   ]
 }
+
+output "upload_queue_url" { value = aws_sqs_queue.nexus_upload_queue.url }
+output "upload_dlq_url"   { value = aws_sqs_queue.nexus_upload_dlq.url }
