@@ -795,30 +795,17 @@
     },
     "Notify": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
-        "FunctionName": "${NexusNotifyArn}",
-        "Payload": {
-          "run_id.$": "$.run_id",
-          "profile.$": "$.profile",
-          "dry_run.$": "$.dry_run",
-          "niche.$": "$.niche",
-          "title.$": "$.title",
-          "final_video_s3_key.$": "$.final_video_s3_key",
-          "video_url.$": "$.video_url",
-          "video_duration_sec.$": "$.video_duration_sec",
-          "thumbnail_s3_keys.$": "$.thumbnail_s3_keys",
-          "primary_thumbnail_s3_key.$": "$.primary_thumbnail_s3_key",
-          "shorts_manifest_s3_key.$": "States.Format('{}/shorts/manifest.json', $.run_id)",
-          "execution_start_time.$": "$$.Execution.StartTime"
-        }
+        "TopicArn": "${NotificationTopicArn}",
+        "Message.$": "States.JsonToString($)"
       },
       "End": true,
       "Retry": [
         {
           "ErrorEquals": [
-            "Lambda.ServiceException",
-            "Lambda.AWSLambdaException"
+            "States.TaskFailed",
+            "States.Timeout"
           ],
           "IntervalSeconds": 2,
           "MaxAttempts": 2,

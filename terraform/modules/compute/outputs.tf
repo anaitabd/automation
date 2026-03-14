@@ -40,3 +40,6 @@ output "all_ecs_task_def_arns" {
 
 output "upload_queue_url" { value = aws_sqs_queue.nexus_upload_queue.url }
 output "upload_dlq_url"   { value = aws_sqs_queue.nexus_upload_dlq.url }
+
+output "notification_topic_arn" { value = aws_sns_topic.nexus_notifications.arn }
+output "run_logs_table_name"    { value = aws_dynamodb_table.nexus_run_logs.name }

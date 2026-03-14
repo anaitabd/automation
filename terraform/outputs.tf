@@ -25,3 +25,9 @@ output "upload_queue_url" {
 output "upload_dlq_url" {
   value = module.compute.upload_dlq_url
 }
+output "notification_topic_arn" {
+  value = module.compute.notification_topic_arn
+}
+output "run_logs_table_name" {
+  value = module.compute.run_logs_table_name
+}

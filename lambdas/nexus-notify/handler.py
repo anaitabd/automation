@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import time
@@ -207,7 +208,29 @@ def _write_error(run_id: str, step: str, exc: Exception) -> None:
         pass
 
 
+def _write_run_log(run_id: str, status: str) -> None:
+    try:
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        ttl = int((now + datetime.timedelta(days=90)).timestamp())
+        dynamodb = boto3.client("dynamodb")
+        dynamodb.put_item(
+            TableName="nexus-run-logs",
+            Item={
+                "run_id": {"S": run_id},
+                "timestamp": {"S": now.isoformat()},
+                "status": {"S": status},
+                "ttl": {"N": str(ttl)},
+            },
+        )
+    except Exception as exc:
+        print(f"[WARN] _write_run_log failed: {exc}")
+
+
 def lambda_handler(event: dict, context) -> dict:
+    if "Records" in event:
+        sns_message = event["Records"][0]["Sns"]["Message"]
+        event = json.loads(sns_message)
+
     run_id: str = event.get("run_id", "unknown")
     profile_name: str = event.get("profile", "documentary")
     niche: str = event.get("niche", "")
@@ -277,6 +300,7 @@ def lambda_handler(event: dict, context) -> dict:
             )
 
         if not dry_run:
+            _write_run_log(run_id, "completed")
             discord_webhook = get_secret("nexus/discord_webhook_url").get("url", "")
             if discord_webhook:
                 _send_discord(

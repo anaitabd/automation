@@ -222,6 +222,16 @@ resource "aws_iam_role_policy" "notify" {
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = ["${local.secrets_arn_prefix}discord_webhook_url*", "${local.secrets_arn_prefix}db_credentials*"]
       },
+      {
+        Effect   = "Allow"
+        Action   = ["sns:Publish"]
+        Resource = ["arn:aws:sns:${local.region}:${local.account_id}:nexus-*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query"]
+        Resource = ["arn:aws:dynamodb:${local.region}:${local.account_id}:table/nexus-*"]
+      },
     ]
   })
 }
@@ -501,6 +511,12 @@ resource "aws_iam_role_policy" "sfn" {
         Effect   = "Allow"
         Action   = ["sqs:SendMessage"]
         Resource = ["arn:aws:sqs:${local.region}:${local.account_id}:nexus-*"]
+      },
+      {
+        Sid      = "PublishSNS"
+        Effect   = "Allow"
+        Action   = ["sns:Publish"]
+        Resource = ["arn:aws:sns:${local.region}:${local.account_id}:nexus-*"]
       },
       {
         Sid      = "RunECSTasks"
