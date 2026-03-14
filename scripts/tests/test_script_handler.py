@@ -93,6 +93,106 @@ class TestScriptHandler(unittest.TestCase):
             except Exception:
                 pass
 
+    def test_pass_6_uses_opus_model(self):
+        h = _load_script_handler()
+        captured = {}
+
+        def capturing_bedrock_call(prompt, max_tokens=4096, retries=3, model_id="", system=None):
+            captured["model_id"] = model_id
+            return json.dumps({
+                "title": "Test",
+                "hook": "Hook",
+                "hook_emotion": "curious",
+                "scenes": [{"scene_id": 1, "title": "S1", "narration_text": "text",
+                             "nova_canvas_prompt": "p", "nova_reel_prompt": "r",
+                             "text_overlay": "", "estimated_duration": 60}],
+                "cta": "cta",
+                "total_duration_estimate": 60,
+                "mood": "neutral",
+                "description": "desc",
+                "tags": [],
+                "factual_confidence": "high",
+            })
+
+        with patch.object(h, "_bedrock_call", side_effect=capturing_bedrock_call):
+            h._pass6_final_polish({"title": "Test", "scenes": [], "hook": "h"})
+
+        self.assertIn("opus-4-5", captured.get("model_id", ""))
+
+    def test_passes_1_to_5_use_sonnet_model(self):
+        h = _load_script_handler()
+        captured = {}
+
+        def capturing_bedrock_call(prompt, max_tokens=4096, retries=3, model_id="", system=None):
+            captured["model_id"] = model_id
+            return json.dumps({
+                "title": "Test",
+                "hook": "Hook",
+                "hook_emotion": "curious",
+                "scenes": [{"scene_id": 1, "title": "S1", "narration_text": "text",
+                             "nova_canvas_prompt": "p", "nova_reel_prompt": "r",
+                             "text_overlay": "", "estimated_duration": 60,
+                             "emotion": "neutral", "source_notes": "ok",
+                             "visual_cue": {"camera_style": "static", "color_grade": "cinematic_warm",
+                                            "transition_in": "dissolve", "overlay_type": "none"}}],
+                "cta": "cta",
+                "total_duration_estimate": 60,
+                "mood": "neutral",
+                "description": "desc",
+                "tags": [],
+                "factual_confidence": "high",
+            })
+
+        profile = {
+            "script": {"target_duration_min": 10, "target_duration_max": 16,
+                       "tone": "authoritative", "narrative_style": "third_person"},
+            "visuals": {},
+            "editing": {},
+        }
+        with patch.object(h, "_bedrock_call", side_effect=capturing_bedrock_call):
+            h._pass1_structure("AI", "future", "context", profile, max_attempts=1)
+
+        self.assertIn("sonnet-4-5", captured.get("model_id", ""))
+
+    def test_system_prompt_has_cache_control(self):
+        h = _load_script_handler()
+        captured = {}
+
+        def capturing_bedrock_call(prompt, max_tokens=4096, retries=3, model_id="", system=None):
+            captured["system"] = system
+            return json.dumps({
+                "title": "Test",
+                "hook": "Hook",
+                "hook_emotion": "curious",
+                "scenes": [{"scene_id": 1, "title": "S1", "narration_text": "text",
+                             "nova_canvas_prompt": "p", "nova_reel_prompt": "r",
+                             "text_overlay": "", "estimated_duration": 60,
+                             "emotion": "neutral", "source_notes": "ok",
+                             "visual_cue": {"camera_style": "static", "color_grade": "cinematic_warm",
+                                            "transition_in": "dissolve", "overlay_type": "none"}}],
+                "cta": "cta",
+                "total_duration_estimate": 60,
+                "mood": "neutral",
+                "description": "desc",
+                "tags": [],
+                "factual_confidence": "high",
+            })
+
+        profile = {
+            "script": {"target_duration_min": 10, "target_duration_max": 16,
+                       "tone": "authoritative", "narrative_style": "third_person"},
+            "visuals": {},
+            "editing": {},
+        }
+        with patch.object(h, "_bedrock_call", side_effect=capturing_bedrock_call):
+            h._pass1_structure("AI", "future", "context", profile, max_attempts=1)
+
+        system = captured.get("system")
+        self.assertIsNotNone(system, "system parameter should be passed for pass 1")
+        self.assertIsInstance(system, list)
+        self.assertTrue(len(system) > 0)
+        self.assertIn("cache_control", system[0])
+
 
 if __name__ == "__main__":
     unittest.main()
