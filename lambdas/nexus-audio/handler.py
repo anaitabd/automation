@@ -44,9 +44,19 @@ MUSIC_MOOD_KEYWORDS = {
 }
 
 POLLY_VOICE_MAP = {
-    "documentary": "Matthew",
+    "documentary": "Gregory",
     "finance": "Matthew",
-    "entertainment": "Joanna",
+    "entertainment": "Stephen",
+}
+
+SSML_EMOTION_MAP = {
+    "tense":         {"rate": "slow",   "pitch": "-2st"},
+    "excited":       {"rate": "fast",   "pitch": "+3st"},
+    "reflective":    {"rate": "x-slow", "pitch": "-3st"},
+    "authoritative": {"rate": "medium", "pitch": "-1st"},
+    "somber":        {"rate": "slow",   "pitch": "-4st"},
+    "hopeful":       {"rate": "medium", "pitch": "+1st"},
+    "neutral":       {"rate": "medium", "pitch": "0st"},
 }
 
 def _find_ffmpeg() -> str:
@@ -195,19 +205,10 @@ def _extract_tts_error(exc: Exception) -> tuple[int | None, dict]:
 
 def _should_fallback_to_polly(exc: Exception) -> bool:
     status_code, payload = _extract_tts_error(exc)
-    if status_code in {401, 402, 403, 429}:
+    if status_code in {401, 429}:
         return True
-
-    detail = payload.get("detail") if isinstance(payload, dict) else None
-    if isinstance(detail, dict):
-        status = str(detail.get("status", "")).lower()
-        message = str(detail.get("message", "")).lower()
-        return any(
-            token in f"{status} {message}"
-            for token in ("quota_exceeded", "unauthorized", "voice_not", "forbidden")
-        )
-
-    return False
+    body_str = json.dumps(payload).lower() if isinstance(payload, dict) else str(payload).lower()
+    return "quota_exceeded" in body_str or "credits_used" in body_str
 
 
 def _format_tts_error(exc: Exception) -> str:
@@ -233,27 +234,48 @@ def _get_polly_voice_id(profile_name: str, profile: dict) -> str:
     )
 
 
-def _synthesize_sentence_polly(text: str, profile_name: str, profile: dict, retries: int = 2) -> bytes:
+def _build_ssml(text: str, emotion: str) -> str:
+    mapping = SSML_EMOTION_MAP.get(emotion, SSML_EMOTION_MAP["neutral"])
+    rate = mapping["rate"]
+    pitch = mapping["pitch"]
+    return (
+        f'<speak><prosody rate="{rate}" pitch="{pitch}">'
+        f'<amazon:effect name="drc">{text}</amazon:effect>'
+        f'</prosody></speak>'
+    )
+
+
+def _synthesize_sentence_polly_neural(
+    text: str, emotion: str, profile_name: str, profile: dict
+) -> bytes:
     polly = boto3.client("polly")
     voice_id = _get_polly_voice_id(profile_name, profile)
-    last_exc: Exception | None = None
-    for attempt in range(retries):
-        try:
-            response = polly.synthesize_speech(
-                Engine="neural",
-                VoiceId=voice_id,
-                OutputFormat="mp3",
-                SampleRate="24000",
-                Text=text,
-                TextType="text",
-            )
-            return response["AudioStream"].read()
-        except Exception as exc:
-            last_exc = exc
-            if attempt == retries - 1:
-                raise
-            time.sleep(2 ** attempt)
-    raise RuntimeError(f"Polly synthesis failed: {last_exc}")
+    ssml_text = _build_ssml(text, emotion)
+    response = polly.synthesize_speech(
+        Engine="neural",
+        VoiceId=voice_id,
+        OutputFormat="mp3",
+        SampleRate="24000",
+        Text=ssml_text,
+        TextType="ssml",
+    )
+    return response["AudioStream"].read()
+
+
+def _synthesize_sentence_polly_standard(
+    text: str, profile_name: str, profile: dict
+) -> bytes:
+    polly = boto3.client("polly")
+    voice_id = _get_polly_voice_id(profile_name, profile)
+    response = polly.synthesize_speech(
+        Engine="standard",
+        VoiceId=voice_id,
+        OutputFormat="mp3",
+        SampleRate="22050",
+        Text=text,
+        TextType="text",
+    )
+    return response["AudioStream"].read()
 
 
 def _synthesize_sentence_with_fallback(
@@ -263,19 +285,28 @@ def _synthesize_sentence_with_fallback(
     api_key: str,
     profile_name: str,
     profile: dict,
+    emotion: str = "neutral",
 ) -> bytes:
     try:
         return _synthesize_sentence(text, voice_id, voice_settings, api_key)
     except Exception as exc:
         if not _should_fallback_to_polly(exc):
             raise
-        voice_name = _get_polly_voice_id(profile_name, profile)
+        polly_voice = _get_polly_voice_id(profile_name, profile)
         log.warning(
-            "ElevenLabs unavailable (%s). Falling back to Polly voice %s",
+            "ElevenLabs unavailable (%s). Falling back to Polly Neural voice %s",
             _format_tts_error(exc),
-            voice_name,
+            polly_voice,
         )
-        return _synthesize_sentence_polly(_clean_text(text), profile_name, profile)
+        try:
+            return _synthesize_sentence_polly_neural(_clean_text(text), emotion, profile_name, profile)
+        except Exception as polly_exc:
+            log.warning(
+                "Polly Neural failed (%s). Falling back to Polly Standard voice %s",
+                polly_exc,
+                polly_voice,
+            )
+            return _synthesize_sentence_polly_standard(_clean_text(text), profile_name, profile)
 
 
 def _generate_voiceover(
@@ -332,6 +363,7 @@ def _generate_voiceover(
             api_key,
             profile_name,
             profile,
+            emotion=emotion,
         )
         seg_path = os.path.join(tmpdir, f"seg_{idx:04d}.mp3")
         with open(seg_path, "wb") as f:

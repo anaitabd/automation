@@ -259,3 +259,109 @@ class TestPollyFallback:
                     "documentary",
                     {"voice": {}},
                 )
+
+
+class TestPollyFallbackExtended:
+    def _make_http_error(self, code: int, body: dict | None = None) -> urllib.error.HTTPError:
+        import io
+        raw = json.dumps(body or {}).encode("utf-8")
+        return urllib.error.HTTPError(
+            url="https://api.elevenlabs.io/v1/text-to-speech/test-voice",
+            code=code,
+            msg="Error",
+            hdrs=None,
+            fp=io.BytesIO(raw),
+        )
+
+    def test_elevenlabs_429_triggers_polly_fallback(self):
+        h = _load()
+        http_error = self._make_http_error(429)
+        polly = MagicMock()
+        polly.synthesize_speech.return_value = {"AudioStream": io.BytesIO(b"polly-bytes")}
+
+        with patch.object(h, "_synthesize_sentence", side_effect=http_error), \
+             patch("boto3.client", return_value=polly):
+            result = h._synthesize_sentence_with_fallback(
+                "hello world",
+                "test-voice",
+                {},
+                "test-key",
+                "documentary",
+                {"voice": {}},
+            )
+
+        assert result == b"polly-bytes"
+        polly.synthesize_speech.assert_called_once()
+
+    def test_elevenlabs_401_triggers_polly_fallback(self):
+        h = _load()
+        http_error = self._make_http_error(401)
+        polly = MagicMock()
+        polly.synthesize_speech.return_value = {"AudioStream": io.BytesIO(b"polly-bytes-401")}
+
+        with patch.object(h, "_synthesize_sentence", side_effect=http_error), \
+             patch("boto3.client", return_value=polly):
+            result = h._synthesize_sentence_with_fallback(
+                "hello world",
+                "test-voice",
+                {},
+                "test-key",
+                "documentary",
+                {"voice": {}},
+            )
+
+        assert result == b"polly-bytes-401"
+        polly.synthesize_speech.assert_called_once()
+
+    def test_polly_neural_ssml_emotion_mapping(self):
+        h = _load()
+        expected = {
+            "tense":         {"rate": "slow",   "pitch": "-2st"},
+            "excited":       {"rate": "fast",   "pitch": "+3st"},
+            "reflective":    {"rate": "x-slow", "pitch": "-3st"},
+            "authoritative": {"rate": "medium", "pitch": "-1st"},
+            "somber":        {"rate": "slow",   "pitch": "-4st"},
+            "hopeful":       {"rate": "medium", "pitch": "+1st"},
+            "neutral":       {"rate": "medium", "pitch": "0st"},
+        }
+        for emotion, attrs in expected.items():
+            ssml = h._build_ssml("test text", emotion)
+            assert f'rate="{attrs["rate"]}"' in ssml, f"{emotion}: rate mismatch"
+            assert f'pitch="{attrs["pitch"]}"' in ssml, f"{emotion}: pitch mismatch"
+            assert "test text" in ssml
+            assert '<amazon:effect name="drc">' in ssml
+
+    def test_polly_standard_called_when_neural_fails(self):
+        h = _load()
+        http_error = self._make_http_error(429)
+
+        polly_neural = MagicMock()
+        polly_neural.synthesize_speech.side_effect = RuntimeError("neural unavailable")
+
+        polly_standard = MagicMock()
+        polly_standard.synthesize_speech.return_value = {"AudioStream": io.BytesIO(b"standard-bytes")}
+
+        polly_call_count = [0]
+
+        def fake_boto3_client(service):
+            if service == "polly":
+                polly_call_count[0] += 1
+                return polly_neural if polly_call_count[0] == 1 else polly_standard
+            return MagicMock()
+
+        with patch.object(h, "_synthesize_sentence", side_effect=http_error), \
+             patch("boto3.client", side_effect=fake_boto3_client):
+            result = h._synthesize_sentence_with_fallback(
+                "hello world",
+                "test-voice",
+                {},
+                "test-key",
+                "documentary",
+                {"voice": {}},
+            )
+
+        assert result == b"standard-bytes"
+        polly_standard.synthesize_speech.assert_called_once()
+        called_kwargs = polly_standard.synthesize_speech.call_args[1]
+        assert called_kwargs.get("Engine") == "standard"
+        assert called_kwargs.get("TextType") == "text"
