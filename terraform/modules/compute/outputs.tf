@@ -9,15 +9,17 @@ output "api_handler_invoke_arn" { value = aws_lambda_function.api_handler.invoke
 output "api_handler_function_name" { value = aws_lambda_function.api_handler.function_name }
 
 output "ecs_cluster_arn"   { value = aws_ecs_cluster.main.arn }
-output "audio_task_def_arn"   { value = aws_ecs_task_definition.audio.arn }
-output "visuals_task_def_arn" { value = aws_ecs_task_definition.visuals.arn }
-output "editor_task_def_arn"  { value = aws_ecs_task_definition.editor.arn }
-output "shorts_task_def_arn"  { value = aws_ecs_task_definition.shorts.arn }
+output "audio_task_def_arn"       { value = aws_ecs_task_definition.audio.arn }
+output "visuals_task_def_arn"     { value = aws_ecs_task_definition.visuals.arn }
+output "editor_task_def_arn"      { value = aws_ecs_task_definition.editor.arn }
+output "shorts_task_def_arn"      { value = aws_ecs_task_definition.shorts.arn }
+output "intro_outro_task_def_arn" { value = aws_ecs_task_definition.intro_outro.arn }
 
-output "ecr_audio_url"   { value = aws_ecr_repository.audio.repository_url }
-output "ecr_visuals_url" { value = aws_ecr_repository.visuals.repository_url }
-output "ecr_editor_url"  { value = aws_ecr_repository.editor.repository_url }
-output "ecr_shorts_url"  { value = aws_ecr_repository.shorts.repository_url }
+output "ecr_audio_url"       { value = aws_ecr_repository.audio.repository_url }
+output "ecr_visuals_url"     { value = aws_ecr_repository.visuals.repository_url }
+output "ecr_editor_url"      { value = aws_ecr_repository.editor.repository_url }
+output "ecr_shorts_url"      { value = aws_ecr_repository.shorts.repository_url }
+output "ecr_intro_outro_url" { value = aws_ecr_repository.intro_outro.repository_url }
 
 output "all_lambda_arns" {
   value = [
@@ -35,6 +37,7 @@ output "all_ecs_task_def_arns" {
     aws_ecs_task_definition.visuals.arn,
     aws_ecs_task_definition.editor.arn,
     aws_ecs_task_definition.shorts.arn,
+    aws_ecs_task_definition.intro_outro.arn,
   ]
 }
 
