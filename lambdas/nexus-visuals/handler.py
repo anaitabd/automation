@@ -76,7 +76,7 @@ def _rekognition_score(image_bytes: bytes, visual_cue: str) -> float:
 def _claude_vision_score(image_bytes: bytes, visual_cue: str) -> float:
     fmt = _detect_image_format(image_bytes)
     response = bedrock.converse(
-        modelId="anthropic.claude-sonnet-4-5-20250929-v1:0",
+        modelId="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         messages=[{"role": "user", "content": [
             {"image": {"format": fmt, "source": {"bytes": image_bytes}}},
             {"text": f"Score 0.0 to 1.0 how well this image matches: '{visual_cue}'. Reply with only the number."}

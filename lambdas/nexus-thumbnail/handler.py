@@ -27,13 +27,6 @@ S3_ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
 
-NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
-
-STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY", "")
-STABILITY_API_URL = "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image"
-
-NVIDIA_FLUX_URL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev"
-
 
 def _find_bin(name: str) -> str:
     """Locate a binary (ffmpeg / ffprobe) across Lambda-layer and system paths."""
@@ -112,7 +105,7 @@ def _extract_keyframes(video_path: str, tmpdir: str, n: int = 6) -> list[str]:
 def _score_frame(frame_bytes: bytes, topic: str) -> float:
     try:
         response = bedrock.converse(
-            modelId="anthropic.claude-sonnet-4-5-20250929-v1:0",
+            modelId="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             messages=[{"role": "user", "content": [
                 {"image": {"format": "jpeg", "source": {"bytes": frame_bytes}}},
                 {"text": f"Rate this frame 0.0-10.0 as a YouTube thumbnail for the topic: '{topic}'. Consider visual clarity, emotional impact, faces/eyes if present. Reply with only the number."}
@@ -126,7 +119,7 @@ def _score_frame(frame_bytes: bytes, topic: str) -> float:
 
 def _generate_thumbnail_concepts(script_summary: str, topic: str) -> list:
     response = bedrock.converse(
-        modelId="anthropic.claude-sonnet-4-5-20250929-v1:0",
+        modelId="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         system=[{"text": "You generate YouTube thumbnail concepts. Return valid JSON only. No markdown, no explanation."}],
         messages=[{"role": "user", "content": [{"text": f"Generate 3 thumbnail concepts for: '{topic}'. Summary: {script_summary[:500]}. Return JSON array: [{{'title': str, 'overlay_text': str, 'mood': str, 'nova_canvas_prompt': str}}]"}]}]
     )
@@ -230,109 +223,45 @@ def _pil_draw_text_centered(draw, text: str, font, y: int, img_w: int,
     draw.text((x, y), text, font=font, fill=fill)
 
 
-def _generate_nvidia_flux_background(concept_text: str, out_path: str) -> bool:
-    api_key = NVIDIA_API_KEY
-    if not api_key:
-        try:
-            api_key = get_secret("nexus/nvidia_api_key").get("api_key", "")
-        except Exception:
-            pass
-    if not api_key:
-        return False
+def _generate_nova_canvas_background(concept_text: str, out_path: str) -> bool:
+    """Generate a 1280×720 background image using Amazon Nova Canvas via Bedrock."""
     try:
         prompt = (
             f"YouTube thumbnail background, cinematic, {concept_text}, "
             "4K, photorealistic, no text, no watermark, no logo"
         )
-        body = json.dumps({
-            "prompt": prompt,
-            "mode": "base",
-            "cfg_scale": 3.5,
-            "width": 1280,
-            "height": 720,
-            "seed": 0,
-            "steps": 50,
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            NVIDIA_FLUX_URL,
-            data=body,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+        body = {
+            "taskType": "TEXT_IMAGE",
+            "textToImageParams": {
+                "text": prompt,
+                "negativeText": "text, watermark, logo, blurry, low quality, distorted",
             },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            if resp.status != 200:
-                log.warning("NVIDIA FLUX API returned status %d", resp.status)
-                return False
-            result = json.loads(resp.read())
-        artifacts = result.get("artifacts", [])
-        if artifacts:
-            img_b64 = artifacts[0].get("base64", "")
-        else:
-            data_list = result.get("data", [])
-            img_b64 = data_list[0].get("b64_json", "") if data_list else ""
-        if not img_b64:
-            log.warning("NVIDIA FLUX returned no image data")
-            return False
-        with open(out_path, "wb") as f:
-            f.write(base64.b64decode(img_b64))
-        log.info("NVIDIA FLUX background generated: %s", out_path)
-        return True
-    except Exception as exc:
-        log.warning("NVIDIA FLUX background generation failed: %s — using fallback", exc)
-        return False
-
-
-def _generate_stability_background(concept_text: str, out_path: str) -> bool:
-    # Generate a 1280x720 background image using Stability AI from the thumbnail concept string.
-    # Returns True if successful, False if Stability AI is not configured or the call fails.
-    # Falls back gracefully — the caller uses the video frame instead.
-    api_key = STABILITY_API_KEY
-    if not api_key:
-        try:
-            api_key = get_secret("nexus/stability_api_key").get("api_key", "")
-        except Exception:
-            pass
-    if not api_key:
-        # TODO: set STABILITY_API_KEY env var or store under "nexus/stability_api_key" to enable AI backgrounds
-        return False
-    try:
-        import urllib.request as _req
-        body = json.dumps({
-            "text_prompts": [
-                {"text": f"YouTube thumbnail background, cinematic, {concept_text}, 4K, no text, no watermark", "weight": 1.0},
-                {"text": "text, watermark, logo, blurry, low quality", "weight": -1.0},
-            ],
-            "cfg_scale": 7,
-            "width": 1280,
-            "height": 720,
-            "steps": 30,
-            "samples": 1,
-        }).encode("utf-8")
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
+            "imageGenerationConfig": {
+                "numberOfImages": 1,
+                "width": 1280,
+                "height": 720,
+                "quality": "standard",
+                "cfgScale": 8.0,
+                "seed": 0,
+            },
         }
-        req = _req.Request(STABILITY_API_URL, data=body, headers=headers, method="POST")
-        with _req.urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read())
-        artifacts = result.get("artifacts", [])
-        if not artifacts:
-            log.warning("Stability AI returned no artifacts")
-            return False
-        img_b64 = artifacts[0].get("base64", "")
-        if not img_b64:
+        response = bedrock.invoke_model(
+            modelId="amazon.nova-canvas-v1:0",
+            body=json.dumps(body),
+            contentType="application/json",
+            accept="application/json",
+        )
+        result = json.loads(response["body"].read())
+        images = result.get("images", [])
+        if not images:
+            log.warning("Nova Canvas returned no images")
             return False
         with open(out_path, "wb") as f:
-            f.write(base64.b64decode(img_b64))
-        log.info("Stability AI background generated: %s", out_path)
+            f.write(base64.b64decode(images[0]))
+        log.info("Nova Canvas background generated: %s", out_path)
         return True
     except Exception as exc:
-        log.warning("Stability AI background generation failed: %s — using video frame", exc)
+        log.warning("Nova Canvas background generation failed: %s — using video frame", exc)
         return False
 
 
@@ -352,9 +281,7 @@ def _render_thumbnail(
     concept_desc = concept.get("nova_canvas_prompt", f"{concept.get('mood', concept.get('emotion_trigger', ''))} {concept.get('color_scheme', '')} {top_text} {sub_text}").strip()
     ai_bg = os.path.join(tmpdir, f"thumb_bg_{idx}.jpg")
 
-    used_ai_bg = _generate_nvidia_flux_background(concept_desc, ai_bg)
-    if not used_ai_bg:
-        used_ai_bg = _generate_stability_background(concept_desc, ai_bg)
+    used_ai_bg = _generate_nova_canvas_background(concept_desc, ai_bg)
 
     eq_path = os.path.join(tmpdir, f"eq_{idx}.jpg")
     if used_ai_bg:

@@ -279,8 +279,8 @@ def get_secret(name: str) -> dict:
 
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
-BEDROCK_MODEL_SONNET = "anthropic.claude-sonnet-4-5-20250929-v1:0"
-BEDROCK_MODEL_OPUS = "anthropic.claude-opus-4-5-20251101-v1:0"
+BEDROCK_MODEL_SONNET = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+BEDROCK_MODEL_OPUS = "us.anthropic.claude-opus-4-5-20251101-v1:0"
 BEDROCK_SYSTEM_CACHED = [
     {
         "type": "text",
@@ -512,7 +512,7 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
     )
     last_err: Exception | None = None
     for attempt in range(max_attempts):
-        raw = _bedrock_call(prompt, max_tokens=32768, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
+        raw = _bedrock_call(prompt, max_tokens=6000, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
         try:
             result = _extract_json(raw)
             edl_errors = _validate_edl_schema(result)
@@ -604,7 +604,7 @@ def _pass_fact_integrity(script: dict) -> dict:
         "CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
         f"{json.dumps(script, indent=2)}"
     )
-    raw = _bedrock_call(prompt, max_tokens=32768, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
+    raw = _bedrock_call(prompt, max_tokens=6000, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
     try:
         audited = _extract_json(raw)
         audited.setdefault("factual_confidence", "medium")
@@ -683,7 +683,7 @@ def _pass4_pacing(script: dict, profile: dict) -> dict:
         "- CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
         f"{json.dumps(script, indent=2)}"
     )
-    raw = _bedrock_call(prompt, max_tokens=32768, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
+    raw = _bedrock_call(prompt, max_tokens=6000, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
     try:
         paced = _extract_json(raw)
         orig_scenes = script.get("scenes", [])
@@ -712,7 +712,7 @@ def _pass6_final_polish(script: dict) -> dict:
         "- CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
         f"{json.dumps(script, indent=2)}"
     )
-    raw = _bedrock_call(prompt, max_tokens=32768, model_id=BEDROCK_MODEL_OPUS)
+    raw = _bedrock_call(prompt, max_tokens=6000, model_id=BEDROCK_MODEL_OPUS)
     try:
         polished = _extract_json(raw)
         orig_scenes = script.get("scenes", [])
@@ -809,6 +809,8 @@ def lambda_handler(event: dict, context) -> dict:
     dry_run: bool = event.get("dry_run", False)
 
     step_start = notify_step_start("script", run_id, niche=event.get("niche", ""), profile=profile_name, dry_run=dry_run)
+    _script_start_time = time.time()
+    SCRIPT_TIME_BUDGET = 720  # leave 180s buffer before Lambda 900s timeout
 
     try:
         s3 = boto3.client("s3")
@@ -862,10 +864,16 @@ def lambda_handler(event: dict, context) -> dict:
             script = _pass3_visual_cues(script, profile)
 
             log.info("Pass 5/7: Pacing polish")
-            script = _pass4_pacing(script, profile)
+            if time.time() - _script_start_time < SCRIPT_TIME_BUDGET:
+                script = _pass4_pacing(script, profile)
+            else:
+                log.warning("Pass 5/7: Skipped (time budget exceeded)")
 
             log.info("Pass 6/7: Final polish (Opus)")
-            script = _pass6_final_polish(script)
+            if time.time() - _script_start_time < SCRIPT_TIME_BUDGET:
+                script = _pass6_final_polish(script)
+            else:
+                log.warning("Pass 6/7: Skipped (time budget exceeded)")
 
             log.info("Pass 7/7: Perplexity fact-check (web-verified)")
             script = _pass5_fact_check(script, perplexity_key)

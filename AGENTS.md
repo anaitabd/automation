@@ -86,13 +86,15 @@ All services below are confirmed active on this account:
 
 ```python
 # Research, Script passes 1-5, Visuals scoring, Thumbnail
-SONNET = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+SONNET = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 # Script pass 6 (final polish) ONLY
-OPUS   = "anthropic.claude-opus-4-5-20251101-v1:0"
+OPUS   = "us.anthropic.claude-opus-4-5-20251101-v1:0"
 ```
 
 Never use or introduce:
+- `anthropic.claude-sonnet-4-5-20250929-v1:0` — requires `us.` inference profile prefix
+- `anthropic.claude-opus-4-5-20251101-v1:0` — requires `us.` inference profile prefix
 - `anthropic.claude-3-5-sonnet-20241022-v2:0` — outdated
 - `anthropic.claude-3-sonnet-20240229-v1:0` — outdated
 - Any NVIDIA NIM endpoint — removed from this project

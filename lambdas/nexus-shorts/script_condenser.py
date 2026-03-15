@@ -18,7 +18,7 @@ def condense_sections(
     Returns a narration string of 30–160 words depending on tier.
     """
     model = model_id or profile.get("llm", {}).get(
-        "condenser_model", "us.anthropic.claude-3-sonnet-20240229-v1:0"
+        "condenser_model", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
     )
 
     word_targets = {

@@ -158,7 +158,7 @@
     "Script": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
-      "TimeoutSeconds": 900,
+      "TimeoutSeconds": 960,
       "Parameters": {
         "FunctionName": "${NexusScriptArn}",
         "Payload": {

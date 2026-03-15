@@ -647,7 +647,7 @@ def _inject_sfx(
 
 def _upload_to_s3(s3, local_path: str, run_id: str, filename: str) -> str:
     key = f"{run_id}/audio/{filename}"
-    s3.upload_file(local_path, S3_ASSETS_BUCKET, key)
+    s3.upload_file(local_path, S3_OUTPUTS_BUCKET, key)
     return key
 
 
@@ -784,7 +784,7 @@ def lambda_handler(event: dict, context) -> dict:
             mixed_key = _upload_to_s3(s3, final_audio_path, run_id, "mixed_audio.wav")
 
         log.info("Submitting mixed audio to Transcribe")
-        _run_transcribe(run_id, f"s3://{S3_ASSETS_BUCKET}/{mixed_key}")
+        _run_transcribe(run_id, f"s3://{S3_OUTPUTS_BUCKET}/{mixed_key}")
 
         elapsed = time.time() - step_start
         notify_step_complete("audio", run_id, [

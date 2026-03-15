@@ -18,7 +18,7 @@ _cache: dict = {}
 
 CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "")
 BRAND_MODEL_ID = os.environ.get(
-    "BRAND_MODEL_ID", "us.anthropic.claude-3-sonnet-20240229-v1:0"
+    "BRAND_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 )
 
 # Available LUT presets (from luts_generated/)

@@ -55,6 +55,11 @@ resource "aws_iam_role_policy" "research" {
         Action   = ["bedrock:InvokeModel"]
         Resource = ["*"]
       },
+      {
+        Effect   = "Allow"
+        Action   = ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe", "aws-marketplace:Unsubscribe"]
+        Resource = ["*"]
+      },
     ]
   })
 }
@@ -92,6 +97,11 @@ resource "aws_iam_role_policy" "script" {
       {
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel"]
+        Resource = ["*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe", "aws-marketplace:Unsubscribe"]
         Resource = ["*"]
       },
     ]
@@ -134,6 +144,11 @@ resource "aws_iam_role_policy" "thumbnail" {
       {
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel"]
+        Resource = ["*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe", "aws-marketplace:Unsubscribe"]
         Resource = ["*"]
       },
     ]
@@ -381,6 +396,11 @@ resource "aws_iam_role_policy" "ecs_task" {
         Resource = ["*"]
       },
       {
+        Effect   = "Allow"
+        Action   = ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe", "aws-marketplace:Unsubscribe"]
+        Resource = ["*"]
+      },
+      {
         Effect = "Allow"
         Action = [
           "transcribe:StartTranscriptionJob",
@@ -480,11 +500,12 @@ resource "aws_iam_role_policy" "channel_setup" {
       {
         Effect = "Allow"
         Action = ["bedrock:InvokeModel"]
-        Resource = [
-          "arn:aws:bedrock:${local.region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
-          "arn:aws:bedrock:${local.region}::foundation-model/amazon.nova-canvas-v1:0",
-          "arn:aws:bedrock:${local.region}::foundation-model/amazon.nova-reel-v1:0",
-        ]
+        Resource = ["*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe", "aws-marketplace:Unsubscribe"]
+        Resource = ["*"]
       },
       {
         Effect = "Allow"

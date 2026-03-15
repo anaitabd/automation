@@ -172,10 +172,14 @@ class TestHttpPost:
 
 
 class TestConstants:
-    def test_stability_api_url_is_valid(self):
+    def test_nova_canvas_model_id_not_present(self):
+        # NVIDIA and Stability constants must be removed; Nova Canvas is used via bedrock
         h = _load()
-        assert h.STABILITY_API_URL.startswith("https://")
+        assert not hasattr(h, "NVIDIA_API_KEY"), "NVIDIA_API_KEY must be removed"
+        assert not hasattr(h, "NVIDIA_FLUX_URL"), "NVIDIA_FLUX_URL must be removed"
+        assert not hasattr(h, "STABILITY_API_KEY"), "STABILITY_API_KEY must be removed"
+        assert not hasattr(h, "STABILITY_API_URL"), "STABILITY_API_URL must be removed"
 
-    def test_nvidia_flux_url_is_valid(self):
+    def test_nova_canvas_background_generator_exists(self):
         h = _load()
-        assert h.NVIDIA_FLUX_URL.startswith("https://")
+        assert callable(h._generate_nova_canvas_background)

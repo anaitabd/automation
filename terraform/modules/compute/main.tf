@@ -122,7 +122,7 @@ resource "aws_lambda_function" "script" {
   handler          = "handler.lambda_handler"
   runtime          = "python3.12"
   architectures    = ["arm64"]
-  memory_size      = 1024
+  memory_size      = 3008
   timeout          = 900
   role             = var.script_role_arn
   layers           = [aws_lambda_layer_version.api.arn]
