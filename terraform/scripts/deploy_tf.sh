@@ -124,7 +124,7 @@ fi
 # ──────────────────────────────────────────────────────────────
 
 log "Ensuring ECR repositories exist..."
-for REPO in nexus-audio nexus-visuals nexus-editor nexus-shorts; do
+for REPO in nexus-audio nexus-visuals nexus-editor nexus-shorts nexus-intro-outro; do
     aws ecr describe-repositories --repository-names "$REPO" --region "$AWS_REGION" >/dev/null 2>&1 || \
         aws ecr create-repository --repository-name "$REPO" --region "$AWS_REGION" >/dev/null
 done
@@ -133,7 +133,7 @@ ECR_URL="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 log "Logging into ECR..."
 aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_URL"
 
-for SERVICE in nexus-audio nexus-visuals nexus-editor nexus-shorts; do
+for SERVICE in nexus-audio nexus-visuals nexus-editor nexus-shorts nexus-intro-outro; do
     DOCKERFILE="$PROJECT_DIR/lambdas/$SERVICE/Dockerfile"
     if [ ! -f "$DOCKERFILE" ]; then
         warn "No Dockerfile for $SERVICE — skipping"
