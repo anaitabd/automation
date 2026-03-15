@@ -646,6 +646,10 @@ def lambda_handler(event: dict, context) -> dict:
         run_id = path_params.get("run_id", path.split("/status/")[-1])
         return _handle_status(run_id)
 
+    elif method == "POST" and "/stop/" in path:
+        run_id = path_params.get("run_id", path.split("/stop/")[-1])
+        return _handle_stop(run_id)
+
     elif method == "GET" and "/outputs/" in path:
         run_id = path_params.get("run_id", path.split("/outputs/")[-1])
         return _handle_outputs(run_id)
@@ -700,6 +704,23 @@ def lambda_handler(event: dict, context) -> dict:
 
 
 # ── Channel CRUD implementations ──────────────────────────────────────────────
+
+def _handle_stop(run_id: str) -> dict:
+    """Abort a running Step Functions execution."""
+    try:
+        exec_arn = _execution_arn(run_id)
+        sfn.stop_execution(
+            executionArn=exec_arn,
+            error="ManualStop",
+            cause="Stopped by user via Nexus dashboard",
+        )
+        return _response(200, {"stopped": True, "run_id": run_id})
+    except sfn.exceptions.ExecutionDoesNotExist:
+        return _response(404, {"error": "run not found"})
+    except Exception as exc:
+        log.exception("stop execution error")
+        return _response(500, {"error": str(exc)})
+
 
 def _handle_channel_list(params: dict) -> dict:
     try:

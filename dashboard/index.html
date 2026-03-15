@@ -303,6 +303,7 @@ function useRouter() {
     if (h.match(/^#\/channels\/([^/]+)$/)) return { view: 'channelDetail', id: h.split('/')[2] };
     if (h.match(/^#\/run\/(.+)$/)) return { view: 'pipelineMonitor', runId: h.replace('#/run/', '') };
     if (h === '#/status') return { view: 'status' };
+    if (h === '#/runs') return { view: 'runs' };
     return { view: 'channels' };
   }, [route]);
   return { route, navigate, match };
@@ -408,8 +409,7 @@ function Sidebar({ collapsed }) {
 
   const navItems = [
     { icon: '📺', label: 'Channels', hash: '#/channels', matchView: 'channels' },
-    { icon: '▶', label: 'Pipeline', hash: '#/channels', matchView: 'pipelineMonitor' },
-    { icon: '⚡', label: 'Shorts', hash: '#/channels', matchView: 'channels' },
+    { icon: '📊', label: 'Runs', hash: '#/runs', matchView: 'runs' },
     { icon: '🔧', label: 'System Status', hash: '#/status', matchView: 'status' },
   ];
 
@@ -434,7 +434,9 @@ function Sidebar({ collapsed }) {
 
       <nav className="flex-1 px-2 py-3 space-y-1">
         {navItems.map(item => {
-          const active = match.view === item.matchView || (item.matchView === 'channels' && match.view === 'channelDetail');
+          const active = match.view === item.matchView
+            || (item.matchView === 'channels' && match.view === 'channelDetail')
+            || (item.matchView === 'runs' && match.view === 'pipelineMonitor');
           return (
             <button key={item.hash} onClick={() => navigate(item.hash)}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition-colors ${active ? 'bg-raised text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-raised/50'}`}>
@@ -446,15 +448,20 @@ function Sidebar({ collapsed }) {
         })}
 
         {!collapsed && (
-          <button onClick={() => setDrawer('create-channel')} className="w-full mt-3 flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-sm border border-dashed border-border text-text-muted hover:text-text-primary hover:border-border-bright transition-colors">
-            <span>+</span> New Channel
-          </button>
+          <div className="mt-3 space-y-1.5">
+            <button onClick={() => setDrawer('create-channel')} className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-sm border border-dashed border-border text-text-muted hover:text-text-primary hover:border-border-bright transition-colors">
+              <span>+</span> New Channel
+            </button>
+          </div>
         )}
       </nav>
 
       {!collapsed && runEntries.length > 0 && (
         <div className="px-3 py-3 border-t border-border">
-          <p className="text-[10px] font-medium text-text-muted uppercase tracking-widest mb-2">Active Runs</p>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-medium text-text-muted uppercase tracking-widest">Active Runs</p>
+            <button onClick={() => navigate('#/runs')} className="text-[10px] text-accent-blue hover:underline">all →</button>
+          </div>
           {runEntries.map(([id, run]) => {
             const ptMeta = PIPELINE_TYPE_META[run.pipeline_type] || PIPELINE_TYPE_META.combined;
             return (
@@ -488,14 +495,15 @@ function MobileNav() {
   const { navigate, match } = useContext(AppContext);
   const items = [
     { icon: '📺', label: 'Channels', hash: '#/channels', matchView: 'channels' },
-    { icon: '▶', label: 'Pipeline', hash: '#/channels', matchView: 'pipelineMonitor' },
-    { icon: '⚡', label: 'Shorts', hash: '#/channels', matchView: 'channels' },
+    { icon: '📊', label: 'Runs', hash: '#/runs', matchView: 'runs' },
     { icon: '🔧', label: 'Status', hash: '#/status', matchView: 'status' },
   ];
   return (
     <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-surface border-t border-border flex">
       {items.map(item => {
-        const active = match.view === item.matchView || (item.matchView === 'channels' && (match.view === 'channelDetail' || match.view === 'pipelineMonitor'));
+        const active = match.view === item.matchView
+          || (item.matchView === 'channels' && match.view === 'channelDetail')
+          || (item.matchView === 'runs' && match.view === 'pipelineMonitor');
         return (
           <button key={item.hash} onClick={() => navigate(item.hash)} className={`flex-1 flex flex-col items-center gap-1 py-3 text-xs ${active ? 'text-accent-blue' : 'text-text-muted'}`}>
             <span className="text-lg">{item.icon}</span>
@@ -652,14 +660,18 @@ function ChannelCard({ channel }) {
         </>
       )}
 
-      <div className="flex gap-2">
+      <div className="flex gap-1.5 flex-wrap">
         <button onClick={e => { e.stopPropagation(); setModalChannel(ch); setModal('generate-video'); }}
           className="flex-1 px-3 py-2 rounded-xl text-xs font-semibold text-white transition-opacity hover:opacity-90" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
-          ▶ Generate Video
+          ▶ Video
         </button>
         <button onClick={e => { e.stopPropagation(); setModalChannel(ch); setModal('generate-shorts'); }}
           className="px-3 py-2 rounded-xl text-xs font-semibold text-accent-cyan border border-accent-cyan/30 bg-accent-cyan/5 hover:bg-accent-cyan/10 transition-colors">
-          ⚡ Shorts
+          ⚡
+        </button>
+        <button onClick={e => { e.stopPropagation(); setModalChannel(ch); setModal('generate-combined'); }}
+          className="px-3 py-2 rounded-xl text-xs font-semibold text-accent-purple border border-accent-purple/30 bg-accent-purple/5 hover:bg-accent-purple/10 transition-colors">
+          🎬
         </button>
       </div>
     </div>
@@ -1106,8 +1118,9 @@ function ChannelDetail({ channelId }) {
             <p className="text-sm text-text-muted mt-0.5">{ch.niche} · {ch.profile}</p>
           </div>
           <div className="flex gap-2 shrink-0 flex-wrap">
-            <button onClick={() => { setModalChannel(ch); setModal('generate-video'); }} className="px-4 py-2 rounded-xl text-xs font-semibold text-white hover:opacity-90 transition-opacity" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>▶ Generate Video</button>
-            <button onClick={() => { setModalChannel(ch); setModal('generate-shorts'); }} className="px-4 py-2 rounded-xl text-xs font-semibold text-accent-cyan border border-accent-cyan/30 bg-accent-cyan/5 hover:bg-accent-cyan/10 transition-colors">⚡ Generate Shorts</button>
+            <button onClick={() => { setModalChannel(ch); setModal('generate-video'); }} className="px-4 py-2 rounded-xl text-xs font-semibold text-white hover:opacity-90 transition-opacity" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>▶ Video</button>
+            <button onClick={() => { setModalChannel(ch); setModal('generate-shorts'); }} className="px-4 py-2 rounded-xl text-xs font-semibold text-accent-cyan border border-accent-cyan/30 bg-accent-cyan/5 hover:bg-accent-cyan/10 transition-colors">⚡ Shorts</button>
+            <button onClick={() => { setModalChannel(ch); setModal('generate-combined'); }} className="px-4 py-2 rounded-xl text-xs font-semibold text-accent-purple border border-accent-purple/30 bg-accent-purple/5 hover:bg-accent-purple/10 transition-colors">🎬 Combined</button>
           </div>
         </div>
 
@@ -1801,14 +1814,140 @@ function GenerateShortsModal({ channel, onClose }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// VIEW 4C — GENERATE COMBINED MODAL (video + shorts)
+// ═════════════════════════════════════════════════════════════════════════════
+function GenerateCombinedModal({ channel, onClose }) {
+  const { addNotification, navigate } = useContext(AppContext);
+  const [topic, setTopic] = useState('');
+  const [profile, setProfile] = useState(channel?.profile || 'documentary');
+  const [tiers, setTiers] = useState({ micro: true, short: true, mid: true, full: true });
+  const [dryRun, setDryRun] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const toggleTier = t => setTiers(prev => ({ ...prev, [t]: !prev[t] }));
+  const selectedTiers = Object.entries(tiers).filter(([, v]) => v).map(([k]) => k);
+
+  const cost = useMemo(() => {
+    if (dryRun) return 0;
+    return COST_ESTIMATES.base_video + selectedTiers.reduce((s, t) => s + (COST_ESTIMATES.shorts[t] || 0), 0);
+  }, [selectedTiers, dryRun]);
+
+  const handleSubmit = async () => {
+    if (selectedTiers.length === 0) return;
+    setSubmitting(true);
+    try {
+      const body = {
+        channel_id: channel?.channel_id,
+        niche: topic || channel?.niche || '',
+        profile,
+        dry_run: dryRun,
+        generate_shorts: true,
+        generate_video: true,
+        pipeline_type: 'combined',
+        shorts_tiers: selectedTiers.join(','),
+      };
+      const res = await api('/run', { method: 'POST', body: JSON.stringify(body) });
+      addNotification('info', `Combined pipeline started for ${channel?.name || 'channel'}`);
+      onClose();
+      navigate(`#/run/${res.run_id}`);
+    } catch (err) {
+      addNotification('error', `Failed to start pipeline: ${err.error || 'Unknown error'}`);
+    } finally { setSubmitting(false); }
+  };
+
+  const meta = PIPELINE_TYPE_META.combined;
+
+  return (
+    <Modal onClose={onClose} width="max-w-lg">
+      <div className="p-6">
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-2">
+            <span className="text-lg">{meta.icon}</span>
+            <h2 className="text-lg font-bold text-text-primary">Generate Video + Shorts</h2>
+          </div>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl">✕</button>
+        </div>
+        <div className="space-y-5">
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-1.5">Channel</label>
+            <div className="flex items-center gap-2 bg-raised rounded-xl px-4 py-2.5">
+              <span className="text-sm font-medium text-text-primary">{channel?.name}</span>
+              <Badge>{channel?.profile}</Badge>
+            </div>
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-1.5">Topic / Angle</label>
+            <input type="text" value={topic} onChange={e => setTopic(e.target.value)} placeholder="Leave blank — AI selects best topic"
+              className="w-full px-4 py-2.5 rounded-xl bg-surface border border-border text-sm text-text-primary placeholder:text-text-muted focus:border-accent-blue" />
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-1.5">Profile</label>
+            <div className="flex gap-2">
+              {Object.entries(PROFILES).map(([key, p]) => (
+                <button key={key} onClick={() => setProfile(key)}
+                  className={`flex-1 px-3 py-2 rounded-xl text-xs font-medium transition-all text-center ${profile === key ? 'bg-accent-blue/10 text-accent-blue border border-accent-blue/30' : 'bg-raised text-text-muted border border-border hover:text-text-secondary'}`}>
+                  {p.icon} {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="bg-raised/30 border border-border/70 rounded-xl p-3">
+            <p className="text-xs font-semibold text-text-primary mb-0.5">{meta.icon} Combined Pipeline</p>
+            <p className="text-[10px] text-text-muted">Research → Script → Audio + Visuals → Editor ∥ Shorts → Thumbnail → Notify</p>
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-1.5">Shorts Tiers</label>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(SHORTS_TIERS).map(([key, t]) => (
+                <label key={key} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs cursor-pointer transition-colors ${tiers[key] ? 'bg-accent-purple/10 text-accent-purple border border-accent-purple/20' : 'bg-raised text-text-muted border border-border'}`}>
+                  <input type="checkbox" checked={tiers[key]} onChange={() => toggleTier(key)} className="sr-only" />
+                  <span className={`w-3.5 h-3.5 rounded flex items-center justify-center border ${tiers[key] ? 'bg-accent-purple border-accent-purple text-white' : 'border-border'}`}>{tiers[key] && <span className="text-[9px]">✓</span>}</span>
+                  {t.duration}s ({key})
+                </label>
+              ))}
+            </div>
+          </div>
+          <div><Toggle checked={dryRun} onChange={setDryRun} label="Dry Run" /></div>
+          <div className="bg-raised/50 border border-border rounded-xl p-4">
+            <p className="text-[10px] font-medium text-text-muted uppercase tracking-widest mb-2">Estimated Cost</p>
+            {dryRun ? (
+              <p className="text-sm text-accent-green font-semibold">$0.00 (dry run)</p>
+            ) : (
+              <div className="space-y-1 text-sm">
+                <div className="flex justify-between"><span className="text-text-secondary">Long-form video</span><span>~${COST_ESTIMATES.base_video.toFixed(2)}</span></div>
+                {selectedTiers.map(t => (
+                  <div key={t} className="flex justify-between text-xs"><span className="text-text-muted">{SHORTS_TIERS[t]?.duration}s ({t})</span><span className="text-text-muted">~${(COST_ESTIMATES.shorts[t] || 0).toFixed(2)}</span></div>
+                ))}
+                {selectedTiers.length === 0 && <p className="text-[10px] text-accent-red">Select at least one tier</p>}
+                <div className="flex justify-between border-t border-border/50 pt-1 mt-1">
+                  <span className="font-semibold text-text-primary">Total</span>
+                  <span className="font-bold text-accent-amber">~${cost.toFixed(2)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex gap-3 mt-6 pt-6 border-t border-border">
+          <button onClick={onClose} className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-text-secondary border border-border hover:bg-raised transition-colors">Cancel</button>
+          <button onClick={handleSubmit} disabled={submitting || selectedTiers.length === 0}
+            className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-40 hover:opacity-90 transition-opacity" style={{ background: meta.gradient }}>
+            {submitting ? 'Starting…' : '🎬 Start Combined →'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // VIEW 5 — PIPELINE MONITOR
 // ═════════════════════════════════════════════════════════════════════════════
 function PipelineMonitor({ runId }) {
   const { navigate, addNotification, connectSSE, disconnectSSE, setActiveRun } = useContext(AppContext);
   const [runData, setRunData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [logs, setLogs] = useState([]);
-  const [logsOpen, setLogsOpen] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [expandedStep, setExpandedStep] = useState(null);
   const [outputs, setOutputs] = useState(null);
   const logRef = useRef(null);
 
@@ -1840,22 +1979,17 @@ function PipelineMonitor({ runId }) {
         setRunData(prev => ({ ...prev, ...data }));
         setActiveRun(runId, { status: data.status, progress_pct: data.progress_pct, step: data.current_step });
       } else if (type === 'step_start' || type === 'step_done' || type === 'step_error') {
-        // Re-fetch status for accurate step data
         api(`/status/${runId}`).then(d => {
           setRunData(d);
           setActiveRun(runId, { status: d.status, progress_pct: d.progress_pct, step: d.current_step });
         }).catch(() => {});
-      } else if (type === 'log') {
-        const entry = { time: data.timestamp || new Date().toISOString(), message: data.message || JSON.stringify(data) };
-        setLogs(prev => [...prev.slice(-500), entry]);
       } else if (type === 'pipeline_done') {
         api(`/status/${runId}`).then(d => {
           setRunData(d);
           setActiveRun(runId, { status: d.status, progress_pct: 100 });
           if (d.status === 'SUCCEEDED') {
              const pt = getPipelineType(d);
-             const ptLabel = PIPELINE_TYPE_META[pt]?.label || 'Pipeline';
-             addNotification('success', `${ptLabel} generation complete`);
+             addNotification('success', `${PIPELINE_TYPE_META[pt]?.label || 'Pipeline'} generation complete`);
            } else if (d.status === 'FAILED') {
             addNotification('error', `Pipeline failed at ${d.current_step || 'unknown step'}`);
           }
@@ -1873,10 +2007,10 @@ function PipelineMonitor({ runId }) {
     }
   }, [runData?.status]);
 
-  // Auto-scroll logs
+  // Auto-scroll log when new events arrive
   useEffect(() => {
-    if (logRef.current && logsOpen) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [logs, logsOpen]);
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [runData?.timeline?.length]);
 
   const handleResume = async () => {
     try {
@@ -1887,6 +2021,24 @@ function PipelineMonitor({ runId }) {
       addNotification('error', `Resume failed: ${err.error || 'Unknown error'}`);
     }
   };
+
+  const handleStop = async () => {
+    setStopping(true);
+    try {
+      await api(`/stop/${runId}`, { method: 'POST' });
+      addNotification('info', 'Stop requested — pipeline will halt after current step');
+      const d = await api(`/status/${runId}`);
+      setRunData(d);
+    } catch (err) {
+      addNotification('error', `Stop failed: ${err.error || 'Unknown error'}`);
+    } finally { setStopping(false); }
+  };
+
+  // Derive timeline log from API (populated on every status poll)
+  const logEntries = useMemo(() => {
+    if (!runData?.timeline) return [];
+    return [...runData.timeline].sort((a, b) => new Date(a.time) - new Date(b.time));
+  }, [runData?.timeline]);
 
   if (loading) {
     return (
@@ -1902,121 +2054,227 @@ function PipelineMonitor({ runId }) {
     return <div className="p-6 text-center"><p className="text-text-muted">Run not found</p><button onClick={() => navigate('#/channels')} className="mt-4 text-accent-blue hover:underline text-sm">← Back to channels</button></div>;
   }
 
+  const pipelineType = getPipelineType(runData);
+  const pipelineMeta = PIPELINE_TYPE_META[pipelineType];
+  const pipelineSteps = getPipelineSteps(pipelineType).filter(s => !s.hidden);
+
   const statusBadge = {
     RUNNING: <Badge color="bg-accent-cyan/10 text-accent-cyan border-accent-cyan/30"><span className="pulse-dot mr-1.5 inline-block w-1.5 h-1.5 rounded-full bg-accent-cyan" /> RUNNING</Badge>,
     SUCCEEDED: <Badge color="bg-accent-green/10 text-accent-green border-accent-green/30">✅ COMPLETE</Badge>,
     FAILED: <Badge color="bg-accent-red/10 text-accent-red border-accent-red/30">✖ FAILED</Badge>,
+    ABORTED: <Badge color="bg-accent-amber/10 text-accent-amber border-accent-amber/30">⏹ ABORTED</Badge>,
   };
 
   return (
-    <div className="p-4 md:p-6 max-w-4xl">
-      <button onClick={() => navigate('#/channels')} className="text-sm text-text-muted hover:text-text-primary mb-4 inline-flex items-center gap-1 transition-colors">← Back</button>
+    <div className="p-4 md:p-6">
+      <button onClick={() => navigate('#/runs')} className="text-sm text-text-muted hover:text-text-primary mb-4 inline-flex items-center gap-1 transition-colors">← All Runs</button>
 
-      <div className="border border-border rounded-2xl bg-surface p-5 mb-6">
+      {/* Header card */}
+      <div className="border border-border rounded-2xl bg-surface p-5 mb-4">
         <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
           <div>
-            <div className="flex items-center gap-3 mb-1 flex-wrap">
-              <h1 className="text-lg font-bold text-text-primary">Pipeline Run</h1>
+            <div className="flex items-center gap-3 mb-2 flex-wrap">
+              <h1 className="text-lg font-bold text-text-primary">Pipeline Monitor</h1>
               {statusBadge[runData.status] || <Badge>{runData.status}</Badge>}
-              {(() => { const pt = getPipelineType(runData); const meta = PIPELINE_TYPE_META[pt]; return meta ? <Badge color={meta.badge}>{meta.icon} {meta.label}</Badge> : null; })()}
+              {pipelineMeta && <Badge color={pipelineMeta.badge}>{pipelineMeta.icon} {pipelineMeta.label}</Badge>}
             </div>
-            <div className="space-y-1 text-sm">
+            <div className="space-y-0.5 text-sm">
               <p className="text-text-muted">Run ID: <span className="font-mono text-accent-cyan">{runId}</span><CopyButton text={runId} /></p>
               {runData.start_date && <p className="text-text-muted">Started: {timeAgo(runData.start_date)}{runData.elapsed_sec ? ` · ${fmtDuration(runData.elapsed_sec)} elapsed` : ''}</p>}
+              {runData.status === 'RUNNING' && runData.current_step && (
+                <p className="text-text-muted">Active step: <span className="text-accent-blue font-medium">{runData.current_step}</span></p>
+              )}
             </div>
           </div>
-          {runData.status === 'FAILED' && (
-            <button onClick={handleResume} className="px-4 py-2 rounded-xl text-xs font-semibold text-white hover:opacity-90 transition-opacity shrink-0" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
-              🔄 Resume Run
-            </button>
-          )}
+          <div className="flex gap-2 shrink-0 flex-wrap">
+            {runData.status === 'RUNNING' && (
+              <button onClick={handleStop} disabled={stopping}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-accent-amber border border-accent-amber/30 bg-accent-amber/10 hover:bg-accent-amber/20 transition-colors disabled:opacity-40">
+                {stopping ? '⟳ Stopping...' : '⏹ Stop Pipeline'}
+              </button>
+            )}
+            {runData.status === 'FAILED' && (
+              <button onClick={handleResume} className="px-4 py-2 rounded-xl text-xs font-semibold text-white hover:opacity-90 transition-opacity" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
+                🔄 Resume Run
+              </button>
+            )}
+          </div>
         </div>
-        {runData.status === 'RUNNING' && <ProgressBar pct={runData.progress_pct || 0} animated className="mt-4" />}
-      </div>
-
-      <div className="border border-border rounded-2xl bg-surface p-5 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest">Pipeline Steps</h3>
-          {(() => { const pt = getPipelineType(runData); const meta = PIPELINE_TYPE_META[pt]; return meta ? <Badge color={meta.badge}>{meta.icon} {meta.label}</Badge> : null; })()}
-        </div>
-        <div className="space-y-0">
-          {getPipelineSteps(getPipelineType(runData)).filter(s => !s.hidden).map((step, idx) => {
-            const stepData = (runData.steps || []).find(s => s.name === step.id);
-            const status = stepData?.status || 'pending';
-            const isParallel = step.type === 'parallel';
-            return (
-              <div key={step.id} className="relative">
-                {idx > 0 && <div className="absolute left-[15px] -top-2 w-0.5 h-4 bg-border" />}
-                <StepRow step={step} stepData={stepData} status={status} allSteps={runData.steps || []} onResume={handleResume} />
-                {isParallel && step.substeps && (
-                  <div className="ml-8 pl-4 border-l border-border/50 space-y-1 mb-2">
-                    {step.substeps.map(sub => {
-                      const subData = (runData.steps || []).find(s => s.name === sub);
-                      const subStatus = subData?.status || (status === 'done' ? 'done' : 'pending');
-                      const isShorts = sub === 'Shorts';
-                      const isSkipped = isShorts && subStatus === 'skipped';
-                      return (
-                        <div key={sub} className="flex items-center gap-3 py-1.5">
-                          <span className="text-xs shrink-0">
-                            {subStatus === 'done' ? '✅' : subStatus === 'running' ? '🔄' : subStatus === 'error' ? '✖' : isSkipped ? '⏭' : '○'}
-                          </span>
-                          <span className={`text-sm ${subStatus === 'done' ? 'text-text-primary' : subStatus === 'running' ? 'text-accent-blue' : subStatus === 'error' ? 'text-accent-red' : 'text-text-muted'}`}>
-                            {sub}{isSkipped && ' (skipped)'}
-                          </span>
-                          {subData?.duration_sec && <span className="text-xs text-text-muted ml-auto">{fmtDuration(subData.duration_sec)}</span>}
-                          {subData?.error && <span className="text-xs text-accent-red ml-auto truncate max-w-[200px]">{subData.error.message}</span>}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="border border-border rounded-2xl bg-surface mb-6 overflow-hidden">
-        <button onClick={() => setLogsOpen(!logsOpen)} className="w-full flex items-center justify-between p-4 text-sm font-medium text-text-secondary hover:text-text-primary transition-colors">
-          <span>Live Log Stream ({logs.length})</span>
-          <span className="text-xs">{logsOpen ? '▲' : '▼'}</span>
-        </button>
-        {logsOpen && (
-          <div ref={logRef} className="max-h-64 overflow-y-auto px-4 pb-4 font-mono text-xs leading-relaxed" style={{ background: '#06060C', color: '#22D3EE' }}>
-            {logs.length === 0 && <p className="text-text-muted py-4 text-center font-sans">Waiting for log events...</p>}
-            {logs.map((l, i) => (
-              <div key={i} className="py-0.5 break-all">
-                <span className="text-text-muted">[{new Date(l.time).toLocaleTimeString()}]</span> {l.message}
-              </div>
-            ))}
+        {(runData.status === 'RUNNING') && (
+          <div className="mt-4">
+            <div className="flex justify-between text-[10px] text-text-muted mb-1">
+              <span>Progress</span><span>{runData.progress_pct || 0}%</span>
+            </div>
+            <ProgressBar pct={runData.progress_pct || 0} animated />
+          </div>
+        )}
+        {runData.status === 'SUCCEEDED' && (
+          <div className="mt-4">
+            <div className="flex justify-between text-[10px] text-text-muted mb-1"><span>Progress</span><span>100%</span></div>
+            <ProgressBar pct={100} />
           </div>
         )}
       </div>
 
-      {runData.status === 'SUCCEEDED' && <OutputsPanel outputs={outputs} runId={runId} runData={runData} />}
+      {/* Error banner */}
+      {runData.error && (
+        <div className="mb-4 p-4 rounded-xl border border-accent-red/30 bg-accent-red/5">
+          <div className="flex items-start gap-3">
+            <span className="text-accent-red text-lg shrink-0">✖</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-accent-red mb-1">
+                Pipeline failed{runData.error.step ? ` at step: ${runData.error.step}` : ''}
+              </p>
+              {runData.error.step_error && (
+                <p className="text-xs text-text-secondary mb-2">
+                  <span className="text-accent-amber font-mono">[{runData.error.step_error.type}]</span>{' '}{runData.error.step_error.message}
+                </p>
+              )}
+              {runData.error.step_error?.stack_trace && (
+                <details className="mt-1">
+                  <summary className="text-[10px] text-text-muted cursor-pointer hover:text-text-secondary select-none">Show stack trace ▸</summary>
+                  <pre className="mt-2 text-[10px] font-mono text-text-muted bg-black/40 p-3 rounded-lg overflow-x-auto whitespace-pre-wrap leading-relaxed">{runData.error.step_error.stack_trace}</pre>
+                </details>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2-column layout: Steps | Log */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        {/* LEFT — Steps */}
+        <div className="lg:col-span-2">
+          <div className="border border-border rounded-2xl bg-surface p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-[11px] font-medium text-text-muted uppercase tracking-widest">Steps</h3>
+              <span className="text-xs text-text-muted">{(runData.steps || []).filter(s => s.status === 'done').length}/{PIPELINE_STEPS.length} done</span>
+            </div>
+            <div className="space-y-0">
+              {pipelineSteps.map((step, idx) => {
+                const stepData = (runData.steps || []).find(s => s.name === step.id);
+                const status = stepData?.status || 'pending';
+                return (
+                  <div key={step.id} className="relative">
+                    {idx > 0 && <div className="absolute left-[15px] -top-2 w-0.5 h-4 bg-border" />}
+                    <StepRow
+                      step={step} stepData={stepData} status={status}
+                      onResume={handleResume}
+                      expanded={expandedStep === step.id}
+                      onToggleExpand={() => setExpandedStep(expandedStep === step.id ? null : step.id)}
+                    />
+                    {step.type === 'parallel' && step.substeps && (
+                      <div className="ml-8 pl-4 border-l border-border/50 space-y-1 mb-2">
+                        {step.substeps.map(sub => {
+                          const subData = (runData.steps || []).find(s => s.name === sub);
+                          const subStatus = subData?.status || (status === 'done' ? 'done' : 'pending');
+                          const isSkipped = subStatus === 'skipped';
+                          return (
+                            <div key={sub} className="flex items-start gap-3 py-1.5">
+                              <span className="text-xs shrink-0 mt-0.5">
+                                {subStatus === 'done' ? '✅' : subStatus === 'running' ? '🔄' : subStatus === 'error' ? '✖' : isSkipped ? '⏭' : '○'}
+                              </span>
+                              <div className="flex-1 min-w-0">
+                                <span className={`text-sm ${subStatus === 'done' ? 'text-text-primary' : subStatus === 'running' ? 'text-accent-blue' : subStatus === 'error' ? 'text-accent-red' : 'text-text-muted'}`}>
+                                  {sub}{isSkipped ? ' (skipped)' : ''}
+                                </span>
+                                {subData?.error && (
+                                  <p className="text-[10px] text-accent-red truncate">[{subData.error.type}] {subData.error.message}</p>
+                                )}
+                              </div>
+                              {subData?.duration_sec && <span className="text-xs text-text-muted font-mono shrink-0">{fmtDuration(subData.duration_sec)}</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* RIGHT — Log Panel + Outputs */}
+        <div className="lg:col-span-3 space-y-4">
+          <div className="border border-border rounded-2xl bg-surface overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-medium text-text-muted uppercase tracking-widest">Pipeline Log</span>
+                <span className="text-[10px] text-text-muted bg-raised border border-border px-1.5 py-0.5 rounded-full">{logEntries.length}</span>
+              </div>
+              {runData.status === 'RUNNING' && (
+                <span className="flex items-center gap-1 text-[10px] text-accent-cyan">
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan pulse-dot" /> Live · 5s
+                </span>
+              )}
+            </div>
+            <div ref={logRef} className="h-80 lg:h-[420px] overflow-y-auto p-4 space-y-0.5 font-mono text-xs" style={{ background: '#04040A' }}>
+              {logEntries.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full text-center">
+                  <span className="text-2xl mb-2">⏳</span>
+                  <p className="text-text-muted text-xs font-sans">Waiting for pipeline events…</p>
+                  {runData.status === 'RUNNING' && <p className="text-[10px] text-text-muted font-sans mt-1">Polling every 5 seconds</p>}
+                </div>
+              ) : (
+                logEntries.map((entry, i) => {
+                  const isStart = entry.event === 'started';
+                  const isDone = entry.event === 'completed';
+                  const isFail = entry.event === 'failed';
+                  const color = isStart ? '#22D3EE' : isDone ? '#10B981' : isFail ? '#EF4444' : '#9090B0';
+                  const icon = isStart ? '▶' : isDone ? '✓' : isFail ? '✖' : '•';
+                  return (
+                    <div key={i} className="flex gap-2 py-0.5 rounded hover:bg-white/[0.03] -mx-1 px-1">
+                      <span className="text-text-muted shrink-0 tabular-nums">{new Date(entry.time).toLocaleTimeString()}</span>
+                      <span style={{ color, minWidth: '10px', textAlign: 'center' }} className="shrink-0">{icon}</span>
+                      <span className="break-all leading-relaxed" style={{ color }}>{entry.message}</span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {runData.status === 'SUCCEEDED' && <OutputsPanel outputs={outputs} runId={runId} runData={runData} />}
+        </div>
+      </div>
     </div>
   );
 }
 
-function StepRow({ step, stepData, status, allSteps, onResume }) {
+function StepRow({ step, stepData, status, onResume, expanded, onToggleExpand }) {
   const icon = status === 'done' ? '✅' : status === 'running' ? '🔄' : status === 'error' ? '✖' : status === 'skipped' ? '⏭' : '○';
   const textColor = status === 'done' ? 'text-text-primary' : status === 'running' ? 'text-accent-blue' : status === 'error' ? 'text-accent-red' : 'text-text-muted';
+  const hasError = stepData?.error && status === 'error';
 
   return (
-    <div className="flex items-center gap-3 py-2.5">
-      <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm shrink-0 ${status === 'running' ? 'bg-accent-blue/10' : status === 'done' ? 'bg-accent-green/10' : status === 'error' ? 'bg-accent-red/10' : 'bg-raised'}`}>
-        {icon}
-      </span>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className={`text-sm font-medium ${textColor}`}>{step.label}</span>
-          {status === 'running' && <span className="pulse-dot w-1.5 h-1.5 rounded-full bg-accent-blue" />}
-          {step.type === 'parallel' && <span className="text-[10px] text-text-muted bg-raised px-1.5 py-0.5 rounded">parallel</span>}
+    <div>
+      <div className={`flex items-center gap-3 py-2.5 ${hasError ? 'cursor-pointer' : ''}`} onClick={hasError ? onToggleExpand : undefined}>
+        <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm shrink-0 ${status === 'running' ? 'bg-accent-blue/10' : status === 'done' ? 'bg-accent-green/10' : status === 'error' ? 'bg-accent-red/10' : 'bg-raised'}`}>
+          {icon}
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className={`text-sm font-medium ${textColor}`}>{step.label}</span>
+            {status === 'running' && <span className="pulse-dot w-1.5 h-1.5 rounded-full bg-accent-blue" />}
+            {step.type === 'parallel' && <span className="text-[10px] text-text-muted bg-raised px-1.5 py-0.5 rounded">parallel</span>}
+          </div>
+          {hasError && <p className="text-[10px] text-accent-red mt-0.5">[{stepData.error.type}] {stepData.error.message?.slice(0, 80)}{stepData.error.message?.length > 80 ? '…' : ''}</p>}
         </div>
-        {stepData?.error && <p className="text-xs text-accent-red mt-0.5 truncate">{stepData.error.message || stepData.error.type}</p>}
+        {stepData?.duration_sec && <span className="text-xs text-text-muted font-mono shrink-0">{fmtDuration(stepData.duration_sec)}</span>}
+        {status === 'error' && (
+          <div className="flex gap-1 shrink-0">
+            {hasError && stepData.error.stack_trace && <span className="text-[10px] text-text-muted">{expanded ? '▲' : '▼'}</span>}
+            <button onClick={e => { e.stopPropagation(); onResume(); }} className="text-xs text-accent-blue hover:underline">Resume</button>
+          </div>
+        )}
       </div>
-      {stepData?.duration_sec && <span className="text-xs text-text-muted font-mono shrink-0">{fmtDuration(stepData.duration_sec)}</span>}
-      {status === 'error' && <button onClick={onResume} className="text-xs text-accent-blue hover:underline shrink-0">Resume</button>}
+      {hasError && expanded && stepData.error.stack_trace && (
+        <div className="ml-11 mb-2 p-3 rounded-xl bg-black/40 border border-accent-red/20 overflow-x-auto">
+          <p className="text-[10px] font-semibold text-accent-red mb-1">{stepData.error.type}</p>
+          <pre className="text-[10px] font-mono text-text-muted whitespace-pre-wrap leading-relaxed">{stepData.error.stack_trace}</pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -2097,7 +2355,249 @@ function OutputsPanel({ outputs, runId, runData }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// VIEW 6 — SYSTEM STATUS
+// VIEW 6 — RUNS LIST
+// ═════════════════════════════════════════════════════════════════════════════
+function RunsView() {
+  const { navigate, setModal, setModalChannel, channels } = useContext(AppContext);
+  const [runs, setRuns] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('ALL');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true); else setRefreshing(true);
+    try {
+      const data = await api('/runs');
+      setRuns(data.runs || []);
+    } catch {}
+    finally { if (!silent) setLoading(false); else setRefreshing(false); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  // Auto-refresh running pipelines every 5s
+  useEffect(() => {
+    const hasRunning = runs.some(r => r.status === 'RUNNING');
+    if (!hasRunning) return;
+    const iv = setInterval(() => load(true), 5000);
+    return () => clearInterval(iv);
+  }, [runs]);
+
+  const statuses = ['ALL', 'RUNNING', 'SUCCEEDED', 'FAILED', 'ABORTED'];
+  const filtered = filter === 'ALL' ? runs : runs.filter(r => r.status === filter);
+
+  const badgeColor = {
+    RUNNING: 'bg-accent-cyan/10 text-accent-cyan border-accent-cyan/30',
+    SUCCEEDED: 'bg-accent-green/10 text-accent-green border-accent-green/30',
+    FAILED: 'bg-accent-red/10 text-accent-red border-accent-red/30',
+    ABORTED: 'bg-accent-amber/10 text-accent-amber border-accent-amber/30',
+  };
+
+  if (loading) {
+    return (
+      <div className="p-6">
+        <div className="flex items-center justify-between mb-6"><Skeleton className="h-8 w-48" /><Skeleton className="h-9 w-32" /></div>
+        <div className="space-y-3">{[1,2,3,4,5,6].map(i => <Skeleton key={i} className="h-14 w-full rounded-xl" />)}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 md:p-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-lg font-bold text-text-primary">Pipeline Runs</h1>
+          <p className="text-xs text-text-muted mt-0.5">{runs.length} total · updates every 5s when active</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => load(true)} disabled={refreshing}
+            className="px-4 py-2 rounded-xl text-xs font-medium text-text-muted border border-border hover:bg-raised transition-colors disabled:opacity-40">
+            {refreshing ? '⟳' : '↺'} Refresh
+          </button>
+          <button onClick={() => setModal('run-quick')}
+            className="px-4 py-2 rounded-xl text-xs font-semibold text-white hover:opacity-90 transition-opacity" style={{ background: 'linear-gradient(135deg, #4F6EF7, #8B5CF6)' }}>
+            + New Run
+          </button>
+        </div>
+      </div>
+
+      <div className="flex gap-2 mb-5 overflow-x-auto pb-2">
+        {statuses.map(s => {
+          const count = s === 'ALL' ? runs.length : runs.filter(r => r.status === s).length;
+          return (
+            <button key={s} onClick={() => setFilter(s)}
+              className={`px-4 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${filter === s ? 'bg-raised text-text-primary border border-border-bright' : 'text-text-muted hover:text-text-secondary border border-transparent'}`}>
+              {s === 'ALL' ? 'All' : s.charAt(0) + s.slice(1).toLowerCase()} ({count})
+            </button>
+          );
+        })}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="text-center py-20 border border-border rounded-2xl bg-surface">
+          <p className="text-2xl mb-3">🎬</p>
+          <p className="text-text-muted text-sm">No {filter !== 'ALL' ? filter.toLowerCase() + ' ' : ''}runs yet</p>
+          <p className="text-xs text-text-muted mt-1">Start a pipeline from a channel to see runs here</p>
+        </div>
+      ) : (
+        <div className="border border-border rounded-2xl bg-surface overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-raised/30">
+                <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-3 px-4">Run ID</th>
+                <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-3 px-4">Status</th>
+                <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-3 px-4 hidden md:table-cell">Duration</th>
+                <th className="text-left text-[10px] text-text-muted uppercase tracking-widest py-3 px-4 hidden lg:table-cell">Started</th>
+                <th className="text-right text-[10px] text-text-muted uppercase tracking-widest py-3 px-4">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r, i) => (
+                <tr key={i} className="border-b border-border/50 hover:bg-raised/30 transition-colors cursor-pointer" onClick={() => navigate(`#/run/${r.run_id}`)}>
+                  <td className="py-3 px-4">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs text-accent-cyan">{(r.run_id || '').slice(0, 20)}{(r.run_id || '').length > 20 ? '…' : ''}</span>
+                      <CopyButton text={r.run_id || ''} />
+                    </div>
+                  </td>
+                  <td className="py-3 px-4">
+                    <Badge color={badgeColor[r.status] || 'bg-raised text-text-muted border-border'}>
+                      {r.status === 'RUNNING' && <span className="pulse-dot mr-1 inline-block w-1.5 h-1.5 rounded-full bg-accent-cyan" />}
+                      {r.status}
+                    </Badge>
+                  </td>
+                  <td className="py-3 px-4 hidden md:table-cell text-text-muted text-xs font-mono">{r.elapsed_sec ? fmtDuration(r.elapsed_sec) : '—'}</td>
+                  <td className="py-3 px-4 hidden lg:table-cell text-text-muted text-xs">{r.start_date ? timeAgo(r.start_date) : '—'}</td>
+                  <td className="py-3 px-4 text-right">
+                    <div className="flex gap-1.5 justify-end">
+                      <button onClick={e => { e.stopPropagation(); navigate(`#/run/${r.run_id}`); }}
+                        className="px-3 py-1 rounded-lg text-xs text-text-muted hover:text-text-primary hover:bg-raised transition-colors">View →</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VIEW 6B — QUICK RUN MODAL (no channel context)
+// ═════════════════════════════════════════════════════════════════════════════
+function QuickRunModal({ onClose }) {
+  const { addNotification, navigate } = useContext(AppContext);
+  const [niche, setNiche] = useState('');
+  const [profile, setProfile] = useState('documentary');
+  const [mode, setMode] = useState('video');
+  const [tiers, setTiers] = useState({ micro: true, short: true, mid: true, full: true });
+  const [dryRun, setDryRun] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const selectedTiers = Object.entries(tiers).filter(([, v]) => v).map(([k]) => k);
+  const toggleTier = t => setTiers(prev => ({ ...prev, [t]: !prev[t] }));
+
+  const cost = useMemo(() => {
+    if (dryRun) return 0;
+    let c = 0;
+    if (mode !== 'shorts') c += COST_ESTIMATES.base_video;
+    if (mode !== 'video') c += selectedTiers.reduce((s, t) => s + (COST_ESTIMATES.shorts[t] || 0), 0);
+    return c;
+  }, [mode, selectedTiers, dryRun]);
+
+  const handleSubmit = async () => {
+    if (!niche.trim()) return;
+    setSubmitting(true);
+    try {
+      const body = {
+        niche: niche.trim(), profile, dry_run: dryRun,
+        pipeline_type: mode,
+        generate_shorts: mode !== 'video',
+        generate_video: mode !== 'shorts',
+        shorts_tiers: mode !== 'video' ? selectedTiers.join(',') : '',
+      };
+      const res = await api('/run', { method: 'POST', body: JSON.stringify(body) });
+      addNotification('info', `Pipeline started — run ${res.run_id?.slice(0, 8)}`);
+      onClose();
+      navigate(`#/run/${res.run_id}`);
+    } catch (err) {
+      addNotification('error', `Failed: ${err.error || 'Unknown error'}`);
+    } finally { setSubmitting(false); }
+  };
+
+  return (
+    <Modal onClose={onClose} width="max-w-lg">
+      <div className="p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-lg font-bold text-text-primary">Quick Run</h2>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl">✕</button>
+        </div>
+        <div className="space-y-5">
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-2">Niche / Topic <span className="text-accent-red">*</span></label>
+            <input type="text" value={niche} onChange={e => setNiche(e.target.value)} placeholder="ancient Egyptian archaeology, tech startups in Africa…"
+              className="w-full px-4 py-2.5 rounded-xl bg-surface border border-border text-sm text-text-primary placeholder:text-text-muted focus:border-accent-blue focus:ring-1 focus:ring-accent-blue/20" />
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-2">Profile</label>
+            <div className="flex gap-2">
+              {Object.entries(PROFILES).map(([key, p]) => (
+                <button key={key} onClick={() => setProfile(key)}
+                  className={`flex-1 px-3 py-2 rounded-xl text-xs font-medium transition-all text-center ${profile === key ? 'bg-accent-blue/10 text-accent-blue border border-accent-blue/30' : 'bg-raised text-text-muted border border-border hover:text-text-secondary'}`}>
+                  {p.icon} {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-2">Pipeline Mode</label>
+            <div className="grid grid-cols-3 gap-2">
+              {Object.entries(PIPELINE_TYPE_META).map(([key, meta]) => (
+                <button key={key} onClick={() => setMode(key)}
+                  className={`p-3 rounded-xl border text-left transition-all ${mode === key ? 'border-accent-blue bg-accent-blue/5' : 'border-border hover:border-border-bright'}`}>
+                  <span className="text-base block mb-1">{meta.icon}</span>
+                  <span className="text-xs font-semibold text-text-primary">{meta.label}</span>
+                  <span className="block text-[10px] text-text-muted mt-0.5">{meta.description}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          {mode !== 'video' && (
+            <div>
+              <label className="block text-[11px] font-medium text-text-muted uppercase tracking-widest mb-2">Shorts Tiers</label>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(SHORTS_TIERS).map(([key, t]) => (
+                  <label key={key} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs cursor-pointer transition-colors ${tiers[key] ? 'bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20' : 'bg-raised text-text-muted border border-border'}`}>
+                    <input type="checkbox" checked={tiers[key]} onChange={() => toggleTier(key)} className="sr-only" />
+                    <span className={`w-3.5 h-3.5 rounded flex items-center justify-center border ${tiers[key] ? 'bg-accent-cyan border-accent-cyan text-white' : 'border-border'}`}>{tiers[key] && <span className="text-[9px]">✓</span>}</span>
+                    {t.duration}s ({key})
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+          <div><Toggle checked={dryRun} onChange={setDryRun} label="Dry Run (no AI credits)" /></div>
+          <div className="bg-raised/50 border border-border rounded-xl px-4 py-3 flex justify-between items-center">
+            <span className="text-xs text-text-muted">Estimated cost</span>
+            <span className={`text-sm font-bold ${dryRun ? 'text-accent-green' : 'text-accent-amber'}`}>{dryRun ? '$0.00' : `~$${cost.toFixed(2)}`}</span>
+          </div>
+        </div>
+        <div className="flex gap-3 mt-6 pt-6 border-t border-border">
+          <button onClick={onClose} className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-text-secondary border border-border hover:bg-raised transition-colors">Cancel</button>
+          <button onClick={handleSubmit} disabled={!niche.trim() || submitting || (mode !== 'video' && selectedTiers.length === 0)}
+            className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-40 hover:opacity-90 transition-opacity" style={{ background: PIPELINE_TYPE_META[mode]?.gradient || 'linear-gradient(135deg,#4F6EF7,#8B5CF6)' }}>
+            {submitting ? 'Starting…' : `${PIPELINE_TYPE_META[mode]?.icon} Start ${PIPELINE_TYPE_META[mode]?.label} Pipeline →`}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// VIEW 7 — SYSTEM STATUS
 // ═════════════════════════════════════════════════════════════════════════════
 function SystemStatus() {
   const [health, setHealth] = useState(null);
@@ -2355,8 +2855,9 @@ function App() {
           {match.view === 'channels' && <ChannelGrid />}
           {match.view === 'channelDetail' && <ChannelDetail channelId={match.id} />}
           {match.view === 'pipelineMonitor' && <PipelineMonitor runId={match.runId} />}
+          {match.view === 'runs' && <RunsView />}
           {match.view === 'status' && <SystemStatus />}
-          {!['channels', 'channelDetail', 'pipelineMonitor', 'status'].includes(match.view) && (
+          {!['channels', 'channelDetail', 'pipelineMonitor', 'runs', 'status'].includes(match.view) && (
             <div className="flex flex-col items-center justify-center min-h-[70vh]">
               <p className="text-4xl mb-4">404</p>
               <p className="text-text-muted mb-4">Page not found</p>
@@ -2370,6 +2871,8 @@ function App() {
       {drawer === 'create-channel' && <CreateChannelDrawer onClose={() => setDrawer(null)} />}
       {modal === 'generate-video' && modalChannel && <GenerateVideoModal channel={modalChannel} onClose={() => { setModal(null); setModalChannel(null); }} />}
       {modal === 'generate-shorts' && modalChannel && <GenerateShortsModal channel={modalChannel} onClose={() => { setModal(null); setModalChannel(null); }} />}
+      {modal === 'generate-combined' && modalChannel && <GenerateCombinedModal channel={modalChannel} onClose={() => { setModal(null); setModalChannel(null); }} />}
+      {modal === 'run-quick' && <QuickRunModal onClose={() => setModal(null)} />}
       <Toasts />
     </AppContext.Provider>
   );

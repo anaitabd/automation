@@ -139,13 +139,28 @@ def _process_scene(
 
     if not candidates:
         log.info("Scene %d: generating base image with Nova Canvas", scene_id)
-        nova_canvas.generate_and_upload_image(
-            prompt=canvas_prompt,
-            s3_key=image_s3_key,
-            bucket=S3_OUTPUTS_BUCKET,
-            width=NOVA_REEL_WIDTH,
-            height=NOVA_REEL_HEIGHT,
-        )
+        _canvas_prompt = canvas_prompt.strip() or f"Cinematic wide shot, documentary style, scene {scene_id}, dramatic lighting"
+        try:
+            nova_canvas.generate_and_upload_image(
+                prompt=_canvas_prompt,
+                s3_key=image_s3_key,
+                bucket=S3_OUTPUTS_BUCKET,
+                width=NOVA_REEL_WIDTH,
+                height=NOVA_REEL_HEIGHT,
+            )
+        except Exception as canvas_exc:
+            if "content filters" in str(canvas_exc).lower() or "blocked" in str(canvas_exc).lower():
+                log.warning("Scene %d: Nova Canvas content filter — retrying with neutral prompt", scene_id)
+                _neutral = f"Cinematic wide establishing shot, documentary style, dramatic lighting, scene {scene_id}"
+                nova_canvas.generate_and_upload_image(
+                    prompt=_neutral,
+                    s3_key=image_s3_key,
+                    bucket=S3_OUTPUTS_BUCKET,
+                    width=NOVA_REEL_WIDTH,
+                    height=NOVA_REEL_HEIGHT,
+                )
+            else:
+                raise
         log.info("Scene %d: base image uploaded to %s", scene_id, image_s3_key)
 
     image_s3_uri = f"s3://{S3_OUTPUTS_BUCKET}/{image_s3_key}"

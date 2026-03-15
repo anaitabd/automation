@@ -4,6 +4,7 @@ import re
 import time
 import boto3
 import urllib.request
+from botocore.config import Config
 from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
 
 log = get_logger("nexus-script")
@@ -364,7 +365,10 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
 
 
 def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3, model_id: str = "", system: list = None) -> str:
-    client = boto3.client("bedrock-runtime")
+    client = boto3.client(
+        "bedrock-runtime",
+        config=Config(read_timeout=300, connect_timeout=10, retries={"max_attempts": 0}),
+    )
     bedrock_model = model_id or BEDROCK_MODEL_SONNET
     body_dict = {
         "anthropic_version": "bedrock-2023-05-31",

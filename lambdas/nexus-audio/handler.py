@@ -50,6 +50,14 @@ POLLY_VOICE_MAP = {
     "entertainment": "Stephen",
 }
 
+# Only voices that support Engine="standard" — used for the guaranteed Tier 3 fallback.
+# Gregory and Stephen are neural-only; Joanna is universally supported.
+POLLY_STANDARD_VOICE_MAP = {
+    "documentary": "Matthew",
+    "finance": "Matthew",
+    "entertainment": "Joanna",
+}
+
 SSML_EMOTION_MAP = {
     "tense":         {"rate": "slow",   "pitch": "-2st"},
     "excited":       {"rate": "fast",   "pitch": "+3st"},
@@ -227,12 +235,18 @@ def _format_tts_error(exc: Exception) -> str:
 
 
 def _get_polly_voice_id(profile_name: str, profile: dict) -> str:
-    voice_cfg = profile.get("voice", {})
+    # polly_voice_id is a top-level key in the profile JSON, not nested under "voice"
     return (
-        voice_cfg.get("polly_voice_id")
+        profile.get("polly_voice_id")
         or os.environ.get("POLLY_VOICE_ID")
         or POLLY_VOICE_MAP.get(profile_name, "Matthew")
     )
+
+
+def _get_polly_standard_voice_id(profile_name: str, profile: dict) -> str:
+    """Return a voice guaranteed to work with Engine='standard' (never neural-only)."""
+    # polly_voice_id from profile may be neural-only (Gregory, Stephen); skip it for standard
+    return POLLY_STANDARD_VOICE_MAP.get(profile_name, "Matthew")
 
 
 def _build_ssml(text: str, emotion: str) -> str:
@@ -267,7 +281,7 @@ def _synthesize_sentence_polly_standard(
     text: str, profile_name: str, profile: dict
 ) -> bytes:
     polly = boto3.client("polly")
-    voice_id = _get_polly_voice_id(profile_name, profile)
+    voice_id = _get_polly_standard_voice_id(profile_name, profile)
     response = polly.synthesize_speech(
         Engine="standard",
         VoiceId=voice_id,
@@ -288,26 +302,18 @@ def _synthesize_sentence_with_fallback(
     profile: dict,
     emotion: str = "neutral",
 ) -> bytes:
+    # Tier 1 (ElevenLabs) disabled — go directly to Polly Neural
+    log.debug("TTS: using Polly Neural (ElevenLabs disabled)")
     try:
-        return _synthesize_sentence(text, voice_id, voice_settings, api_key)
-    except Exception as exc:
-        if not _should_fallback_to_polly(exc):
-            raise
+        return _synthesize_sentence_polly_neural(_clean_text(text), emotion, profile_name, profile)
+    except Exception as polly_exc:
         polly_voice = _get_polly_voice_id(profile_name, profile)
         log.warning(
-            "ElevenLabs unavailable (%s). Falling back to Polly Neural voice %s",
-            _format_tts_error(exc),
+            "Polly Neural failed (%s). Falling back to Polly Standard voice %s",
+            polly_exc,
             polly_voice,
         )
-        try:
-            return _synthesize_sentence_polly_neural(_clean_text(text), emotion, profile_name, profile)
-        except Exception as polly_exc:
-            log.warning(
-                "Polly Neural failed (%s). Falling back to Polly Standard voice %s",
-                polly_exc,
-                polly_voice,
-            )
-            return _synthesize_sentence_polly_standard(_clean_text(text), profile_name, profile)
+        return _synthesize_sentence_polly_standard(_clean_text(text), profile_name, profile)
 
 
 def _generate_voiceover(
@@ -753,14 +759,13 @@ def lambda_handler(event: dict, context) -> dict:
                 "mixed_audio_s3_key": f"{run_id}/audio/mixed_audio_dry_run.wav",
             }
 
-        log.info("Fetching ElevenLabs API key")
-        el_secret = get_secret("nexus/elevenlabs_api_key")
-        el_api_key = el_secret["api_key"]
-        pixabay_api_key = get_secret("nexus/pexels_api_key").get("pixabay_key", "")
+        log.info("Fetching ElevenLabs API key skipped (disabled)")
+        el_api_key = ""
+        pixabay_api_key = get_secret("nexus/pixabay_api_key").get("api_key", "")
         music_mood = profile.get("sound_design", {}).get("music_mood", "tension_atmospheric")
 
         with tempfile.TemporaryDirectory(dir=SCRATCH_DIR if os.path.isdir(SCRATCH_DIR) else None) as tmpdir:
-            log.info("Generating voiceover via ElevenLabs (%d sections)", len(script.get("sections") or script.get("scenes", [])))
+            log.info("Generating voiceover via Polly Neural (%d sections)", len(script.get("sections") or script.get("scenes", [])))
             voiceover_raw = _generate_voiceover(script, profile, el_api_key, tmpdir, profile_name)
 
             log.info("Applying audio processing")
@@ -817,7 +822,5 @@ def lambda_handler(event: dict, context) -> dict:
 if __name__ == "__main__":
     import sys
     result = lambda_handler({}, None)
-    print(json.dumps(result, default=str))
-    sys.exit(0)
     print(json.dumps(result, default=str))
     sys.exit(0)

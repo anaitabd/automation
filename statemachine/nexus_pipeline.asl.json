@@ -232,6 +232,7 @@
             "Audio": {
               "Type": "Task",
               "Resource": "arn:aws:states:::ecs:runTask.sync",
+              "TimeoutSeconds": 3600,
               "Parameters": {
                 "LaunchType": "FARGATE",
                 "Cluster": "${NexusClusterArn}",

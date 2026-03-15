@@ -164,49 +164,13 @@ def generate_voiceover(
         if cached_timestamps is not None:
             log.info("[%s] word_timestamps.json found — reusing cached timestamps", run_id)
 
-    el_secret = get_secret("nexus/elevenlabs_api_key")
-    api_key = el_secret["api_key"]
-
-    voice_cfg = profile.get("voice", {})
-    voice_id = voice_cfg.get("voice_id")
-    if not voice_id:
-        raise ValueError("Profile missing voice.voice_id — check profile JSON in CONFIG_BUCKET")
-    model_id = voice_cfg.get("model_id", "eleven_multilingual_v2")
-
-    # Use shorts-specific voice settings if available, else fallback to main
-    shorts_cfg = profile.get("shorts", {})
-    stability = shorts_cfg.get("voice_stability", voice_cfg.get("stability", 0.5))
-    similarity = shorts_cfg.get("voice_similarity_boost", voice_cfg.get("similarity_boost", 0.75))
-    style = shorts_cfg.get("voice_style", voice_cfg.get("style", 0.3))
-
-    voice_settings = {
-        "stability": stability,
-        "similarity_boost": similarity,
-        "style": style,
-        "use_speaker_boost": True,
-    }
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    headers = {
-        "xi-api-key": api_key,
-        "Content-Type": "application/json",
-        "Accept": "audio/mpeg",
-    }
-    body = {
-        "text": narration,
-        "model_id": model_id,
-        "voice_settings": voice_settings,
-    }
-
+    # ElevenLabs disabled — go directly to Polly Neural (Tier 2)
+    log.info("[%s] TTS: using Polly Neural (ElevenLabs disabled)", run_id)
     try:
-        audio_bytes = _http_post_bytes(url, headers, body)
+        audio_bytes = _synthesize_with_polly_neural(narration, "neutral", profile)
     except Exception as exc:
-        if not _should_fallback_to_polly(exc):
-            raise
-        try:
-            audio_bytes = _synthesize_with_polly_neural(narration, "neutral", profile)
-        except Exception:
-            audio_bytes = _synthesize_with_polly_standard(narration, profile)
+        log.warning("[%s] Polly Neural failed (%s) — falling back to Polly Standard", run_id, exc)
+        audio_bytes = _synthesize_with_polly_standard(narration, profile)
 
     mp3_path = os.path.join(tmpdir, f"vo_{short_id}.mp3")
     with open(mp3_path, "wb") as f:

@@ -122,7 +122,7 @@ def generate_and_upload_video(
     poll_interval: int = NOVA_REEL_POLL_INTERVAL,
     poll_timeout: int = NOVA_REEL_POLL_TIMEOUT,
 ) -> str:
-    output_prefix = output_s3_key.rstrip("/")
+    output_prefix = output_s3_key.rstrip("/") + "/"
     completed_uri = generate_video(
         text_prompt=text_prompt,
         output_s3_bucket=output_s3_bucket,
