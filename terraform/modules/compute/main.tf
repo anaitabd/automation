@@ -300,6 +300,11 @@ resource "aws_ecr_repository" "shorts" {
   image_tag_mutability = "MUTABLE"
   force_delete         = true
 }
+resource "aws_ecr_repository" "intro_outro" {
+  name                 = "nexus-intro-outro"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+}
 
 # Log groups for ECS tasks
 resource "aws_cloudwatch_log_group" "audio" {
@@ -317,6 +322,10 @@ resource "aws_cloudwatch_log_group" "editor" {
 resource "aws_cloudwatch_log_group" "shorts" {
   name              = "/ecs/nexus-shorts"
   retention_in_days = 30
+}
+resource "aws_cloudwatch_log_group" "intro_outro" {
+  name              = "/ecs/nexus-intro-outro"
+  retention_in_days = 14
 }
 
 locals {
@@ -538,4 +547,61 @@ resource "aws_ecs_task_definition" "shorts" {
       readOnly      = false
     }]
   }])
+}
+
+resource "aws_ecs_task_definition" "intro_outro" {
+  family                   = "nexus-intro-outro"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "4096"
+  memory                   = "8192"
+  execution_role_arn       = var.ecs_execution_role_arn
+  task_role_arn            = var.ecs_task_role_arn
+
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
+  volume {
+    name = "nexus-scratch"
+    efs_volume_configuration {
+      file_system_id     = var.efs_file_system_id
+      transit_encryption = "ENABLED"
+      authorization_config {
+        access_point_id = var.efs_access_point_id
+        iam             = "ENABLED"
+      }
+    }
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "nexus-intro-outro"
+      image     = "${aws_ecr_repository.intro_outro.repository_url}:latest"
+      essential = true
+      environment = local.fargate_common_env
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.intro_outro.name
+          "awslogs-region"        = local.region
+          "awslogs-stream-prefix" = "nexus-intro-outro"
+        }
+      }
+      mountPoints = [{
+        containerPath = "/mnt/scratch"
+        sourceVolume  = "nexus-scratch"
+        readOnly      = false
+      }]
+    },
+    {
+      name      = "xray-daemon"
+      image     = "amazon/aws-xray-daemon"
+      essential = false
+      portMappings = [{ containerPort = 2000, protocol = "udp" }]
+      cpu    = 32
+      memory = 256
+    }
+  ])
 }
