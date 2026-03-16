@@ -185,7 +185,7 @@ def _fetch_pexels_video(query: str, min_duration: int = 5, tmpdir: str = "/tmp",
             if not dl_url:
                 continue
             if vf.get("quality", "").lower() not in ("hd", "fhd", "uhd", ""):
-                continue
+                continue  # empty string means quality field absent — accept as fallback
             local_path = os.path.join(tmpdir, f"pexels_vid_{scene_id}.mp4")
             try:
                 urllib.request.urlretrieve(dl_url, local_path)

@@ -516,6 +516,11 @@ def _build_captions_drawtext(word_timestamps: list[dict], is_true_crime: bool) -
     Groups words into caption frames of at most _CAPTION_MAX_WORDS words.
     Each word is highlighted in yellow while active; base layer is white.
     Returns a list of drawtext filter strings to be chained with commas.
+
+    Args:
+        word_timestamps: List of word dicts with 'word', 'start_time', 'end_time', 'emotion'.
+        is_true_crime: When True, words in chunks whose first word has a tense emotion
+            (urgent, revelation, tense) are rendered in ALL CAPS.
     """
     if not word_timestamps:
         return []
@@ -529,10 +534,11 @@ def _build_captions_drawtext(word_timestamps: list[dict], is_true_crime: bool) -
         chunk_start = words[0].get("start_time", 0.0)
         chunk_end = words[-1].get("end_time", chunk_start + 0.5)
         raw_text = " ".join(w.get("word", "") for w in words)
-        if is_true_crime:
-            emotion = words[0].get("emotion", "")
-            if emotion in _TENSE_EMOTIONS:
-                raw_text = raw_text.upper()
+        # Emotion of first word sets the style for the whole chunk
+        chunk_emotion = words[0].get("emotion", "")
+        use_uppercase = is_true_crime and chunk_emotion in _TENSE_EMOTIONS
+        if use_uppercase:
+            raw_text = raw_text.upper()
 
         # Escape for drawtext
         safe_text = _escape_drawtext(raw_text)
@@ -552,7 +558,7 @@ def _build_captions_drawtext(word_timestamps: list[dict], is_true_crime: bool) -
             wstart = w.get("start_time", chunk_start)
             wend = w.get("end_time", wstart + 0.3)
             word_text = w.get("word", "")
-            if is_true_crime and words[0].get("emotion", "") in _TENSE_EMOTIONS:
+            if use_uppercase:
                 word_text = word_text.upper()
             safe_word = _escape_drawtext(word_text)
             highlight = (
@@ -614,6 +620,9 @@ def _apply_captions(assembled: str, word_timestamps: list[dict], is_true_crime: 
     except Exception as exc:
         log.error("[%s] editor: captions pass raised: %s", run_id, exc)
         return assembled
+
+
+def _loop_clip_to_duration(clip_path: str, target_duration: float, tmpdir: str, idx: int) -> str:
     """Loop or extend a clip to fill the target duration using reverse-loop for seamlessness."""
     clip_dur = _get_duration(clip_path)
     if clip_dur >= target_duration - 0.5:
