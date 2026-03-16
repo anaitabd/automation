@@ -1,10 +1,13 @@
 import json
 import os
+import random
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 import boto3
+from botocore.exceptions import ClientError
 from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
 
 try:
@@ -16,6 +19,9 @@ except ImportError:
     import nova_reel
 
 log = get_logger("nexus-visuals")
+
+# Caps concurrent Bedrock API calls to 4 regardless of thread count
+bedrock_semaphore = threading.Semaphore(4)
 
 _cache: dict = {}
 
@@ -31,6 +37,24 @@ def get_secret(name: str) -> dict:
             client.get_secret_value(SecretId=name)["SecretString"]
         )
     return _cache[name]
+
+
+def invoke_with_backoff(fn, payload: dict, max_retries: int = 5) -> dict:
+    """Invoke a Bedrock API callable with exponential backoff + jitter on ThrottlingException."""
+    for attempt in range(max_retries):
+        try:
+            return fn(**payload)
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code == "ThrottlingException" and attempt < max_retries - 1:
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                log.warning(
+                    "Bedrock ThrottlingException (attempt %d/%d) — retrying in %.2fs",
+                    attempt + 1, max_retries, wait,
+                )
+                time.sleep(wait)
+            else:
+                raise
 
 
 S3_ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "nexus-assets")
@@ -75,13 +99,15 @@ def _rekognition_score(image_bytes: bytes, visual_cue: str) -> float:
 
 def _claude_vision_score(image_bytes: bytes, visual_cue: str) -> float:
     fmt = _detect_image_format(image_bytes)
-    response = bedrock.converse(
-        modelId="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        messages=[{"role": "user", "content": [
+    payload = {
+        "modelId": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "messages": [{"role": "user", "content": [
             {"image": {"format": fmt, "source": {"bytes": image_bytes}}},
             {"text": f"Score 0.0 to 1.0 how well this image matches: '{visual_cue}'. Reply with only the number."}
-        ]}]
-    )
+        ]}],
+    }
+    with bedrock_semaphore:
+        response = invoke_with_backoff(bedrock.converse, payload)
     return float(response["output"]["message"]["content"][0]["text"].strip())
 
 
@@ -141,24 +167,26 @@ def _process_scene(
         log.info("Scene %d: generating base image with Nova Canvas", scene_id)
         _canvas_prompt = canvas_prompt.strip() or f"Cinematic wide shot, documentary style, scene {scene_id}, dramatic lighting"
         try:
-            nova_canvas.generate_and_upload_image(
-                prompt=_canvas_prompt,
-                s3_key=image_s3_key,
-                bucket=S3_OUTPUTS_BUCKET,
-                width=NOVA_REEL_WIDTH,
-                height=NOVA_REEL_HEIGHT,
-            )
-        except Exception as canvas_exc:
-            if "content filters" in str(canvas_exc).lower() or "blocked" in str(canvas_exc).lower():
-                log.warning("Scene %d: Nova Canvas content filter — retrying with neutral prompt", scene_id)
-                _neutral = f"Cinematic wide establishing shot, documentary style, dramatic lighting, scene {scene_id}"
+            with bedrock_semaphore:
                 nova_canvas.generate_and_upload_image(
-                    prompt=_neutral,
+                    prompt=_canvas_prompt,
                     s3_key=image_s3_key,
                     bucket=S3_OUTPUTS_BUCKET,
                     width=NOVA_REEL_WIDTH,
                     height=NOVA_REEL_HEIGHT,
                 )
+        except Exception as canvas_exc:
+            if "content filters" in str(canvas_exc).lower() or "blocked" in str(canvas_exc).lower():
+                log.warning("Scene %d: Nova Canvas content filter — retrying with neutral prompt", scene_id)
+                _neutral = f"Cinematic wide establishing shot, documentary style, dramatic lighting, scene {scene_id}"
+                with bedrock_semaphore:
+                    nova_canvas.generate_and_upload_image(
+                        prompt=_neutral,
+                        s3_key=image_s3_key,
+                        bucket=S3_OUTPUTS_BUCKET,
+                        width=NOVA_REEL_WIDTH,
+                        height=NOVA_REEL_HEIGHT,
+                    )
             else:
                 raise
         log.info("Scene %d: base image uploaded to %s", scene_id, image_s3_key)
@@ -167,17 +195,18 @@ def _process_scene(
 
     log.info("Scene %d: generating video clip with Nova Reel", scene_id)
     clip_s3_key = f"{run_id}/clips/scene_{scene_id:03d}"
-    final_clip_key = nova_reel.generate_and_upload_video(
-        text_prompt=reel_prompt,
-        output_s3_key=clip_s3_key,
-        output_s3_bucket=S3_OUTPUTS_BUCKET,
-        image_s3_uri=image_s3_uri,
-        duration_seconds=duration_seconds,
-        fps=NOVA_REEL_FPS,
-        width=NOVA_REEL_WIDTH,
-        height=NOVA_REEL_HEIGHT,
-        seed=scene_id,
-    )
+    with bedrock_semaphore:
+        final_clip_key = nova_reel.generate_and_upload_video(
+            text_prompt=reel_prompt,
+            output_s3_key=clip_s3_key,
+            output_s3_bucket=S3_OUTPUTS_BUCKET,
+            image_s3_uri=image_s3_uri,
+            duration_seconds=duration_seconds,
+            fps=NOVA_REEL_FPS,
+            width=NOVA_REEL_WIDTH,
+            height=NOVA_REEL_HEIGHT,
+            seed=scene_id,
+        )
     log.info("Scene %d: clip uploaded to s3://%s/%s", scene_id, S3_OUTPUTS_BUCKET, final_clip_key)
 
     return {
@@ -257,7 +286,10 @@ def lambda_handler(event: dict, context) -> dict:
         log.info("Processing %d scenes with %d parallel workers (deadline in %.0fs)",
                  len(scenes), max_workers, deadline - time.time())
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_process_one, scene): scene for scene in scenes}
+            futures = {}
+            for i, scene in enumerate(scenes):
+                time.sleep(i * 0.5)  # stagger submissions to avoid burst at t=0
+                futures[executor.submit(_process_one, scene)] = scene
             remaining = max(10, deadline - time.time())
             try:
                 for future in as_completed(futures, timeout=remaining):
