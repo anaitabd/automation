@@ -1,0 +1,40 @@
+{
+  "voice": {
+    "voice_id": "ELEVENLABS_VOICE_ID_PLACEHOLDER",
+    "stability": 0.55,
+    "similarity_boost": 0.80,
+    "style": 0.65
+  },
+  "polly_voice_id": "Gregory",
+  "polly_fallback_voice": "Matthew",
+  "llm": {
+    "script_model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  },
+  "script": {
+    "target_duration_min": 12,
+    "target_duration_max": 18,
+    "style": "true_crime",
+    "default_emotion": "tense",
+    "use_act_structure": true
+  },
+  "editing": {
+    "cuts_per_minute_target": 3,
+    "color_grade_default": "dark_cinematic"
+  },
+  "visuals": {
+    "color_grade_default": "dark_cinematic",
+    "pexels_keywords": [
+      "dark street night", "police lights", "crime scene",
+      "courtroom", "detective", "forest fog", "empty road night",
+      "old newspaper", "handcuffs", "silhouette night",
+      "abandoned building", "rain window", "shadow figure"
+    ],
+    "avoid_nova_reel": true
+  },
+  "audio": {
+    "music_mood": "dark_tension",
+    "sfx_enabled": true,
+    "silence_injection": true,
+    "target_lufs": -14
+  }
+}

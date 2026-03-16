@@ -19,11 +19,16 @@ _cache: dict = {}
 log = logging.getLogger(__name__)
 
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
+ELEVENLABS_MODEL = "eleven_multilingual_v2"
+
+# Resets to False on every cold start — never persisted externally.
+ELEVENLABS_QUOTA_EXHAUSTED = False
 
 POLLY_VOICE_MAP = {
     "documentary": "Gregory",
     "finance": "Matthew",
     "entertainment": "Stephen",
+    "true_crime": "Gregory",
 }
 
 SSML_EMOTION_MAP = {
@@ -34,6 +39,12 @@ SSML_EMOTION_MAP = {
     "somber":        {"rate": "slow",   "pitch": "-4st"},
     "hopeful":       {"rate": "medium", "pitch": "+1st"},
     "neutral":       {"rate": "medium", "pitch": "0st"},
+    # True Crime emotion extensions
+    "whispering":    {"rate": "x-slow", "pitch": "-5st"},
+    "urgent":        {"rate": "fast",   "pitch": "+1st"},
+    "revelation":    {"rate": "medium", "pitch": "-1st"},
+    "dark":          {"rate": "slow",   "pitch": "-3st"},
+    "suspenseful":   {"rate": "slow",   "pitch": "-2st"},
 }
 
 
@@ -56,20 +67,14 @@ def _load_cached_timestamps(run_id: str) -> dict | None:
         return None
 
 
-def _http_post_bytes(url: str, headers: dict, body: dict, retries: int = 3) -> bytes:
+def _elevenlabs_tts_once(url: str, headers: dict, body: dict) -> bytes:
+    """Call ElevenLabs exactly once with an 8-second timeout."""
     data = json.dumps(body).encode("utf-8")
-    for attempt in range(retries):
-        try:
-            merged = {"User-Agent": "NexusCloud/1.0"}
-            merged.update(headers)
-            req = urllib.request.Request(url, data=data, headers=merged, method="POST")
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                return resp.read()
-        except Exception:
-            if attempt == retries - 1:
-                raise
-            time.sleep(5 * (3 ** attempt))  # 5 / 15 / 45s
-    raise RuntimeError("Unreachable")
+    merged = {"User-Agent": "NexusCloud/1.0"}
+    merged.update(headers)
+    req = urllib.request.Request(url, data=data, headers=merged, method="POST")
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return resp.read()
 
 
 def _extract_tts_error(exc: Exception) -> tuple[int | None, dict]:
@@ -93,27 +98,91 @@ def _should_fallback_to_polly(exc: Exception) -> bool:
     if status_code in {401, 429}:
         return True
     body_str = json.dumps(payload).lower() if isinstance(payload, dict) else str(payload).lower()
-    return "quota_exceeded" in body_str or "credits_used" in body_str
+    return (
+        "quota_exceeded" in body_str
+        or "credits_used" in body_str
+        or "limit_reached" in body_str
+    )
 
 
 def _get_polly_voice_id(profile: dict) -> str:
     voice_cfg = profile.get("voice", {})
     return (
-        voice_cfg.get("polly_voice_id")
+        profile.get("polly_voice_id")
+        or voice_cfg.get("polly_voice_id")
         or os.environ.get("POLLY_VOICE_ID")
         or POLLY_VOICE_MAP.get(profile.get("name", ""), "Matthew")
     )
+
+
+def _apply_punctuation_pauses(text: str) -> str:
+    """Convert punctuation to SSML break tags for True Crime pacing."""
+    text = text.replace("...", '<break time="700ms"/>')
+    text = text.replace(" — ", '<break time="400ms"/>')
+    text = text.replace(" - ", '<break time="300ms"/>')
+    return text
 
 
 def _build_ssml(text: str, emotion: str) -> str:
     mapping = SSML_EMOTION_MAP.get(emotion, SSML_EMOTION_MAP["neutral"])
     rate = mapping["rate"]
     pitch = mapping["pitch"]
+    text_with_pauses = _apply_punctuation_pauses(text)
     return (
-        f'<speak><prosody rate="{rate}" pitch="{pitch}">'
-        f'<amazon:effect name="drc">{text}</amazon:effect>'
-        f'</prosody></speak>'
+        f'<speak>'
+        f'<prosody rate="{rate}" pitch="{pitch}">'
+        f'<amazon:effect name="drc">'
+        f'<amazon:breath duration="short" volume="soft"/>'
+        f'{text_with_pauses}'
+        f'</amazon:effect>'
+        f'</prosody>'
+        f'</speak>'
     )
+
+
+def detect_emotion(sentence: str) -> str:
+    """Detect the appropriate True Crime emotion for a sentence.
+
+    Rules are checked in priority order. Always returns a key that exists
+    in SSML_EMOTION_MAP — no KeyError is possible.
+    """
+    s = sentence
+    lower = s.lower()
+
+    if s.startswith((
+        "No one knew", "She never", "The last thing",
+        "What they found", "Nobody expected", "He never came",
+    )):
+        return "whispering"
+
+    if any(kw in lower for kw in (
+        "suddenly", "within hours", "police discovered",
+        "the call came in", "emergency", "immediately",
+    )):
+        return "urgent"
+
+    if any(kw in lower for kw in (
+        "turned out", "it was", "they later confirmed",
+        "the truth was", "forensics revealed", "dna showed",
+    )):
+        return "revelation"
+
+    if s.endswith("?"):
+        return "suspenseful"
+
+    if any(kw in lower for kw in (
+        "body", "victim", "disappeared", "never seen again",
+        "remains", "evidence suggested",
+    )):
+        return "dark"
+
+    if any(kw in lower for kw in (
+        "family", "mother", "daughter", "son", "father",
+        "remembered", "loved ones",
+    )):
+        return "somber"
+
+    return "tense"
 
 
 def _synthesize_with_polly_neural(narration: str, emotion: str, profile: dict) -> bytes:
@@ -127,6 +196,7 @@ def _synthesize_with_polly_neural(narration: str, emotion: str, profile: dict) -
         SampleRate="24000",
         Text=ssml_text,
         TextType="ssml",
+        LanguageCode="en-US",
     )
     return response["AudioStream"].read()
 
@@ -145,6 +215,22 @@ def _synthesize_with_polly_standard(narration: str, profile: dict) -> bytes:
     return response["AudioStream"].read()
 
 
+def _make_silence_mp3(tmpdir: str, duration_sec: float, label: str) -> str:
+    """Generate a silent MP3 file of the given duration."""
+    path = os.path.join(tmpdir, f"silence_{label}.mp3")
+    subprocess.run(
+        [
+            FFMPEG_BIN, "-y",
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+            "-t", str(duration_sec),
+            "-q:a", "9", "-acodec", "libmp3lame",
+            path,
+        ],
+        check=True, capture_output=True,
+    )
+    return path
+
+
 def generate_voiceover(
     narration: str,
     short_id: str,
@@ -152,29 +238,91 @@ def generate_voiceover(
     target_duration: float,
     tmpdir: str,
     run_id: str = "",
+    emotion: str = "neutral",
 ) -> tuple[str, dict | None]:
     """Generate a voiceover WAV file for a short-form narration.
 
-    Uses voice settings from the profile (not hardcoded).
+    Uses the 3-tier TTS cascade: ElevenLabs → Polly Neural → Polly Standard.
     Returns (local WAV path, cached word timestamps or None).
     """
+    global ELEVENLABS_QUOTA_EXHAUSTED
+
     cached_timestamps = None
     if run_id:
         cached_timestamps = _load_cached_timestamps(run_id)
         if cached_timestamps is not None:
             log.info("[%s] word_timestamps.json found — reusing cached timestamps", run_id)
 
-    # ElevenLabs disabled — go directly to Polly Neural (Tier 2)
-    log.info("[%s] TTS: using Polly Neural (ElevenLabs disabled)", run_id)
-    try:
-        audio_bytes = _synthesize_with_polly_neural(narration, "neutral", profile)
-    except Exception as exc:
-        log.warning("[%s] Polly Neural failed (%s) — falling back to Polly Standard", run_id, exc)
-        audio_bytes = _synthesize_with_polly_standard(narration, profile)
+    # Resolve emotion: validate against SSML_EMOTION_MAP
+    if emotion not in SSML_EMOTION_MAP:
+        emotion = detect_emotion(narration)
+
+    is_true_crime = profile.get("script", {}).get("style") == "true_crime"
+
+    audio_bytes: bytes | None = None
+
+    # Tier 1: ElevenLabs — try once, timeout=8s
+    if not ELEVENLABS_QUOTA_EXHAUSTED:
+        try:
+            el_secret = get_secret("nexus/elevenlabs_api_key")
+            api_key = el_secret.get("api_key", "")
+            voice_id = profile.get("voice", {}).get("voice_id", "")
+            if api_key and voice_id:
+                url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+                headers = {
+                    "xi-api-key": api_key,
+                    "Content-Type": "application/json",
+                    "Accept": "audio/mpeg",
+                }
+                voice_cfg = profile.get("voice", {})
+                body = {
+                    "text": narration,
+                    "model_id": ELEVENLABS_MODEL,
+                    "voice_settings": {
+                        "stability": voice_cfg.get("stability", 0.35),
+                        "similarity_boost": voice_cfg.get("similarity_boost", 0.75),
+                        "style": voice_cfg.get("style", 0.45),
+                    },
+                }
+                audio_bytes = _elevenlabs_tts_once(url, headers, body)
+        except Exception as exc:
+            if _should_fallback_to_polly(exc) or isinstance(exc, (TimeoutError, OSError)):
+                ELEVENLABS_QUOTA_EXHAUSTED = True
+                log.warning("[%s] tts: ElevenLabs → Polly Neural. Reason: %s", run_id, exc)
+            else:
+                log.warning("[%s] ElevenLabs unexpected error: %s — falling back to Polly Neural", run_id, exc)
+                ELEVENLABS_QUOTA_EXHAUSTED = True
+    else:
+        log.info("[%s] tts: quota exhausted, using Polly Neural directly", run_id)
+
+    # Tier 2: Polly Neural
+    if audio_bytes is None:
+        try:
+            audio_bytes = _synthesize_with_polly_neural(narration, emotion, profile)
+        except Exception as exc:
+            log.warning("[%s] Polly Neural failed (%s) — falling back to Polly Standard", run_id, exc)
+            # Tier 3: Polly Standard
+            audio_bytes = _synthesize_with_polly_standard(narration, profile)
 
     mp3_path = os.path.join(tmpdir, f"vo_{short_id}.mp3")
     with open(mp3_path, "wb") as f:
         f.write(audio_bytes)
+
+    # Append 0.8s dramatic silence after revelation/whispering scenes
+    silence_emotions = ("revelation", "whispering")
+    if emotion in silence_emotions:
+        silence_path = _make_silence_mp3(tmpdir, 0.8, f"drama_{short_id}")
+        combined_path = os.path.join(tmpdir, f"vo_{short_id}_with_silence.mp3")
+        list_file = os.path.join(tmpdir, f"vo_{short_id}_list.txt")
+        with open(list_file, "w") as f:
+            f.write(f"file '{mp3_path}'\n")
+            f.write(f"file '{silence_path}'\n")
+        subprocess.run(
+            [FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0", "-i", list_file,
+             "-c", "copy", combined_path],
+            check=True, capture_output=True,
+        )
+        mp3_path = combined_path
 
     # Convert to WAV for processing
     wav_path = os.path.join(tmpdir, f"vo_{short_id}.wav")

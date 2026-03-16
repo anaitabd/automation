@@ -46,6 +46,15 @@ def _load():
     return mod
 
 
+@pytest.fixture(autouse=True)
+def reset_elevenlabs_quota_flag():
+    """Reset the ElevenLabs quota flag before each test for proper isolation."""
+    h = _load()
+    h.ELEVENLABS_QUOTA_EXHAUSTED = False
+    yield
+    h.ELEVENLABS_QUOTA_EXHAUSTED = False
+
+
 class TestCleanText:
     def test_replaces_pause_marker(self):
         h = _load()
@@ -323,6 +332,12 @@ class TestPollyFallbackExtended:
             "somber":        {"rate": "slow",   "pitch": "-4st"},
             "hopeful":       {"rate": "medium", "pitch": "+1st"},
             "neutral":       {"rate": "medium", "pitch": "0st"},
+            # True Crime emotions
+            "whispering":    {"rate": "x-slow", "pitch": "-5st"},
+            "urgent":        {"rate": "fast",   "pitch": "+1st"},
+            "revelation":    {"rate": "medium", "pitch": "-1st"},
+            "dark":          {"rate": "slow",   "pitch": "-3st"},
+            "suspenseful":   {"rate": "slow",   "pitch": "-2st"},
         }
         for emotion, attrs in expected.items():
             ssml = h._build_ssml("test text", emotion)
@@ -330,6 +345,7 @@ class TestPollyFallbackExtended:
             assert f'pitch="{attrs["pitch"]}"' in ssml, f"{emotion}: pitch mismatch"
             assert "test text" in ssml
             assert '<amazon:effect name="drc">' in ssml
+            assert '<amazon:breath' in ssml
 
     def test_polly_standard_called_when_neural_fails(self):
         h = _load()
@@ -458,4 +474,212 @@ class TestTranscribeTimestamps:
             h._run_transcribe("timeout-run", "s3://nexus-assets/timeout-run/audio/mixed_audio.wav")
 
         s3_mock.put_object.assert_not_called()
+
+
+class TestDetectEmotionTrueCrime:
+    """Tests for the True Crime detect_emotion() function."""
+
+    def test_whispering_no_one_knew(self):
+        h = _load()
+        assert h.detect_emotion("No one knew what had happened that night.") == "whispering"
+
+    def test_whispering_she_never(self):
+        h = _load()
+        assert h.detect_emotion("She never made it home.") == "whispering"
+
+    def test_whispering_the_last_thing(self):
+        h = _load()
+        assert h.detect_emotion("The last thing she said was goodbye.") == "whispering"
+
+    def test_whispering_what_they_found(self):
+        h = _load()
+        assert h.detect_emotion("What they found changed everything.") == "whispering"
+
+    def test_urgent_suddenly(self):
+        h = _load()
+        assert h.detect_emotion("Suddenly the phone rang.") == "urgent"
+
+    def test_urgent_within_hours(self):
+        h = _load()
+        assert h.detect_emotion("Within hours, the suspect was caught.") == "urgent"
+
+    def test_urgent_police_discovered(self):
+        h = _load()
+        assert h.detect_emotion("Police discovered a second victim.") == "urgent"
+
+    def test_revelation_turned_out(self):
+        h = _load()
+        assert h.detect_emotion("It turned out the alibi was false.") == "revelation"
+
+    def test_revelation_forensics(self):
+        h = _load()
+        assert h.detect_emotion("Forensics revealed a second DNA profile.") == "revelation"
+
+    def test_suspenseful_question(self):
+        h = _load()
+        assert h.detect_emotion("But who really did it?") == "suspenseful"
+
+    def test_dark_body(self):
+        h = _load()
+        assert h.detect_emotion("The body was found three days later.") == "dark"
+
+    def test_dark_victim(self):
+        h = _load()
+        assert h.detect_emotion("The victim was last seen on Tuesday.") == "dark"
+
+    def test_dark_disappeared(self):
+        h = _load()
+        assert h.detect_emotion("She disappeared without a trace.") == "dark"
+
+    def test_somber_family(self):
+        h = _load()
+        assert h.detect_emotion("Her family never recovered from the loss.") == "somber"
+
+    def test_somber_mother(self):
+        h = _load()
+        assert h.detect_emotion("Her mother still visits the grave every Sunday.") == "somber"
+
+    def test_default_tense(self):
+        h = _load()
+        assert h.detect_emotion("The trial began on a cold January morning.") == "tense"
+
+    def test_all_results_in_ssml_map(self):
+        h = _load()
+        test_sentences = [
+            "No one knew the truth.",
+            "Suddenly it all made sense.",
+            "It turned out the killer was known to police.",
+            "Who was really responsible?",
+            "The body was found in the river.",
+            "Her family was devastated.",
+            "The prosecution rested its case.",
+        ]
+        for sentence in test_sentences:
+            result = h.detect_emotion(sentence)
+            assert result in h.SSML_EMOTION_MAP, (
+                f"detect_emotion({sentence!r}) returned {result!r} which is not in SSML_EMOTION_MAP"
+            )
+
+
+class TestElevenLabsQuotaFlag:
+    """Tests for the ELEVENLABS_QUOTA_EXHAUSTED module-level flag."""
+
+    def test_flag_starts_false(self):
+        h = _load()
+        assert h.ELEVENLABS_QUOTA_EXHAUSTED is False
+
+    def test_flag_set_on_quota_error(self):
+        h = _load()
+        h.ELEVENLABS_QUOTA_EXHAUSTED = False
+        error_body = json.dumps({"detail": {"status": "quota_exceeded"}}).encode("utf-8")
+        http_error = urllib.error.HTTPError(
+            url="https://api.elevenlabs.io/v1/text-to-speech/test-voice",
+            code=401, msg="Unauthorized", hdrs=None,
+            fp=io.BytesIO(error_body),
+        )
+        polly = MagicMock()
+        polly.synthesize_speech.return_value = {"AudioStream": io.BytesIO(b"polly-bytes")}
+
+        with patch.object(h, "_synthesize_sentence", side_effect=http_error), \
+             patch("boto3.client", return_value=polly):
+            h._synthesize_sentence_with_fallback(
+                "hello", "test-voice", {}, "test-key", "documentary", {"voice": {}}
+            )
+
+        assert h.ELEVENLABS_QUOTA_EXHAUSTED is True
+
+    def test_skips_elevenlabs_when_flag_true(self):
+        h = _load()
+        h.ELEVENLABS_QUOTA_EXHAUSTED = True
+        polly = MagicMock()
+        polly.synthesize_speech.return_value = {"AudioStream": io.BytesIO(b"polly-direct")}
+        synthesize_called = []
+
+        def track_synthesize(*args, **kwargs):
+            synthesize_called.append(True)
+            return b"should-not-reach"
+
+        with patch.object(h, "_synthesize_sentence", side_effect=track_synthesize), \
+             patch("boto3.client", return_value=polly):
+            result = h._synthesize_sentence_with_fallback(
+                "hello", "test-voice", {}, "test-key", "documentary", {"voice": {}}
+            )
+
+        assert not synthesize_called, "_synthesize_sentence should not be called when quota exhausted"
+        assert result == b"polly-direct"
+
+    def test_limit_reached_triggers_fallback(self):
+        h = _load()
+        h.ELEVENLABS_QUOTA_EXHAUSTED = False
+        error_body = json.dumps({"detail": {"status": "limit_reached", "message": "Monthly limit"}}).encode("utf-8")
+        http_error = urllib.error.HTTPError(
+            url="https://api.elevenlabs.io/v1/text-to-speech/test-voice",
+            code=429, msg="Too Many Requests", hdrs=None,
+            fp=io.BytesIO(error_body),
+        )
+        polly = MagicMock()
+        polly.synthesize_speech.return_value = {"AudioStream": io.BytesIO(b"polly-limit")}
+
+        with patch.object(h, "_synthesize_sentence", side_effect=http_error), \
+             patch("boto3.client", return_value=polly):
+            result = h._synthesize_sentence_with_fallback(
+                "hello", "test-voice", {}, "test-key", "documentary", {"voice": {}}
+            )
+
+        assert result == b"polly-limit"
+        assert h.ELEVENLABS_QUOTA_EXHAUSTED is True
+
+
+class TestPunctuationPauses:
+    """Tests for the punctuation → SSML break conversion."""
+
+    def test_ellipsis_becomes_break(self):
+        h = _load()
+        result = h._apply_punctuation_pauses("She waited... and waited.")
+        assert '<break time="700ms"/>' in result
+
+    def test_em_dash_becomes_break(self):
+        h = _load()
+        result = h._apply_punctuation_pauses("The truth — hidden for years.")
+        assert '<break time="400ms"/>' in result
+
+    def test_hyphen_space_becomes_break(self):
+        h = _load()
+        result = h._apply_punctuation_pauses("One step - then another.")
+        assert '<break time="300ms"/>' in result
+
+    def test_no_punctuation_unchanged(self):
+        h = _load()
+        result = h._apply_punctuation_pauses("plain sentence here")
+        assert result == "plain sentence here"
+
+
+class TestTrueCrimeEmotions:
+    """Verify all 5 True Crime emotions are present in SSML_EMOTION_MAP."""
+
+    def test_whispering_in_map(self):
+        h = _load()
+        assert "whispering" in h.SSML_EMOTION_MAP
+
+    def test_urgent_in_map(self):
+        h = _load()
+        assert "urgent" in h.SSML_EMOTION_MAP
+
+    def test_revelation_in_map(self):
+        h = _load()
+        assert "revelation" in h.SSML_EMOTION_MAP
+
+    def test_dark_in_map(self):
+        h = _load()
+        assert "dark" in h.SSML_EMOTION_MAP
+
+    def test_suspenseful_in_map(self):
+        h = _load()
+        assert "suspenseful" in h.SSML_EMOTION_MAP
+
+    def test_all_original_emotions_preserved(self):
+        h = _load()
+        original = ["tense", "excited", "reflective", "authoritative", "somber", "hopeful", "neutral"]
+        for emotion in original:
+            assert emotion in h.SSML_EMOTION_MAP, f"Original emotion {emotion!r} missing from SSML_EMOTION_MAP"
 

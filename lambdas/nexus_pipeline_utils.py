@@ -18,6 +18,24 @@ STEPS = {
     "notify":    {"num": 9, "total": 9, "emoji": "🔔", "label": "Notify"},
 }
 
+# Canonical SSML emotion map shared across audio, shorts, and script handlers.
+# Keys mirror AGENTS.md SSML emotion mapping; add new emotions here only.
+EMOTION_SSML = {
+    "tense":         {"rate": "slow",   "pitch": "-2st"},
+    "excited":       {"rate": "fast",   "pitch": "+3st"},
+    "reflective":    {"rate": "x-slow", "pitch": "-3st"},
+    "authoritative": {"rate": "medium", "pitch": "-1st"},
+    "somber":        {"rate": "slow",   "pitch": "-4st"},
+    "hopeful":       {"rate": "medium", "pitch": "+1st"},
+    "neutral":       {"rate": "medium", "pitch": "0st"},
+    # True Crime emotion extensions
+    "whispering":    {"rate": "x-slow", "pitch": "-5st"},
+    "urgent":        {"rate": "fast",   "pitch": "+1st"},
+    "revelation":    {"rate": "medium", "pitch": "-1st"},
+    "dark":          {"rate": "slow",   "pitch": "-3st"},
+    "suspenseful":   {"rate": "slow",   "pitch": "-2st"},
+}
+
 _secret_cache: dict = {}
 
 _REQUIRED_SECRETS = [

@@ -29,6 +29,9 @@ S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 
+# Resets to False on every Lambda cold start — never persisted externally.
+ELEVENLABS_QUOTA_EXHAUSTED = False
+
 s3 = boto3.client("s3")
 transcribe = boto3.client("transcribe")
 
@@ -42,12 +45,14 @@ MUSIC_MOOD_KEYWORDS = {
     "tension_atmospheric": "tension atmospheric",
     "corporate_upbeat_subtle": "corporate upbeat",
     "energetic_hype": "energetic upbeat",
+    "dark_tension": "dark tension suspense",
 }
 
 POLLY_VOICE_MAP = {
     "documentary": "Gregory",
     "finance": "Matthew",
     "entertainment": "Stephen",
+    "true_crime": "Gregory",
 }
 
 # Only voices that support Engine="standard" — used for the guaranteed Tier 3 fallback.
@@ -56,6 +61,7 @@ POLLY_STANDARD_VOICE_MAP = {
     "documentary": "Matthew",
     "finance": "Matthew",
     "entertainment": "Joanna",
+    "true_crime": "Matthew",
 }
 
 SSML_EMOTION_MAP = {
@@ -66,6 +72,12 @@ SSML_EMOTION_MAP = {
     "somber":        {"rate": "slow",   "pitch": "-4st"},
     "hopeful":       {"rate": "medium", "pitch": "+1st"},
     "neutral":       {"rate": "medium", "pitch": "0st"},
+    # True Crime emotion extensions
+    "whispering":    {"rate": "x-slow", "pitch": "-5st"},
+    "urgent":        {"rate": "fast",   "pitch": "+1st"},
+    "revelation":    {"rate": "medium", "pitch": "-1st"},
+    "dark":          {"rate": "slow",   "pitch": "-3st"},
+    "suspenseful":   {"rate": "slow",   "pitch": "-2st"},
 }
 
 def _find_ffmpeg() -> str:
@@ -171,8 +183,9 @@ def _synthesize_sentence(
     voice_id: str,
     voice_settings: dict,
     api_key: str,
-    retries: int = 3,
+    retries: int = 1,
 ) -> bytes:
+    """Call ElevenLabs TTS exactly once with an 8-second timeout. No retries."""
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {
         "xi-api-key": api_key,
@@ -184,16 +197,12 @@ def _synthesize_sentence(
         "model_id": ELEVENLABS_MODEL,
         "voice_settings": voice_settings,
     }
-    for attempt in range(retries):
-        try:
-            return _http_post_bytes(url, headers, body)
-        except Exception:
-            if attempt == 0:
-                body["text"] = _clean_text(text)
-            elif attempt == retries - 1:
-                raise
-            time.sleep(2 ** attempt)
-    raise RuntimeError("Unreachable")
+    data = json.dumps(body).encode("utf-8")
+    merged = {"User-Agent": "NexusCloud/1.0"}
+    merged.update(headers)
+    req = urllib.request.Request(url, data=data, headers=merged, method="POST")
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return resp.read()
 
 
 def _extract_tts_error(exc: Exception) -> tuple[int | None, dict]:
@@ -217,7 +226,11 @@ def _should_fallback_to_polly(exc: Exception) -> bool:
     if status_code in {401, 429}:
         return True
     body_str = json.dumps(payload).lower() if isinstance(payload, dict) else str(payload).lower()
-    return "quota_exceeded" in body_str or "credits_used" in body_str
+    return (
+        "quota_exceeded" in body_str
+        or "credits_used" in body_str
+        or "limit_reached" in body_str
+    )
 
 
 def _format_tts_error(exc: Exception) -> str:
@@ -249,15 +262,74 @@ def _get_polly_standard_voice_id(profile_name: str, profile: dict) -> str:
     return POLLY_STANDARD_VOICE_MAP.get(profile_name, "Matthew")
 
 
+def _apply_punctuation_pauses(text: str) -> str:
+    """Convert punctuation to SSML break tags for True Crime pacing."""
+    text = text.replace("...", '<break time="700ms"/>')
+    text = text.replace(" — ", '<break time="400ms"/>')
+    text = text.replace(" - ", '<break time="300ms"/>')
+    return text
+
+
 def _build_ssml(text: str, emotion: str) -> str:
     mapping = SSML_EMOTION_MAP.get(emotion, SSML_EMOTION_MAP["neutral"])
     rate = mapping["rate"]
     pitch = mapping["pitch"]
+    text_with_pauses = _apply_punctuation_pauses(text)
     return (
-        f'<speak><prosody rate="{rate}" pitch="{pitch}">'
-        f'<amazon:effect name="drc">{text}</amazon:effect>'
-        f'</prosody></speak>'
+        f'<speak>'
+        f'<prosody rate="{rate}" pitch="{pitch}">'
+        f'<amazon:effect name="drc">'
+        f'<amazon:breath duration="short" volume="soft"/>'
+        f'{text_with_pauses}'
+        f'</amazon:effect>'
+        f'</prosody>'
+        f'</speak>'
     )
+
+
+def detect_emotion(sentence: str) -> str:
+    """Detect the appropriate True Crime emotion for a sentence.
+
+    Rules are checked in priority order. Always returns a key that exists
+    in SSML_EMOTION_MAP — no KeyError is possible.
+    """
+    s = sentence
+    lower = s.lower()
+
+    if s.startswith((
+        "No one knew", "She never", "The last thing",
+        "What they found", "Nobody expected", "He never came",
+    )):
+        return "whispering"
+
+    if any(kw in lower for kw in (
+        "suddenly", "within hours", "police discovered",
+        "the call came in", "emergency", "immediately",
+    )):
+        return "urgent"
+
+    if any(kw in lower for kw in (
+        "turned out", "it was", "they later confirmed",
+        "the truth was", "forensics revealed", "dna showed",
+    )):
+        return "revelation"
+
+    if s.endswith("?"):
+        return "suspenseful"
+
+    if any(kw in lower for kw in (
+        "body", "victim", "disappeared", "never seen again",
+        "remains", "evidence suggested",
+    )):
+        return "dark"
+
+    if any(kw in lower for kw in (
+        "family", "mother", "daughter", "son", "father",
+        "remembered", "loved ones",
+    )):
+        return "somber"
+
+    return "tense"
 
 
 def _synthesize_sentence_polly_neural(
@@ -302,10 +374,26 @@ def _synthesize_sentence_with_fallback(
     profile: dict,
     emotion: str = "neutral",
 ) -> bytes:
-    # Tier 1 (ElevenLabs) disabled — go directly to Polly Neural
-    log.debug("TTS: using Polly Neural (ElevenLabs disabled)")
+    global ELEVENLABS_QUOTA_EXHAUSTED
+    cleaned = _clean_text(text)
+
+    # Tier 1: ElevenLabs — try once with timeout=8s; skip if quota already exhausted
+    if not ELEVENLABS_QUOTA_EXHAUSTED and api_key:
+        try:
+            return _synthesize_sentence(cleaned, voice_id, voice_settings, api_key)
+        except Exception as exc:
+            if _should_fallback_to_polly(exc) or isinstance(exc, (TimeoutError, OSError)):
+                ELEVENLABS_QUOTA_EXHAUSTED = True
+                reason = _format_tts_error(exc)
+                log.warning("tts: ElevenLabs → Polly Neural. Reason: %s", reason)
+            else:
+                raise
+    else:
+        log.info("tts: quota exhausted, using Polly Neural directly")
+
+    # Tier 2: Polly Neural
     try:
-        return _synthesize_sentence_polly_neural(_clean_text(text), emotion, profile_name, profile)
+        return _synthesize_sentence_polly_neural(cleaned, emotion, profile_name, profile)
     except Exception as polly_exc:
         polly_voice = _get_polly_voice_id(profile_name, profile)
         log.warning(
@@ -313,7 +401,8 @@ def _synthesize_sentence_with_fallback(
             polly_exc,
             polly_voice,
         )
-        return _synthesize_sentence_polly_standard(_clean_text(text), profile_name, profile)
+        # Tier 3: Polly Standard
+        return _synthesize_sentence_polly_standard(cleaned, profile_name, profile)
 
 
 def _generate_voiceover(
@@ -345,23 +434,35 @@ def _generate_voiceover(
 
     silence_300ms = _make_silence(300, "300ms")
     silence_600ms = _make_silence(600, "600ms")
+    silence_800ms = _make_silence(800, "800ms")
 
-    sentences: list[tuple[str, str, str]] = []
+    is_true_crime = profile.get("script", {}).get("style") == "true_crime"
+
+    # Each entry: (text, scene_emotion, between_sentence_silence_label, inject_scene_silence)
+    sentences: list[tuple[str, str, str, bool]] = []
     for section in (script.get("sections") or script.get("scenes", [])):
         content = section.get("content") or section.get("narration_text", "")
-        default_emotion = section.get("emotion", "neutral")
+        scene_emotion = section.get("emotion", "tense" if is_true_crime else "neutral")
+        # Validate scene emotion against SSML_EMOTION_MAP; fall back to default
+        if scene_emotion not in SSML_EMOTION_MAP:
+            scene_emotion = "tense" if is_true_crime else "neutral"
         parts = content.replace("! ", "!\x00").replace("? ", "?\x00").replace(". ", ".\x00").split("\x00")
-        for sent in parts:
-            sent = sent.strip()
-            if not sent:
-                continue
-            sentences.append((sent, default_emotion, "600ms"))
+        scene_parts = [s.strip() for s in parts if s.strip()]
+        for i, sent in enumerate(scene_parts):
+            is_last_in_scene = i == len(scene_parts) - 1
+            inject_silence = is_last_in_scene and scene_emotion in ("revelation", "whispering")
+            sentences.append((sent, scene_emotion, "600ms", inject_silence))
 
     TTS_WORKERS = int(os.environ.get("TTS_PARALLELISM", "5"))
 
-    def _synth_one(idx: int, sent: str, default_emotion: str):
+    def _synth_one(idx: int, sent: str, scene_emotion: str):
         cleaned = _clean_text(sent)
-        emotion = _detect_emotion(cleaned, default_emotion)
+        if is_true_crime:
+            # True Crime: use scene-level emotion tag; detect_emotion() is the True Crime 7-rule function
+            emotion = scene_emotion if scene_emotion in SSML_EMOTION_MAP else detect_emotion(cleaned)
+        else:
+            # Other niches: _detect_emotion() uses the general EMOTION_KEYWORDS keyword matching
+            emotion = _detect_emotion(cleaned, scene_emotion)
         voice_settings = _get_voice_settings(profile, emotion)
         audio_bytes = _synthesize_sentence_with_fallback(
             cleaned,
@@ -381,15 +482,18 @@ def _generate_voiceover(
     with ThreadPoolExecutor(max_workers=TTS_WORKERS) as pool:
         futures = {
             pool.submit(_synth_one, idx, sent, emo): idx
-            for idx, (sent, emo, _silence) in enumerate(sentences)
+            for idx, (sent, emo, _silence, _inject) in enumerate(sentences)
         }
         for fut in as_completed(futures):
             idx, seg_path = fut.result()
             seg_map[idx] = seg_path
 
-    for idx, (_sent, _emo, silence_label) in enumerate(sentences):
+    for idx, (_sent, _emo, silence_label, inject_silence) in enumerate(sentences):
         segment_files.append(seg_map[idx])
-        if idx < len(sentences) - 1:
+        if inject_silence:
+            # Dramatic 0.8s pause after revelation/whispering scene (True Crime)
+            segment_files.append(silence_800ms)
+        elif idx < len(sentences) - 1:
             segment_files.append(silence_300ms if silence_label == "300ms" else silence_600ms)
 
     list_file = os.path.join(tmpdir, "segments.txt")
