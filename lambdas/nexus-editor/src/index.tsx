@@ -1,4 +1,4 @@
-import { Composition } from "remotion";
+import { Composition, registerRoot } from "remotion";
 import { DocumentaryComposition } from "./DocumentaryComposition";
 import React from "react";
 
@@ -23,3 +23,6 @@ export const RemotionRoot: React.FC = () => {
         </>
     );
 };
+
+registerRoot(RemotionRoot);
+

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "remotion";
 import {
     AbsoluteFill,
     Audio,
@@ -9,6 +9,7 @@ import {
     spring,
     useCurrentFrame,
     useVideoConfig,
+    staticFile,
 } from "remotion";
 
 interface VisualCue {
@@ -243,7 +244,7 @@ export const DocumentaryComposition: React.FC<DocumentaryCompositionProps> = ({
         <AbsoluteFill style={{ backgroundColor: "#000000" }}>
             {audioPath && (
                 <Audio
-                    src={`file://${audioPath}`}
+                    src={audioPath}
                     volume={1}
                 />
             )}

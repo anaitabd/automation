@@ -761,7 +761,8 @@ def lambda_handler(event: dict, context) -> dict:
 
         log.info("Fetching ElevenLabs API key skipped (disabled)")
         el_api_key = ""
-        pixabay_api_key = get_secret("nexus/pixabay_api_key").get("api_key", "")
+        # Pixabay key is stored inside nexus/pexels_api_key secret
+        pixabay_api_key = get_secret("nexus/pexels_api_key").get("pixabay_key", "")
         music_mood = profile.get("sound_design", {}).get("music_mood", "tension_atmospheric")
 
         with tempfile.TemporaryDirectory(dir=SCRATCH_DIR if os.path.isdir(SCRATCH_DIR) else None) as tmpdir:

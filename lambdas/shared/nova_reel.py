@@ -30,14 +30,14 @@ def _start_generation(
         "seed": seed,
     }
     model_input: dict = {
-        "taskType": "TEXT_VIDEO",
+        "taskType": "TEXT_TO_VIDEO",
         "textToVideoParams": {
             "text": text_prompt,
         },
         "videoGenerationConfig": video_generation_config,
     }
     if image_s3_uri:
-        model_input["taskType"] = "TEXT_IMAGE_TO_VIDEO"
+        # Keep taskType as TEXT_TO_VIDEO but add images parameter
         model_input["textToVideoParams"]["images"] = [
             {"format": "png", "source": {"s3Location": {"uri": image_s3_uri}}}
         ]

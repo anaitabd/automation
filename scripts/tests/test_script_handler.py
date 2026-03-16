@@ -193,6 +193,53 @@ class TestScriptHandler(unittest.TestCase):
         self.assertTrue(len(system) > 0)
         self.assertIn("cache_control", system[0])
 
+    def test_autofill_missing_scene_fields(self):
+        """Test that _autofill_missing_scene_fields can recover incomplete scenes."""
+        h = _load_script_handler()
+        
+        # Simulate a truncated script with scene 9 missing required fields
+        incomplete_script = {
+            "title": "Test Script",
+            "scenes": [
+                {
+                    "scene_id": 1,
+                    "title": "Complete Scene",
+                    "narration_text": "This is a complete scene with all fields.",
+                    "nova_canvas_prompt": "Complete canvas prompt",
+                    "nova_reel_prompt": "Complete reel prompt",
+                    "text_overlay": "Complete overlay",
+                    "estimated_duration": 60,
+                },
+                {
+                    # Scene 9 - missing most fields (truncated)
+                    "scene_id": 9,
+                    "title": "Incomplete Scene",
+                    "narration_text": "This scene was truncated and is missing required fields.",
+                    # Missing: nova_canvas_prompt, nova_reel_prompt, text_overlay, estimated_duration
+                },
+            ]
+        }
+        
+        result = h._autofill_missing_scene_fields(incomplete_script)
+        
+        # Verify scene 9 now has all required fields
+        scene_9 = result["scenes"][1]
+        self.assertIn("nova_canvas_prompt", scene_9)
+        self.assertIn("nova_reel_prompt", scene_9)
+        self.assertIn("text_overlay", scene_9)
+        self.assertIn("estimated_duration", scene_9)
+        
+        # Verify the auto-filled values are reasonable
+        self.assertTrue(len(scene_9["nova_canvas_prompt"]) > 0)
+        self.assertTrue(len(scene_9["nova_reel_prompt"]) > 0)
+        self.assertIsInstance(scene_9["text_overlay"], str)
+        self.assertIsInstance(scene_9["estimated_duration"], int)
+        self.assertGreater(scene_9["estimated_duration"], 0)
+        
+        # Verify schema validation passes after auto-fill
+        errors = h._validate_edl_schema(result)
+        self.assertEqual(len(errors), 0, f"Schema validation should pass after auto-fill, got: {errors}")
+
 
 if __name__ == "__main__":
     unittest.main()

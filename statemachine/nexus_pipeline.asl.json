@@ -384,6 +384,25 @@
                   "BackoffRate": 2.0
                 }
               ],
+              "Next": "SetVisualsKeys"
+            },
+            "SetVisualsKeys": {
+              "Type": "Pass",
+              "Parameters": {
+                "run_id.$": "$.run_id",
+                "profile.$": "$.profile",
+                "dry_run.$": "$.dry_run",
+                "niche.$": "$.niche",
+                "subnets.$": "$.subnets",
+                "generate_shorts.$": "$.generate_shorts",
+                "shorts_tiers.$": "$.shorts_tiers",
+                "channel_id.$": "$.channel_id",
+                "script_s3_key.$": "$.script_s3_key",
+                "title.$": "$.title",
+                "total_duration_estimate.$": "$.total_duration_estimate",
+                "edl_s3_key.$": "States.Format('{}/script_with_assets.json', $.run_id)"
+              },
+              "ResultPath": "$",
               "End": true
             }
           }
@@ -425,6 +444,7 @@
         "title.$": "$[0].title",
         "total_duration_estimate.$": "$[0].total_duration_estimate",
         "mixed_audio_s3_key.$": "$[0].mixed_audio_s3_key",
+        "edl_s3_key.$": "$[1].edl_s3_key",
         "subnets.$": "$[0].subnets",
         "generate_shorts.$": "$[0].generate_shorts",
         "shorts_tiers.$": "$[0].shorts_tiers",
@@ -478,6 +498,10 @@
                         {
                           "Name": "SCRIPT_S3_KEY",
                           "Value.$": "$.script_s3_key"
+                        },
+                        {
+                          "Name": "EDL_S3_KEY",
+                          "Value.$": "$.edl_s3_key"
                         },
                         {
                           "Name": "MIXED_AUDIO_S3_KEY",

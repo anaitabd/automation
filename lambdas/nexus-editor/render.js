@@ -1,6 +1,7 @@
 const { bundle } = require("@remotion/bundler");
 const { renderMedia, selectComposition } = require("@remotion/renderer");
 const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { execSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -88,6 +89,14 @@ async function main() {
     const scenes = edl.scenes || [];
     console.log(`[nexus-editor] EDL loaded — ${scenes.length} scenes`);
 
+    // Validate EDL has scenes before proceeding
+    if (scenes.length === 0) {
+        console.error("[nexus-editor] FATAL: EDL contains 0 scenes. Cannot render video.");
+        console.error("[nexus-editor] This likely means the Visuals step produced no video clips.");
+        console.error("[nexus-editor] Check Nova Reel logs and manifest files in S3.");
+        throw new Error("Empty EDL: 0 scenes available for rendering");
+    }
+
     console.log("[nexus-editor] Downloading scene assets from S3...");
     const enrichedScenes = await downloadSceneAssets(scenes, tmpDir);
 
@@ -103,7 +112,7 @@ async function main() {
 
     const inputProps = {
         scenes: enrichedScenes,
-        audioPath: localAudioPath,
+        audioPath: null,  // Audio will be added with FFmpeg after rendering
         totalDuration,
         mood: edl.mood || "neutral",
         title: edl.title || "",
@@ -123,7 +132,7 @@ async function main() {
         inputProps,
     });
 
-    const finalLocalPath = path.join(tmpDir, "final_video.mp4");
+    const videoOnlyPath = path.join(tmpDir, "video_only.mp4");
     console.log(`[nexus-editor] Rendering '${COMPOSITION_ID}' (${durationInFrames} frames @ ${OUTPUT_FPS}fps)...`);
     await renderMedia({
         composition: {
@@ -135,14 +144,34 @@ async function main() {
         },
         serveUrl: bundled,
         codec: "h264",
-        outputLocation: finalLocalPath,
+        outputLocation: videoOnlyPath,
         inputProps,
         chromiumOptions: {
             disableWebSecurity: true,
         },
         videoBitrate: "6M",
-        audioBitrate: "192k",
     });
+
+    // Add audio with FFmpeg
+    const finalLocalPath = path.join(tmpDir, "final_video.mp4");
+    if (localAudioPath && fs.existsSync(localAudioPath)) {
+        console.log("[nexus-editor] Adding audio with FFmpeg...");
+        try {
+            execSync(
+                `ffmpeg -i "${videoOnlyPath}" -i "${localAudioPath}" -c:v copy -c:a aac -b:a 192k -shortest "${finalLocalPath}"`,
+                { stdio: "inherit" }
+            );
+            console.log("[nexus-editor] Audio merged successfully");
+        } catch (err) {
+            console.error("[nexus-editor] FFmpeg failed:", err.message);
+            // Fallback: use video without audio
+            fs.copyFileSync(videoOnlyPath, finalLocalPath);
+            console.log("[nexus-editor] Using video without audio as fallback");
+        }
+    } else {
+        console.log("[nexus-editor] No audio file, using video only");
+        fs.copyFileSync(videoOnlyPath, finalLocalPath);
+    }
 
     const finalS3Key = `${RUN_ID}/review/final_video.mp4`;
     console.log(`[nexus-editor] Uploading final video to s3://${OUTPUTS_BUCKET}/${finalS3Key}`);

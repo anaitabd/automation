@@ -348,6 +348,55 @@ def _validate_edl_schema(script: dict) -> list[str]:
     return errors
 
 
+def _autofill_missing_scene_fields(script: dict) -> dict:
+    """Attempt to auto-fill missing required fields in scenes with reasonable defaults.
+    
+    This is a fallback for when Claude's output was truncated. We prefer to salvage
+    what we have rather than fail the entire run.
+    """
+    if not isinstance(script.get("scenes"), list):
+        return script
+    
+    for i, scene in enumerate(script["scenes"]):
+        if not isinstance(scene, dict):
+            continue
+        
+        # Auto-fill scene_id if missing
+        if "scene_id" not in scene or not isinstance(scene.get("scene_id"), int):
+            scene["scene_id"] = i + 1
+        
+        # Auto-fill nova_canvas_prompt if missing - derive from narration or title
+        if "nova_canvas_prompt" not in scene:
+            narration = scene.get("narration_text", "")
+            scene_title = scene.get("title", "")
+            # Extract first sentence or use title
+            first_sentence = narration.split('.')[0] if narration else scene_title
+            scene["nova_canvas_prompt"] = (
+                f"Cinematic photograph related to: {first_sentence[:100]}. "
+                f"Photorealistic, high detail, dramatic lighting."
+            )
+        
+        # Auto-fill nova_reel_prompt if missing
+        if "nova_reel_prompt" not in scene:
+            scene["nova_reel_prompt"] = (
+                "Slow cinematic camera movement, subtle parallax depth, "
+                "gentle lighting shifts, 3D ease in/out"
+            )
+        
+        # Auto-fill text_overlay if missing
+        if "text_overlay" not in scene:
+            scene["text_overlay"] = ""
+        
+        # Auto-fill estimated_duration if missing or invalid
+        if not isinstance(scene.get("estimated_duration"), (int, float)) or scene.get("estimated_duration", 0) <= 0:
+            # Estimate based on narration word count (150 words/min speaking rate)
+            narration = scene.get("narration_text", "")
+            word_count = len(narration.split())
+            scene["estimated_duration"] = max(15, int(word_count / 2.5))  # ~150 words/min
+    
+    return script
+
+
 def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
     data = json.dumps(body).encode("utf-8")
     for attempt in range(retries):
@@ -367,7 +416,7 @@ def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
 def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3, model_id: str = "", system: list = None) -> str:
     client = boto3.client(
         "bedrock-runtime",
-        config=Config(read_timeout=300, connect_timeout=10, retries={"max_attempts": 0}),
+        config=Config(read_timeout=300, connect_timeout=10, retries={"max_attempts": 3, "mode": "adaptive"}),
     )
     bedrock_model = model_id or BEDROCK_MODEL_SONNET
     body_dict = {
@@ -397,9 +446,17 @@ def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3, model_i
                 )
             return text
         except Exception as exc:
-            if attempt == retries - 1:
+            # Check if it's a throttling or transient error
+            error_code = getattr(exc, 'response', {}).get('Error', {}).get('Code', '')
+            is_throttle = error_code in ('ThrottlingException', 'TooManyRequestsException', 'ServiceUnavailable')
+            
+            if attempt < retries - 1:
+                # Exponential backoff for throttling, linear for others
+                wait_time = (2 ** attempt) if is_throttle else (attempt + 1)
+                print(f"[WARN] _bedrock_call attempt {attempt + 1}/{retries} failed: {exc}. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
                 raise
-            time.sleep(2 ** attempt)
     raise RuntimeError("Unreachable")
 
 
@@ -515,22 +572,44 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"Always close every {{ with }} and every [ with ]. Double-check your JSON is valid before finishing."
     )
     last_err: Exception | None = None
+    validation_feedback = ""
     for attempt in range(max_attempts):
-        raw = _bedrock_call(prompt, max_tokens=6000, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
+        # Include validation errors from previous attempt in the prompt
+        retry_prompt = prompt
+        if validation_feedback and attempt > 0:
+            retry_prompt = (
+                f"{prompt}\n\n"
+                f"⚠️ PREVIOUS ATTEMPT HAD THESE ERRORS — FIX THEM:\n{validation_feedback}\n"
+                f"Make sure EVERY scene has all required fields: scene_id, narration_text, "
+                f"nova_canvas_prompt, nova_reel_prompt, text_overlay, estimated_duration.\n"
+                f"If you're running out of space, reduce the number of scenes instead of leaving them incomplete."
+            )
+        
+        raw = _bedrock_call(retry_prompt, max_tokens=8000, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
         try:
             result = _extract_json(raw)
             edl_errors = _validate_edl_schema(result)
             if edl_errors:
+                validation_feedback = "\n".join(edl_errors)
                 print(
                     f"[WARN] _pass1_structure EDL validation failed (attempt {attempt + 1}/{max_attempts}): "
                     f"{edl_errors}"
                 )
-                last_err = ValueError(f"EDL schema invalid: {edl_errors}")
-                time.sleep(2 ** attempt)
-                continue
+                # Try to auto-fix missing fields before failing
+                result = _autofill_missing_scene_fields(result)
+                # Re-validate after auto-fix
+                edl_errors_after_fix = _validate_edl_schema(result)
+                if edl_errors_after_fix:
+                    last_err = ValueError(f"EDL schema invalid: {edl_errors_after_fix}")
+                    time.sleep(2 ** attempt)
+                    continue
+                # Auto-fix succeeded
+                print(f"[INFO] _pass1_structure: auto-filled missing fields, continuing")
+                return result
             return result
         except json.JSONDecodeError as exc:
             last_err = exc
+            validation_feedback = f"JSON parse error: {str(exc)}"
             print(
                 f"[WARN] _pass1_structure JSON parse failed (attempt {attempt + 1}/{max_attempts}): {exc}\n"
                 f"[DEBUG] raw response length={len(raw)}, last 500 chars: ...{raw[-500:]!r}"
@@ -608,7 +687,7 @@ def _pass_fact_integrity(script: dict) -> dict:
         "CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
         f"{json.dumps(script, indent=2)}"
     )
-    raw = _bedrock_call(prompt, max_tokens=6000, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
+    raw = _bedrock_call(prompt, max_tokens=8000, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
     try:
         audited = _extract_json(raw)
         audited.setdefault("factual_confidence", "medium")
@@ -687,7 +766,7 @@ def _pass4_pacing(script: dict, profile: dict) -> dict:
         "- CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
         f"{json.dumps(script, indent=2)}"
     )
-    raw = _bedrock_call(prompt, max_tokens=6000, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
+    raw = _bedrock_call(prompt, max_tokens=8000, model_id=BEDROCK_MODEL_SONNET, system=BEDROCK_SYSTEM_CACHED)
     try:
         paced = _extract_json(raw)
         orig_scenes = script.get("scenes", [])
@@ -716,7 +795,7 @@ def _pass6_final_polish(script: dict) -> dict:
         "- CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
         f"{json.dumps(script, indent=2)}"
     )
-    raw = _bedrock_call(prompt, max_tokens=6000, model_id=BEDROCK_MODEL_OPUS)
+    raw = _bedrock_call(prompt, max_tokens=8000, model_id=BEDROCK_MODEL_OPUS)
     try:
         polished = _extract_json(raw)
         orig_scenes = script.get("scenes", [])
@@ -857,25 +936,31 @@ def lambda_handler(event: dict, context) -> dict:
 
             log.info("Pass 1/7: Generating script structure for '%s'", topic)
             script = _pass1_structure(topic, angle, trending_context, profile)
+            time.sleep(5)  # Rate limiting: spread out Bedrock calls
 
             log.info("Pass 2/7: Fact integrity self-audit")
             script = _pass_fact_integrity(script)
+            time.sleep(5)  # Rate limiting: spread out Bedrock calls
 
             log.info("Pass 3/7: Hook rewrite")
             script = _pass2_hook_rewrite(script)
+            time.sleep(5)  # Rate limiting: spread out Bedrock calls
 
             log.info("Pass 4/7: Visual cues")
             script = _pass3_visual_cues(script, profile)
+            time.sleep(5)  # Rate limiting: spread out Bedrock calls
 
             log.info("Pass 5/7: Pacing polish")
             if time.time() - _script_start_time < SCRIPT_TIME_BUDGET:
                 script = _pass4_pacing(script, profile)
+                time.sleep(5)  # Rate limiting: spread out Bedrock calls
             else:
                 log.warning("Pass 5/7: Skipped (time budget exceeded)")
 
             log.info("Pass 6/7: Final polish (Opus)")
             if time.time() - _script_start_time < SCRIPT_TIME_BUDGET:
                 script = _pass6_final_polish(script)
+                time.sleep(3)  # Shorter delay before final pass
             else:
                 log.warning("Pass 6/7: Skipped (time budget exceeded)")
 

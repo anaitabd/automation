@@ -173,8 +173,7 @@ def _get_secret(key: str) -> str:
 Canonical secret names (defined in `terraform/modules/secrets/`):
 - `nexus/elevenlabs_api_key`  → key: `api_key`
 - `nexus/perplexity_api_key`  → key: `api_key`
-- `nexus/pexels_api_key`      → key: `api_key`
-- `nexus/pixabay_api_key`     → key: `api_key`
+- `nexus/pexels_api_key`      → keys: `api_key`, `pixabay_key` (Pixabay stored here, not separate)
 - `nexus/freesound_api_key`   → key: `api_key`
 - `nexus/youtube_credentials` → keys: `client_id`, `client_secret`, `refresh_token`, `access_token`
 - `nexus/db_credentials`      → keys: `host`, `port`, `dbname`, `user`, `password`
