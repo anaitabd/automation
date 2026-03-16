@@ -468,6 +468,28 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
     target_max = profile.get("script", {}).get("target_duration_max", 16)
     tone = profile.get("script", {}).get("tone", "authoritative_compelling")
     narrative = profile.get("script", {}).get("narrative_style", "third_person_omniscient")
+    is_true_crime = profile.get("script", {}).get("style") == "true_crime"
+
+    # True Crime 6-act structure injection (conditional)
+    true_crime_structure = ""
+    if is_true_crime:
+        true_crime_structure = (
+            f"\n═══ TRUE CRIME 6-ACT STRUCTURE — MANDATORY ═══\n"
+            f"You MUST structure the script into exactly these 6 acts:\n"
+            f"  Act 1: Cold open — start IN the crime, not before it. No introductions.\n"
+            f"  Act 2: The victim — make the audience care before they see the crime.\n"
+            f"  Act 3: The crime — slow, detailed, atmospheric. Let it breathe.\n"
+            f"  Act 4: Investigation — include red herrings and wrong suspects.\n"
+            f"  Act 5: The reveal — the payoff. Never rush this.\n"
+            f"  Act 6: Reflection — end with 'What makes this case so haunting is...'\n"
+            f"Each act becomes one or more scenes. Do NOT introduce the narrator.\n"
+            f"Use present tense for the crime reconstruction ('She walks to her car...').\n"
+            f"Use past tense for background and investigation.\n"
+            f"Open with a specific sensory detail: sound, smell, temperature, time of day.\n"
+            f"Never start a sentence with 'Today we're going to talk about'.\n"
+            f"Every scene must end with a reason to keep watching.\n"
+            f"Set 'emotion' per scene to one of: tense|somber|revelation|whispering|urgent|dark|suspenseful\n\n"
+        )
 
     # Human YouTuber persona prompt — writes for ears, not eyes
     prompt = (
@@ -480,7 +502,7 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
         f"Topic: {topic}\n"
         f"Angle: {angle}\n"
         f"Research context: {context}\n\n"
-
+        + true_crime_structure +
         f"═══ VOICE & STYLE — WRITE FOR EARS, NOT EYES ═══\n"
         f"- Target duration: {target_min}-{target_max} minutes of narrated content\n"
         f"- Tone: {tone}\n"
@@ -649,12 +671,29 @@ def _pass2_hook_rewrite(script: dict) -> dict:
     return script
 
 
-def _pass_fact_integrity(script: dict) -> dict:
+def _pass_fact_integrity(script: dict, profile: dict | None = None) -> dict:
     """Self-audit pass: review the script for factual integrity.
 
     Uses Bedrock to re-examine every claim in the script and flag or remove
     anything that cannot be verified. Runs for ALL profiles.
+    For True Crime profiles, also enforces writing style rules.
     """
+    is_true_crime = (profile or {}).get("script", {}).get("style") == "true_crime"
+
+    true_crime_writing_rules = ""
+    if is_true_crime:
+        true_crime_writing_rules = (
+            "\n═══ TRUE CRIME WRITING RULES — ENFORCE THESE ═══\n"
+            "- Open with a specific sensory detail: sound, smell, temperature, time of day\n"
+            "- Never start a sentence with 'Today we're going to talk about'\n"
+            "- Use present tense for the crime reconstruction ('She walks to her car...')\n"
+            "- Use past tense for background and investigation\n"
+            "- Every scene must end with a reason to keep watching\n"
+            "- Check each paragraph opens with a hook, not a fact\n"
+            "- Replace any paragraph opening with 'In conclusion' or 'To summarize'\n"
+            "- Verify cold open does NOT introduce the narrator\n\n"
+        )
+
     prompt = (
         "You are a rigorous fact-checker and editorial auditor. Your job is to review "
         "the following YouTube script and ensure EVERY factual claim is accurate.\n\n"
@@ -686,7 +725,7 @@ def _pass_fact_integrity(script: dict) -> dict:
         "- Set the top-level \"factual_confidence\" to \"high\", \"medium\", or \"low\"\n"
         "- Keep [PAUSE], [BEAT], [BREATH] markers exactly where they are\n"
         "- Return the COMPLETE script as valid JSON, same schema\n\n"
-
+        + true_crime_writing_rules +
         "CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
         f"{json.dumps(script, indent=2)}"
     )
@@ -787,7 +826,21 @@ def _pass4_pacing(script: dict, profile: dict) -> dict:
         return script
 
 
-def _pass6_final_polish(script: dict) -> dict:
+def _pass6_final_polish(script: dict, profile: dict | None = None) -> dict:
+    is_true_crime = (profile or {}).get("script", {}).get("style") == "true_crime"
+
+    true_crime_polish = ""
+    if is_true_crime:
+        true_crime_polish = (
+            "\n═══ TRUE CRIME FINAL POLISH — MANDATORY CHECKS ═══\n"
+            "- Check every paragraph opens with a hook, not a fact\n"
+            "- Replace any sentence starting with 'In conclusion' or 'To summarize'\n"
+            "- Verify cold open does NOT introduce the narrator\n"
+            "- For EVERY scene, set the 'emotion' field to one of: "
+            "tense|somber|revelation|whispering|urgent|dark|suspenseful\n"
+            "- If a scene has no 'emotion' field, add one based on the narration content\n\n"
+        )
+
     prompt = (
         "You are the final quality reviewer for a YouTube video script. "
         "Perform a final polish pass to ensure the script is cohesive, compelling, and production-ready.\n\n"
@@ -797,6 +850,7 @@ def _pass6_final_polish(script: dict) -> dict:
         "- Do NOT add new factual claims or invent details\n"
         "- Do NOT change the JSON schema or structure\n"
         "- CRITICAL: Output complete, valid JSON with all brackets and braces properly closed.\n\n"
+        + true_crime_polish +
         f"{json.dumps(script, indent=2)}"
     )
     raw = _bedrock_call(prompt, max_tokens=8000, model_id=BEDROCK_MODEL_OPUS)
@@ -943,7 +997,7 @@ def lambda_handler(event: dict, context) -> dict:
             time.sleep(5)  # Rate limiting: spread out Bedrock calls
 
             log.info("Pass 2/7: Fact integrity self-audit")
-            script = _pass_fact_integrity(script)
+            script = _pass_fact_integrity(script, profile)
             time.sleep(5)  # Rate limiting: spread out Bedrock calls
 
             log.info("Pass 3/7: Hook rewrite")
@@ -963,7 +1017,7 @@ def lambda_handler(event: dict, context) -> dict:
 
             log.info("Pass 6/7: Final polish (Opus)")
             if time.time() - _script_start_time < SCRIPT_TIME_BUDGET:
-                script = _pass6_final_polish(script)
+                script = _pass6_final_polish(script, profile)
                 time.sleep(3)  # Shorter delay before final pass
             else:
                 log.warning("Pass 6/7: Skipped (time budget exceeded)")
