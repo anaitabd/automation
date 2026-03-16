@@ -75,7 +75,7 @@ class TestHandleRun:
         assert resp["statusCode"] == 200
         data = json.loads((self.sfn_mock.start_execution.call_args.kwargs or self.sfn_mock.start_execution.call_args[1]).get("input", "{}"))
         assert data["generate_shorts"] is False
-        assert data["shorts_tiers"] == "micro,short,mid,full"
+        assert data["shorts_tiers"] == []
         assert data["channel_id"] is None
 
     @pytest.mark.parametrize("body", [

@@ -1,15 +1,19 @@
 import json
 import os
+import random
+import threading
 import time
 import uuid
 import boto3
-import urllib.request
-import urllib.error
+from botocore.exceptions import ClientError
 from nexus_pipeline_utils import get_logger, notify_step_start, notify_step_complete
 
 log = get_logger("nexus-research")
 
 _cache: dict = {}
+
+bedrock = boto3.client("bedrock-runtime")
+bedrock_semaphore = threading.Semaphore(4)
 
 
 def get_secret(name: str) -> dict:
@@ -21,66 +25,71 @@ def get_secret(name: str) -> dict:
     return _cache[name]
 
 
+def invoke_with_backoff(fn, payload: dict, run_id: str = "", max_retries: int = 5) -> dict:
+    """Invoke a Bedrock API callable with semaphore + exponential backoff on ThrottlingException."""
+    for attempt in range(max_retries):
+        try:
+            with bedrock_semaphore:
+                return fn(**payload)
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code == "ThrottlingException" and attempt < max_retries - 1:
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                log.warning(
+                    f"[{run_id}] bedrock: throttled attempt "
+                    f"{attempt+1}/{max_retries}, retrying in {wait:.1f}s"
+                )
+                time.sleep(wait)
+            else:
+                raise
+
+
 S3_OUTPUTS_BUCKET = os.environ.get("OUTPUTS_BUCKET", "nexus-outputs")
 S3_CONFIG_BUCKET = os.environ.get("CONFIG_BUCKET", "nexus-config")
 BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 
-def _http_post(url: str, headers: dict, body: dict, retries: int = 3) -> dict:
-    data = json.dumps(body).encode("utf-8")
-    for attempt in range(retries):
-        try:
-            merged = {"User-Agent": "NexusCloud/1.0"}
-            merged.update(headers)
-            req = urllib.request.Request(url, data=data, headers=merged, method="POST")
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
-            if attempt == retries - 1:
-                raise
-            time.sleep(2 ** attempt)
-    raise RuntimeError("Unreachable")
-
-
-def _perplexity_search(query: str, api_key: str) -> str:
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": "sonar-pro",
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a YouTube trend analyst. Provide concise, data-backed"
-                    " insights about trending topics, search volume, and engagement angles."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Research the niche '{query}' on YouTube. "
-                    "List the top 5 trending subtopics, typical view counts, best-performing "
-                    "video angles, and audience pain points. Be specific and data-driven."
-                ),
-            },
-        ],
-        "max_tokens": 2048,
-    }
-    result = _http_post(
-        "https://api.perplexity.ai/chat/completions", headers=headers, body=body
+def _bedrock_web_search(query: str, run_id: str, model_id: str = "") -> str:
+    """Research YouTube trends using Bedrock Claude with native web search tool."""
+    _model = model_id or BEDROCK_MODEL_ID_DEFAULT
+    prompt = (
+        f"Research the niche '{query}' on YouTube. "
+        "List the top 5 trending subtopics, typical view counts, best-performing "
+        "video angles, and audience pain points. Be specific and data-driven."
     )
-    return result["choices"][0]["message"]["content"]
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 2048,
+        "system": (
+            "You are a YouTube trend analyst. Provide concise, data-backed"
+            " insights about trending topics, search volume, and engagement angles."
+        ),
+        "messages": [{"role": "user", "content": prompt}],
+        "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+    })
+    payload = {
+        "modelId": _model,
+        "body": body,
+        "contentType": "application/json",
+        "accept": "application/json",
+    }
+    log.info(f"[{run_id}] research: calling Bedrock web search for niche: {query}")
+    response = invoke_with_backoff(bedrock.invoke_model, payload, run_id=run_id)
+    result = json.loads(response["body"].read())
+    text_parts = [
+        block.get("text", "")
+        for block in result.get("content", [])
+        if block.get("type") == "text"
+    ]
+    return "\n".join(text_parts)
 
 
-def _bedrock_select_topic(niche: str, perplexity_context: str, model_id: str = "") -> dict:
-    client = boto3.client("bedrock-runtime")
+def _bedrock_select_topic(niche: str, research_context: str, run_id: str = "", model_id: str = "") -> dict:
     bedrock_model = model_id or BEDROCK_MODEL_ID_DEFAULT
     prompt = (
         f"You are an expert YouTube strategist. Based on the following research about '{niche}', "
         "select the single best video topic and angle to maximise views and watch time.\n\n"
-        f"Research:\n{perplexity_context}\n\n"
+        f"Research:\n{research_context}\n\n"
         "Respond ONLY with a JSON object (no markdown) with these exact keys:\n"
         "  selected_topic (string)\n"
         "  angle (string)\n"
@@ -94,23 +103,16 @@ def _bedrock_select_topic(niche: str, perplexity_context: str, model_id: str = "
             "messages": [{"role": "user", "content": prompt}],
         }
     )
-    retries = 3
-    for attempt in range(retries):
-        try:
-            response = client.invoke_model(
-                modelId=bedrock_model,
-                body=body,
-                contentType="application/json",
-                accept="application/json",
-            )
-            raw = json.loads(response["body"].read())["content"][0]["text"]
-            raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-            return json.loads(raw)
-        except Exception as exc:
-            if attempt == retries - 1:
-                raise
-            time.sleep(2 ** attempt)
-    raise RuntimeError("Unreachable")
+    payload = {
+        "modelId": bedrock_model,
+        "body": body,
+        "contentType": "application/json",
+        "accept": "application/json",
+    }
+    response = invoke_with_backoff(bedrock.invoke_model, payload, run_id=run_id)
+    raw = json.loads(response["body"].read())["content"][0]["text"]
+    raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    return json.loads(raw)
 
 
 def _save_to_s3(run_id: str, data: dict) -> str:
@@ -134,9 +136,6 @@ def lambda_handler(event: dict, context) -> dict:
     step_start = notify_step_start("research", run_id, niche=niche, profile=profile, dry_run=dry_run)
 
     try:
-        log.info("Fetching Perplexity API key from Secrets Manager")
-        perplexity_key = get_secret("nexus/perplexity_api_key")["api_key"]
-
         # Load profile to get the configured LLM model
         s3 = boto3.client("s3")
         try:
@@ -147,7 +146,7 @@ def lambda_handler(event: dict, context) -> dict:
         bedrock_model = profile_data.get("llm", {}).get("script_model", BEDROCK_MODEL_ID_DEFAULT)
 
         if dry_run:
-            log.info("DRY RUN mode — skipping real API calls")
+            log.info(f"[{run_id}] research: DRY RUN mode — skipping real API calls")
             research_result = {
                 "selected_topic": f"[DRY RUN] Top story in {niche}",
                 "angle": "Untold history angle",
@@ -155,11 +154,11 @@ def lambda_handler(event: dict, context) -> dict:
                 "search_volume_estimate": "N/A",
             }
         else:
-            log.info("Calling Perplexity API for niche: %s", niche)
-            trending_context = _perplexity_search(niche, perplexity_key)
-            log.info("Perplexity returned %d chars — selecting topic via Bedrock", len(trending_context))
-            research_result = _bedrock_select_topic(niche, trending_context, model_id=bedrock_model)
-            log.info("Bedrock selected topic: %s", research_result.get("selected_topic", "?")[:80])
+            log.info(f"[{run_id}] research: performing Bedrock web search for niche: {niche}")
+            trending_context = _bedrock_web_search(niche, run_id=run_id, model_id=bedrock_model)
+            log.info(f"[{run_id}] research: web search returned {len(trending_context)} chars — selecting topic via Bedrock")
+            research_result = _bedrock_select_topic(niche, trending_context, run_id=run_id, model_id=bedrock_model)
+            log.info(f"[{run_id}] research: selected topic: {research_result.get('selected_topic', '?')[:80]}")
 
         research_result["run_id"] = run_id
         research_result["niche"] = niche

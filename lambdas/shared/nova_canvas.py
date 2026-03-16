@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+import threading
 import time
 import boto3
 from botocore.exceptions import ClientError
@@ -16,6 +17,28 @@ NOVA_CANVAS_QUALITY = os.environ.get("NOVA_CANVAS_QUALITY", "standard")
 NOVA_CANVAS_CFG_SCALE = float(os.environ.get("NOVA_CANVAS_CFG_SCALE", "8.0"))
 NOVA_CANVAS_SEED = int(os.environ.get("NOVA_CANVAS_SEED", "0"))
 
+bedrock_client = boto3.client("bedrock-runtime")
+bedrock_semaphore = threading.Semaphore(4)
+
+
+def invoke_with_backoff(client, payload: dict, run_id: str = "", max_retries: int = 5) -> dict:
+    """Invoke Bedrock invoke_model with semaphore + exponential backoff on ThrottlingException."""
+    for attempt in range(max_retries):
+        try:
+            with bedrock_semaphore:
+                return client.invoke_model(**payload)
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code == "ThrottlingException" and attempt < max_retries - 1:
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                log.warning(
+                    "nova_canvas: throttled attempt %d/%d — retrying in %.2fs",
+                    attempt + 1, max_retries, wait,
+                )
+                time.sleep(wait)
+            else:
+                raise
+
 
 def generate_image(
     prompt: str,
@@ -27,7 +50,6 @@ def generate_image(
     seed: int = NOVA_CANVAS_SEED,
     retries: int = 3,
 ) -> bytes:
-    client = boto3.client("bedrock-runtime")
     body = {
         "taskType": "TEXT_IMAGE",
         "textToImageParams": {
@@ -43,33 +65,18 @@ def generate_image(
             "seed": seed,
         },
     }
-    for attempt in range(retries):
-        try:
-            response = client.invoke_model(
-                modelId=NOVA_CANVAS_MODEL_ID,
-                body=json.dumps(body),
-                contentType="application/json",
-                accept="application/json",
-            )
-            result = json.loads(response["body"].read())
-            images = result.get("images", [])
-            if not images:
-                raise RuntimeError("Nova Canvas returned no images")
-            return base64.b64decode(images[0])
-        except (ClientError, Exception) as exc:
-            is_throttle = (
-                isinstance(exc, ClientError)
-                and exc.response["Error"]["Code"] == "ThrottlingException"
-            )
-            if attempt == retries - 1 or (isinstance(exc, ClientError) and not is_throttle):
-                raise
-            wait = (2 ** attempt) + random.uniform(0, 1)
-            log.warning(
-                "nova_canvas.generate_image attempt %d/%d failed: %s — retrying in %.2fs",
-                attempt + 1, retries, exc, wait,
-            )
-            time.sleep(wait)
-    raise RuntimeError("Unreachable")
+    payload = {
+        "modelId": NOVA_CANVAS_MODEL_ID,
+        "body": json.dumps(body),
+        "contentType": "application/json",
+        "accept": "application/json",
+    }
+    response = invoke_with_backoff(bedrock_client, payload)
+    result = json.loads(response["body"].read())
+    images = result.get("images", [])
+    if not images:
+        raise RuntimeError("Nova Canvas returned no images")
+    return base64.b64decode(images[0])
 
 
 def generate_and_upload_image(

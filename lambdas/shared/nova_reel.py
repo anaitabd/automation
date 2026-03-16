@@ -1,7 +1,13 @@
 import json
+import logging
 import os
+import random
+import threading
 import time
 import boto3
+from botocore.exceptions import ClientError
+
+log = logging.getLogger(__name__)
 
 NOVA_REEL_MODEL_ID = os.environ.get("NOVA_REEL_MODEL_ID", "amazon.nova-reel-v1:0")
 NOVA_REEL_WIDTH = int(os.environ.get("NOVA_REEL_WIDTH", "1280"))
@@ -10,6 +16,29 @@ NOVA_REEL_FPS = int(os.environ.get("NOVA_REEL_FPS", "24"))
 NOVA_REEL_DURATION_SEC = int(os.environ.get("NOVA_REEL_DURATION_SEC", "6"))
 NOVA_REEL_POLL_INTERVAL = int(os.environ.get("NOVA_REEL_POLL_INTERVAL", "10"))
 NOVA_REEL_POLL_TIMEOUT = int(os.environ.get("NOVA_REEL_POLL_TIMEOUT", "600"))
+
+bedrock_client = boto3.client("bedrock-runtime")
+bedrock_semaphore = threading.Semaphore(4)
+
+
+def invoke_with_backoff(client, fn_name: str, kwargs: dict, run_id: str = "", max_retries: int = 5) -> dict:
+    """Invoke a Bedrock async API method with semaphore + exponential backoff on ThrottlingException."""
+    fn = getattr(client, fn_name)
+    for attempt in range(max_retries):
+        try:
+            with bedrock_semaphore:
+                return fn(**kwargs)
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code == "ThrottlingException" and attempt < max_retries - 1:
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                log.warning(
+                    "nova_reel: throttled attempt %d/%d — retrying in %.2fs",
+                    attempt + 1, max_retries, wait,
+                )
+                time.sleep(wait)
+            else:
+                raise
 
 
 def _start_generation(
@@ -41,11 +70,12 @@ def _start_generation(
         model_input["textToVideoParams"]["images"] = [
             {"format": "png", "source": {"s3Location": {"uri": image_s3_uri}}}
         ]
-    response = client.start_async_invoke(
-        modelId=NOVA_REEL_MODEL_ID,
-        modelInput=model_input,
-        outputDataConfig={"s3OutputDataConfig": {"s3Uri": output_s3_uri}},
-    )
+    kwargs = {
+        "modelId": NOVA_REEL_MODEL_ID,
+        "modelInput": model_input,
+        "outputDataConfig": {"s3OutputDataConfig": {"s3Uri": output_s3_uri}},
+    }
+    response = invoke_with_backoff(client, "start_async_invoke", kwargs)
     return response["invocationArn"]
 
 
@@ -87,10 +117,9 @@ def generate_video(
     poll_interval: int = NOVA_REEL_POLL_INTERVAL,
     poll_timeout: int = NOVA_REEL_POLL_TIMEOUT,
 ) -> str:
-    client = boto3.client("bedrock-runtime")
     output_s3_uri = f"s3://{output_s3_bucket}/{output_s3_prefix}"
     invocation_arn = _start_generation(
-        client=client,
+        client=bedrock_client,
         text_prompt=text_prompt,
         image_s3_uri=image_s3_uri,
         output_s3_uri=output_s3_uri,
