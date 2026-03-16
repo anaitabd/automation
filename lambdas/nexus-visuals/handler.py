@@ -4,6 +4,8 @@ import random
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 import boto3
@@ -90,11 +92,20 @@ def _detect_image_format(image_bytes: bytes) -> str:
     return "jpeg"
 
 
-def _rekognition_score(image_bytes: bytes, visual_cue: str) -> float:
+_TRUE_CRIME_BOOST_LABELS = {"person", "night", "building", "road", "vehicle", "darkness", "shadow", "forest"}
+_TRUE_CRIME_PENALIZE_LABELS = {"beach", "flowers", "sunshine", "party", "food"}
+
+
+def _rekognition_score(image_bytes: bytes, visual_cue: str, profile: dict | None = None) -> float:
     response = rekognition.detect_labels(Image={"Bytes": image_bytes}, MaxLabels=20, MinConfidence=50)
-    labels = {l["Name"].lower() for l in response["Labels"]}
+    label_names = {l["Name"].lower() for l in response["Labels"]}
     cue_words = set(visual_cue.lower().split())
-    return len(labels & cue_words) / max(len(cue_words), 1)
+    base = len(label_names & cue_words) / max(len(cue_words), 1)
+    if profile and profile.get("script", {}).get("style") == "true_crime":
+        boost = 0.1 * len(label_names & _TRUE_CRIME_BOOST_LABELS)
+        penalty = 0.15 * len(label_names & _TRUE_CRIME_PENALIZE_LABELS)
+        base = min(1.0, max(0.0, base + boost - penalty))
+    return base
 
 
 def _claude_vision_score(image_bytes: bytes, visual_cue: str) -> float:
@@ -111,13 +122,14 @@ def _claude_vision_score(image_bytes: bytes, visual_cue: str) -> float:
     return float(response["output"]["message"]["content"][0]["text"].strip())
 
 
-def _select_best_candidate(candidates: list[tuple[bytes, Any]], visual_cue: str) -> bytes | None:
+def _select_best_candidate(candidates: list[tuple[bytes, Any]], visual_cue: str,
+                           profile: dict | None = None) -> bytes | None:
     if not candidates:
         return None
     scored = []
     for image_bytes, identifier in candidates:
         try:
-            score = _rekognition_score(image_bytes, visual_cue)
+            score = _rekognition_score(image_bytes, visual_cue, profile)
         except Exception:
             score = 0.0
         scored.append((score, image_bytes, identifier))
@@ -136,10 +148,135 @@ def _select_best_candidate(candidates: list[tuple[bytes, Any]], visual_cue: str)
     return best_bytes
 
 
+def _fetch_pexels_video(query: str, min_duration: int = 5, tmpdir: str = "/tmp",
+                        scene_id: int = 0) -> str | None:
+    """Fetch a landscape video from Pexels. Returns local path or None."""
+    try:
+        secret = get_secret("nexus/pexels_api_key")
+        api_key = secret.get("api_key", "")
+        if not api_key:
+            return None
+    except Exception:
+        return None
+
+    encoded_q = urllib.parse.quote(query)
+    url = (
+        f"https://api.pexels.com/videos/search?query={encoded_q}"
+        f"&orientation=landscape&size=large&per_page=10"
+    )
+    req = urllib.request.Request(url, headers={
+        "Authorization": api_key,
+        "User-Agent": "NexusCloud/1.0",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        log.warning("Scene %d: Pexels video search failed: %s", scene_id, exc)
+        return None
+
+    videos = data.get("videos", [])
+    for video in videos:
+        if video.get("duration", 0) < min_duration:
+            continue
+        files = video.get("video_files", [])
+        for vf in sorted(files, key=lambda f: f.get("height", 0) * f.get("width", 0), reverse=True):
+            dl_url = vf.get("link", "")
+            if not dl_url:
+                continue
+            if vf.get("quality", "").lower() not in ("hd", "fhd", "uhd", ""):
+                continue
+            local_path = os.path.join(tmpdir, f"pexels_vid_{scene_id}.mp4")
+            try:
+                urllib.request.urlretrieve(dl_url, local_path)
+                log.info("Scene %d: Pexels video downloaded: %s", scene_id, local_path)
+                return local_path
+            except Exception:
+                continue
+    return None
+
+
+def _fetch_pexels_photo(query: str, tmpdir: str = "/tmp", scene_id: int = 0) -> bytes | None:
+    """Fetch a landscape photo from Pexels. Returns image bytes or None."""
+    try:
+        secret = get_secret("nexus/pexels_api_key")
+        api_key = secret.get("api_key", "")
+        if not api_key:
+            return None
+    except Exception:
+        return None
+
+    encoded_q = urllib.parse.quote(query)
+    url = (
+        f"https://api.pexels.com/v1/search?query={encoded_q}"
+        f"&orientation=landscape&size=large&per_page=5"
+    )
+    req = urllib.request.Request(url, headers={
+        "Authorization": api_key,
+        "User-Agent": "NexusCloud/1.0",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        log.warning("Scene %d: Pexels photo search failed: %s", scene_id, exc)
+        return None
+
+    photos = data.get("photos", [])
+    for photo in photos:
+        src = photo.get("src", {})
+        photo_url = src.get("large2x", src.get("large", src.get("original", "")))
+        if not photo_url:
+            continue
+        try:
+            with urllib.request.urlopen(urllib.request.Request(
+                photo_url, headers={"User-Agent": "NexusCloud/1.0"}
+            ), timeout=30) as img_resp:
+                return img_resp.read()
+        except Exception:
+            continue
+    return None
+
+
+def _generate_dark_gradient_video(duration: int, width: int, height: int,
+                                   tmpdir: str, scene_id: int) -> str:
+    """Generate a dark gradient fallback video using FFmpeg."""
+    import subprocess
+    out_path = os.path.join(tmpdir, f"gradient_{scene_id}.mp4")
+    filter_expr = (
+        f"gradients=s={width}x{height}:nb_colors=4:c0=0x0a0a0a:c1=0x1a1a2e"
+        f":c2=0x16213e:c3=0x0f3460:duration={duration}"
+    )
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", filter_expr,
+             "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+             "-pix_fmt", "yuv420p", "-t", str(duration),
+             out_path],
+            check=True, capture_output=True, timeout=60,
+        )
+        return out_path
+    except Exception:
+        pass
+    # Ultra-safe fallback: solid dark color
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi",
+             "-i", f"color=c=0x0a0a0a:s={width}x{height}:d={duration}",
+             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+             "-pix_fmt", "yuv420p", out_path],
+            check=True, capture_output=True, timeout=60,
+        )
+    except Exception as exc:
+        log.error("Scene %d: dark gradient fallback failed: %s", scene_id, exc)
+    return out_path
+
+
 def _process_scene(
     scene: dict,
     run_id: str,
     color_grade: str,
+    profile: dict | None = None,
 ) -> dict:
     scene_id = scene.get("scene_id", 0)
     canvas_prompt = scene.get("nova_canvas_prompt", "")
@@ -150,22 +287,93 @@ def _process_scene(
     estimated_duration = int(scene.get("estimated_duration", NOVA_REEL_DURATION_SEC))
     duration_seconds = min(max(estimated_duration, NOVA_REEL_DURATION_SEC), 60)
 
+    visuals_cfg = (profile or {}).get("visuals", {})
+    avoid_nova_reel: bool = visuals_cfg.get("avoid_nova_reel", False)
+    pexels_profile_keywords: list[str] = visuals_cfg.get("pexels_keywords", [])
+
+    scene_description = scene.get("description", canvas_prompt)
+    scene_keywords = " ".join(scene_description.split()[:6]) if scene_description else visual_cue
+
+    tmpdir = os.path.join(SCRATCH_DIR, run_id, f"scene_{scene_id:03d}")
+    os.makedirs(tmpdir, exist_ok=True)
+
     image_s3_key = f"{run_id}/images/scene_{scene_id:03d}.png"
     candidates: list[tuple[bytes, str]] = scene.get("image_candidates", [])
 
+    clip_type = "video"
+
+    # ── Tier 1: Pexels video ─────────────────────────────────────────────────
+    pexels_clip_local: str | None = None
+    if pexels_profile_keywords:
+        for kw in pexels_profile_keywords[:3]:
+            query = f"{scene_keywords} {kw}"
+            pexels_clip_local = _fetch_pexels_video(
+                query, min_duration=5, tmpdir=tmpdir, scene_id=scene_id
+            )
+            if pexels_clip_local:
+                log.info("Scene %d: Pexels video found (query=%r)", scene_id, query)
+                break
+    else:
+        pexels_clip_local = _fetch_pexels_video(
+            visual_cue, min_duration=5, tmpdir=tmpdir, scene_id=scene_id
+        )
+
+    if pexels_clip_local:
+        clip_s3_key = f"{run_id}/clips/scene_{scene_id:03d}.mp4"
+        with open(pexels_clip_local, "rb") as f:
+            s3_client.put_object(Bucket=S3_OUTPUTS_BUCKET, Key=clip_s3_key, Body=f.read())
+        log.info("Scene %d: Pexels video clip uploaded to %s", scene_id, clip_s3_key)
+        return {
+            **scene,
+            "image_s3_key": image_s3_key,
+            "clip_s3_key": clip_s3_key,
+            "clip_type": "video",
+            "color_grade": color_grade,
+        }
+
+    # ── Tier 2: Pexels photo + Ken Burns flag ────────────────────────────────
+    pexels_query = f"{scene_keywords} {pexels_profile_keywords[0]}" if pexels_profile_keywords else visual_cue
+    pexels_photo_bytes = _fetch_pexels_photo(pexels_query, tmpdir=tmpdir, scene_id=scene_id)
+    if pexels_photo_bytes:
+        log.info("Scene %d: Pexels photo found — flagging as static_image", scene_id)
+        s3_client.put_object(Bucket=S3_OUTPUTS_BUCKET, Key=image_s3_key, Body=pexels_photo_bytes)
+        clip_s3_key = f"{run_id}/clips/scene_{scene_id:03d}.mp4"
+        # Placeholder — editor will apply Ken Burns; store the image key as the clip key
+        s3_client.put_object(Bucket=S3_OUTPUTS_BUCKET, Key=clip_s3_key, Body=pexels_photo_bytes)
+        return {
+            **scene,
+            "image_s3_key": image_s3_key,
+            "clip_s3_key": clip_s3_key,
+            "clip_type": "static_image",
+            "color_grade": color_grade,
+        }
+
+    # ── Tier 3: Nova Canvas dark atmospheric image + Ken Burns flag ──────────
+    log.info("Scene %d: No Pexels result — generating Nova Canvas image", scene_id)
     if candidates:
         log.info("Scene %d: scoring %d image candidates with Rekognition + Claude", scene_id, len(candidates))
-        best_image_bytes = _select_best_candidate(candidates, visual_cue)
+        best_image_bytes = _select_best_candidate(candidates, visual_cue, profile)
         if best_image_bytes is not None:
             s3_client.put_object(Bucket=S3_OUTPUTS_BUCKET, Key=image_s3_key, Body=best_image_bytes)
             log.info("Scene %d: best candidate uploaded to %s", scene_id, image_s3_key)
         else:
-            log.warning("Scene %d: candidate selection returned None, falling back to Nova Canvas", scene_id)
+            log.warning("Scene %d: candidate selection returned None", scene_id)
             candidates = []
 
     if not candidates:
-        log.info("Scene %d: generating base image with Nova Canvas", scene_id)
-        _canvas_prompt = canvas_prompt.strip() or f"Cinematic wide shot, documentary style, scene {scene_id}, dramatic lighting"
+        is_true_crime = (profile or {}).get("script", {}).get("style") == "true_crime"
+        if is_true_crime:
+            _canvas_prompt = (
+                canvas_prompt.strip()
+                or f"Dark atmospheric cinematic shot, dramatic shadows, moody lighting, scene {scene_id}"
+            )
+            dark_suffix = ", deep shadows, dark atmosphere, moody, photorealistic, no text"
+            _canvas_prompt = f"{_canvas_prompt}{dark_suffix}"
+        else:
+            _canvas_prompt = (
+                canvas_prompt.strip()
+                or f"Cinematic wide shot, documentary style, scene {scene_id}, dramatic lighting"
+            )
         try:
             with bedrock_semaphore:
                 nova_canvas.generate_and_upload_image(
@@ -189,30 +397,57 @@ def _process_scene(
                     )
             else:
                 raise
-        log.info("Scene %d: base image uploaded to %s", scene_id, image_s3_key)
+        log.info("Scene %d: Nova Canvas image uploaded to %s", scene_id, image_s3_key)
 
-    image_s3_uri = f"s3://{S3_OUTPUTS_BUCKET}/{image_s3_key}"
+    # Nova Canvas image uploaded — treat as static_image for Ken Burns in editor
+    # But also upload a copy as the clip key so the editor can find it
+    try:
+        image_obj = s3_client.get_object(Bucket=S3_OUTPUTS_BUCKET, Key=image_s3_key)
+        image_bytes_for_clip = image_obj["Body"].read()
+    except Exception:
+        image_bytes_for_clip = b""
 
-    log.info("Scene %d: generating video clip with Nova Reel", scene_id)
-    clip_s3_key = f"{run_id}/clips/scene_{scene_id:03d}"
-    with bedrock_semaphore:
-        final_clip_key = nova_reel.generate_and_upload_video(
-            text_prompt=reel_prompt,
-            output_s3_key=clip_s3_key,
-            output_s3_bucket=S3_OUTPUTS_BUCKET,
-            image_s3_uri=image_s3_uri,
-            duration_seconds=duration_seconds,
-            fps=NOVA_REEL_FPS,
-            width=NOVA_REEL_WIDTH,
-            height=NOVA_REEL_HEIGHT,
-            seed=scene_id,
-        )
-    log.info("Scene %d: clip uploaded to s3://%s/%s", scene_id, S3_OUTPUTS_BUCKET, final_clip_key)
+    clip_s3_key = f"{run_id}/clips/scene_{scene_id:03d}.mp4"
+    if image_bytes_for_clip:
+        s3_client.put_object(Bucket=S3_OUTPUTS_BUCKET, Key=clip_s3_key, Body=image_bytes_for_clip)
 
+    # ── Tier 4: Nova Reel (only if avoid_nova_reel is False) ─────────────────
+    if not avoid_nova_reel:
+        image_s3_uri = f"s3://{S3_OUTPUTS_BUCKET}/{image_s3_key}"
+        log.info("Scene %d: generating video clip with Nova Reel", scene_id)
+        clip_s3_key_reel = f"{run_id}/clips/scene_{scene_id:03d}"
+        try:
+            with bedrock_semaphore:
+                final_clip_key = nova_reel.generate_and_upload_video(
+                    text_prompt=reel_prompt,
+                    output_s3_key=clip_s3_key_reel,
+                    output_s3_bucket=S3_OUTPUTS_BUCKET,
+                    image_s3_uri=image_s3_uri,
+                    duration_seconds=duration_seconds,
+                    fps=NOVA_REEL_FPS,
+                    width=NOVA_REEL_WIDTH,
+                    height=NOVA_REEL_HEIGHT,
+                    seed=scene_id,
+                )
+            log.info("Scene %d: Nova Reel clip uploaded to s3://%s/%s",
+                     scene_id, S3_OUTPUTS_BUCKET, final_clip_key)
+            return {
+                **scene,
+                "image_s3_key": image_s3_key,
+                "clip_s3_key": final_clip_key,
+                "clip_type": "video",
+                "color_grade": color_grade,
+            }
+        except Exception as reel_exc:
+            log.warning("Scene %d: Nova Reel failed (%s) — falling back to static_image", scene_id, reel_exc)
+
+    # ── Tier 5: Static image fallback (Ken Burns in editor) ──────────────────
+    log.info("Scene %d: using static_image (Ken Burns will be applied in editor)", scene_id)
     return {
         **scene,
         "image_s3_key": image_s3_key,
-        "clip_s3_key": final_clip_key,
+        "clip_s3_key": clip_s3_key,
+        "clip_type": "static_image",
         "color_grade": color_grade,
     }
 
@@ -253,6 +488,7 @@ def lambda_handler(event: dict, context) -> dict:
                     **scene,
                     "image_s3_key": f"{run_id}/images/scene_{scene.get('scene_id', i):03d}_dry_run.png",
                     "clip_s3_key": f"{run_id}/clips/scene_{scene.get('scene_id', i):03d}_dry_run.mp4",
+                    "clip_type": "video",
                     "color_grade": color_grade,
                 }
                 for i, scene in enumerate(scenes)
@@ -275,7 +511,7 @@ def lambda_handler(event: dict, context) -> dict:
             scene_start = time.time()
             log.info("━━ Processing scene %s ━━", scene.get("scene_id"))
             try:
-                result = _process_scene(scene, run_id, color_grade)
+                result = _process_scene(scene, run_id, color_grade, profile)
             except Exception as exc:
                 log.error("Scene %s failed: %s", scene.get("scene_id"), exc, exc_info=True)
                 result = None
