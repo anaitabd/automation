@@ -379,18 +379,15 @@ def _synthesize_sentence_with_fallback(
 
     # Tier 1: ElevenLabs — try once with timeout=8s; skip if quota already exhausted
     if not ELEVENLABS_QUOTA_EXHAUSTED and api_key:
-        if ELEVENLABS_QUOTA_EXHAUSTED:
-            log.info("tts: quota exhausted, using Polly Neural directly")
-        else:
-            try:
-                return _synthesize_sentence(cleaned, voice_id, voice_settings, api_key)
-            except Exception as exc:
-                if _should_fallback_to_polly(exc) or isinstance(exc, (TimeoutError, OSError)):
-                    ELEVENLABS_QUOTA_EXHAUSTED = True
-                    reason = _format_tts_error(exc)
-                    log.warning("tts: ElevenLabs → Polly Neural. Reason: %s", reason)
-                else:
-                    raise
+        try:
+            return _synthesize_sentence(cleaned, voice_id, voice_settings, api_key)
+        except Exception as exc:
+            if _should_fallback_to_polly(exc) or isinstance(exc, (TimeoutError, OSError)):
+                ELEVENLABS_QUOTA_EXHAUSTED = True
+                reason = _format_tts_error(exc)
+                log.warning("tts: ElevenLabs → Polly Neural. Reason: %s", reason)
+            else:
+                raise
     else:
         log.info("tts: quota exhausted, using Polly Neural directly")
 
@@ -461,9 +458,10 @@ def _generate_voiceover(
     def _synth_one(idx: int, sent: str, scene_emotion: str):
         cleaned = _clean_text(sent)
         if is_true_crime:
-            # Use scene tag first; fall back to detect_emotion() for per-sentence nuance
+            # True Crime: use scene-level emotion tag; detect_emotion() is the True Crime 7-rule function
             emotion = scene_emotion if scene_emotion in SSML_EMOTION_MAP else detect_emotion(cleaned)
         else:
+            # Other niches: _detect_emotion() uses the general EMOTION_KEYWORDS keyword matching
             emotion = _detect_emotion(cleaned, scene_emotion)
         voice_settings = _get_voice_settings(profile, emotion)
         audio_bytes = _synthesize_sentence_with_fallback(
