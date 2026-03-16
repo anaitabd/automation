@@ -239,8 +239,9 @@ def _handle_run(body: dict) -> dict:
     profile = body.get("profile", "documentary")
     dry_run = bool(body.get("dry_run", False))
     generate_shorts = bool(body.get("generate_shorts", False))
-    shorts_tiers = body.get("shorts_tiers", "micro,short,mid,full")
+    shorts_tiers = body.get("shorts_tiers", [])
     channel_id = body.get("channel_id") or None
+    pipeline_type = body.get("pipeline_type", "video")
 
     if not dry_run:
         try:
@@ -271,6 +272,7 @@ def _handle_run(body: dict) -> dict:
                 "generate_shorts": generate_shorts,
                 "shorts_tiers": shorts_tiers,
                 "channel_id": channel_id,
+                "pipeline_type": pipeline_type,
             }
         ),
     )
@@ -503,8 +505,9 @@ def _handle_resume(body: dict) -> dict:
         "subnets": ECS_SUBNETS,
         "resume_from": resume_from,
         "generate_shorts": bool(body.get("generate_shorts", False)),
-        "shorts_tiers": body.get("shorts_tiers", "micro,short,mid,full"),
+        "shorts_tiers": body.get("shorts_tiers", []),
         "channel_id": body.get("channel_id") or None,
+        "pipeline_type": body.get("pipeline_type", "video"),
     }
 
     if resume_from == "Script":

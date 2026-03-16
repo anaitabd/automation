@@ -49,11 +49,10 @@ used in PipelineMonitor header, OutputsPanel, and sidebar active runs.
 `GenerateVideoModal` sends `pipeline_type: 'video', generate_shorts: false`.
 `GenerateShortsModal` sends `pipeline_type: 'shorts', generate_shorts: true`.
 
-**Known bug — do not introduce regressions on this:**
-`lambdas/nexus-api/handler.py` `_handle_run` does NOT currently forward
-`generate_shorts`, `shorts_tiers`, or `channel_id` to the SFN execution input.
-ASL references them via `$$.Execution.Input`. Shorts won't trigger unless
-this handler is patched to forward these fields from the request body.
+**Fixed (Phase 1):**
+`lambdas/nexus-api/handler.py` `_handle_run` now forwards
+`generate_shorts`, `shorts_tiers`, `channel_id`, and `pipeline_type` to the SFN execution input.
+ASL references them via `$$.Execution.Input`. Shorts will trigger when `generate_shorts=true`.
 
 ---
 
@@ -172,7 +171,7 @@ def _get_secret(key: str) -> str:
 
 Canonical secret names (defined in `terraform/modules/secrets/`):
 - `nexus/elevenlabs_api_key`  → key: `api_key`
-- `nexus/perplexity_api_key`  → key: `api_key`
+- `nexus/perplexity_api_key`  → key: `api_key` (Secrets Manager entry retained; runtime usage removed — Research now uses Bedrock web search)
 - `nexus/pexels_api_key`      → keys: `api_key`, `pixabay_key` (Pixabay stored here, not separate)
 - `nexus/freesound_api_key`   → key: `api_key`
 - `nexus/youtube_credentials` → keys: `client_id`, `client_secret`, `refresh_token`, `access_token`

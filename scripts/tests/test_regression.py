@@ -113,7 +113,7 @@ class TestGenerateShortsForwardedToSFN:
             h._handle_run({"niche": "tech", "profile": "documentary"})
         data = self._get_sfn_input(sfn_mock)
         assert data["generate_shorts"] is False
-        assert data["shorts_tiers"] == "micro,short,mid,full"
+        assert data["shorts_tiers"] == []
 
 
 class TestBuildStepHistorySkipStates:
