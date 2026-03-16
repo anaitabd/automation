@@ -238,10 +238,10 @@ def _extract_json(raw: str) -> dict:
     # 4) Attempt to repair truncated JSON (LLM hit token limit)
     try:
         result = _repair_truncated_json(text)
-        print("[INFO] _extract_json: repaired truncated JSON successfully")
+        log.info("_extract_json: repaired truncated JSON successfully")
         return result
     except (json.JSONDecodeError, Exception) as repair_exc:
-        print(f"[WARN] _extract_json: repair also failed: {repair_exc}")
+        log.warning("_extract_json: repair also failed: %s", repair_exc)
         pass
 
     # 5) Fallback: use json_repair library (handles many more edge cases)
@@ -249,17 +249,17 @@ def _extract_json(raw: str) -> dict:
         try:
             repaired = repair_json(text, return_objects=True)
             if isinstance(repaired, dict):
-                print("[INFO] _extract_json: json_repair library recovered JSON successfully")
+                log.info("_extract_json: json_repair library recovered JSON successfully")
                 return repaired
             # If it returned a list or string, try to find a dict inside
             if isinstance(repaired, list):
                 for item in repaired:
                     if isinstance(item, dict):
-                        print("[INFO] _extract_json: json_repair library recovered JSON (from list)")
+                        log.info("_extract_json: json_repair library recovered JSON (from list)")
                         return item
-            print(f"[WARN] _extract_json: json_repair returned non-dict type: {type(repaired).__name__}")
+            log.warning("_extract_json: json_repair returned non-dict type: %s", type(repaired).__name__)
         except Exception as lib_exc:
-            print(f"[WARN] _extract_json: json_repair library also failed: {lib_exc}")
+            log.warning("_extract_json: json_repair library also failed: %s", lib_exc)
 
     # 6) Nothing worked — raise with a helpful snippet
     raise json.JSONDecodeError(
@@ -439,10 +439,10 @@ def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3, model_i
             stop_reason = result.get("stop_reason", "")
             text = result["content"][0]["text"]
             if stop_reason == "max_tokens":
-                print(
-                    f"[WARN] _bedrock_call: output truncated (stop_reason=max_tokens, "
-                    f"max_tokens={max_tokens}, output_len={len(text)}). "
-                    f"Last 80 chars: ...{text[-80:]!r}"
+                log.warning(
+                    "_bedrock_call: output truncated (stop_reason=max_tokens, "
+                    "max_tokens=%d, output_len=%d). Last 80 chars: ...%r",
+                    max_tokens, len(text), text[-80:],
                 )
             return text
         except Exception as exc:
@@ -453,7 +453,10 @@ def _bedrock_call(prompt: str, max_tokens: int = 4096, retries: int = 3, model_i
             if attempt < retries - 1:
                 # Exponential backoff for throttling, linear for others
                 wait_time = (2 ** attempt) if is_throttle else (attempt + 1)
-                print(f"[WARN] _bedrock_call attempt {attempt + 1}/{retries} failed: {exc}. Retrying in {wait_time}s...")
+                log.warning(
+                    "_bedrock_call attempt %d/%d failed: %s. Retrying in %ds...",
+                    attempt + 1, retries, exc, wait_time,
+                )
                 time.sleep(wait_time)
             else:
                 raise
@@ -591,9 +594,9 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
             edl_errors = _validate_edl_schema(result)
             if edl_errors:
                 validation_feedback = "\n".join(edl_errors)
-                print(
-                    f"[WARN] _pass1_structure EDL validation failed (attempt {attempt + 1}/{max_attempts}): "
-                    f"{edl_errors}"
+                log.warning(
+                    "_pass1_structure EDL validation failed (attempt %d/%d): %s",
+                    attempt + 1, max_attempts, edl_errors,
                 )
                 # Try to auto-fix missing fields before failing
                 result = _autofill_missing_scene_fields(result)
@@ -604,15 +607,15 @@ def _pass1_structure(topic: str, angle: str, context: str, profile: dict, max_at
                     time.sleep(2 ** attempt)
                     continue
                 # Auto-fix succeeded
-                print(f"[INFO] _pass1_structure: auto-filled missing fields, continuing")
+                log.info("_pass1_structure: auto-filled missing fields, continuing")
                 return result
             return result
         except json.JSONDecodeError as exc:
             last_err = exc
             validation_feedback = f"JSON parse error: {str(exc)}"
-            print(
-                f"[WARN] _pass1_structure JSON parse failed (attempt {attempt + 1}/{max_attempts}): {exc}\n"
-                f"[DEBUG] raw response length={len(raw)}, last 500 chars: ...{raw[-500:]!r}"
+            log.warning(
+                "_pass1_structure JSON parse failed (attempt %d/%d): %s\nraw length=%d, last 500 chars: ...%r",
+                attempt + 1, max_attempts, exc, len(raw), raw[-500:],
             )
             time.sleep(2 ** attempt)
     raise last_err
@@ -698,11 +701,12 @@ def _pass_fact_integrity(script: dict) -> dict:
             or not isinstance(new_scenes, list)
             or not all(isinstance(s, dict) for s in new_scenes)
         ):
-            print(
-                f"[WARN] _pass_fact_integrity: scenes corrupted "
-                f"(got {type(new_scenes).__name__} with "
-                f"{sum(1 for s in new_scenes if not isinstance(s, dict)) if isinstance(new_scenes, list) else '?'} "
-                f"non-dict items) — keeping original {len(orig_scenes)} scenes"
+            log.warning(
+                "_pass_fact_integrity: scenes corrupted (got %s with %s non-dict items) "
+                "— keeping original %d scenes",
+                type(new_scenes).__name__,
+                sum(1 for s in new_scenes if not isinstance(s, dict)) if isinstance(new_scenes, list) else "?",
+                len(orig_scenes),
             )
             audited["scenes"] = orig_scenes
         return audited
@@ -717,7 +721,7 @@ def _pass3_visual_cues(script: dict, profile: dict) -> dict:
 
     for i, scene in enumerate(script.get("scenes", [])):
         if not isinstance(scene, dict):
-            print(f"[WARN] _pass3_visual_cues: scene {i} is {type(scene).__name__}, skipping")
+            log.warning("_pass3_visual_cues: scene %d is %s, skipping", i, type(scene).__name__)
             continue
         prompt = (
             f"Generate precise visual cue metadata for this documentary scene.\n"
@@ -776,7 +780,7 @@ def _pass4_pacing(script: dict, profile: dict) -> dict:
             or not isinstance(new_scenes, list)
             or not all(isinstance(s, dict) for s in new_scenes)
         ):
-            print("[WARN] _pass4_pacing: scenes corrupted — keeping originals")
+            log.warning("_pass4_pacing: scenes corrupted — keeping originals")
             paced["scenes"] = orig_scenes
         return paced
     except json.JSONDecodeError:
@@ -805,7 +809,7 @@ def _pass6_final_polish(script: dict) -> dict:
             or not isinstance(new_scenes, list)
             or not all(isinstance(s, dict) for s in new_scenes)
         ):
-            print("[WARN] _pass6_final_polish: scenes corrupted — keeping originals")
+            log.warning("_pass6_final_polish: scenes corrupted — keeping originals")
             polished["scenes"] = orig_scenes
         return polished
     except json.JSONDecodeError:

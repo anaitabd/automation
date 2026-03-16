@@ -1,8 +1,13 @@
 import base64
 import json
+import logging
 import os
+import random
 import time
 import boto3
+from botocore.exceptions import ClientError
+
+log = logging.getLogger(__name__)
 
 NOVA_CANVAS_MODEL_ID = os.environ.get("NOVA_CANVAS_MODEL_ID", "amazon.nova-canvas-v1:0")
 NOVA_CANVAS_WIDTH = int(os.environ.get("NOVA_CANVAS_WIDTH", "1280"))
@@ -51,11 +56,19 @@ def generate_image(
             if not images:
                 raise RuntimeError("Nova Canvas returned no images")
             return base64.b64decode(images[0])
-        except Exception as exc:
-            if attempt == retries - 1:
+        except (ClientError, Exception) as exc:
+            is_throttle = (
+                isinstance(exc, ClientError)
+                and exc.response["Error"]["Code"] == "ThrottlingException"
+            )
+            if attempt == retries - 1 or (isinstance(exc, ClientError) and not is_throttle):
                 raise
-            print(f"[WARN] nova_canvas.generate_image attempt {attempt + 1}/{retries} failed: {exc}")
-            time.sleep(2 ** attempt)
+            wait = (2 ** attempt) + random.uniform(0, 1)
+            log.warning(
+                "nova_canvas.generate_image attempt %d/%d failed: %s — retrying in %.2fs",
+                attempt + 1, retries, exc, wait,
+            )
+            time.sleep(wait)
     raise RuntimeError("Unreachable")
 
 
