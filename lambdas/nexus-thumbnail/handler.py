@@ -126,6 +126,41 @@ def _generate_thumbnail_concepts(script_summary: str, topic: str) -> list:
     return json.loads(response["output"]["message"]["content"][0]["text"].strip())
 
 
+_TRUE_CRIME_NEGATIVE_PROMPT = (
+    "bright colors, cartoon, illustration, anime, cheerful, sunny, "
+    "text, watermark, logo, blurry, low quality, distorted"
+)
+
+_TRUE_CRIME_VARIANT_ANGLES = [
+    ("victim", "dark cinematic, victim in foreground, empathy angle, candid portrait, dramatic lighting"),
+    ("evidence", "crime scene evidence, mysterious location, forensic detail, dark atmospheric, mystery angle"),
+    ("suspect", "dark silhouette, shadowed face, tension angle, dramatic shadows, ominous atmosphere"),
+]
+
+
+def _generate_true_crime_thumbnail_concepts(script: dict, topic: str) -> list:
+    """Generate 3 True Crime thumbnail concepts with variant angles."""
+    case_subject = topic[:60]
+    concepts = []
+    for angle_name, angle_desc in _TRUE_CRIME_VARIANT_ANGLES:
+        nova_canvas_prompt = (
+            f"Dark cinematic thumbnail, true crime YouTube style, "
+            f"dramatic lighting, deep shadows, {case_subject} in foreground, "
+            f"high contrast, moody atmosphere, photorealistic, "
+            f"bold text space at bottom third, aspect ratio 16:9, "
+            f"dark background, single focal point, Netflix documentary aesthetic, "
+            f"{angle_desc}"
+        )
+        concepts.append({
+            "title": topic,
+            "overlay_text": topic[:45].upper(),
+            "mood": "dark_cinematic",
+            "nova_canvas_prompt": nova_canvas_prompt,
+            "angle": angle_name,
+        })
+    return concepts
+
+
 def _hex_to_0x(color: str) -> str:
     """Convert '#RRGGBB' to '0xRRGGBB' so ffmpeg doesn't treat # as comment."""
     if color.startswith("#"):
@@ -223,18 +258,20 @@ def _pil_draw_text_centered(draw, text: str, font, y: int, img_w: int,
     draw.text((x, y), text, font=font, fill=fill)
 
 
-def _generate_nova_canvas_background(concept_text: str, out_path: str) -> bool:
+def _generate_nova_canvas_background(concept_text: str, out_path: str,
+                                     negative_prompt: str | None = None) -> bool:
     """Generate a 1280×720 background image using Amazon Nova Canvas via Bedrock."""
     try:
         prompt = (
             f"YouTube thumbnail background, cinematic, {concept_text}, "
             "4K, photorealistic, no text, no watermark, no logo"
         )
+        neg = negative_prompt or "text, watermark, logo, blurry, low quality, distorted"
         body = {
             "taskType": "TEXT_IMAGE",
             "textToImageParams": {
                 "text": prompt,
-                "negativeText": "text, watermark, logo, blurry, low quality, distorted",
+                "negativeText": neg,
             },
             "imageGenerationConfig": {
                 "numberOfImages": 1,
@@ -358,7 +395,103 @@ def _render_thumbnail(
     return out_path
 
 
-def _write_error(run_id: str, step: str, exc: Exception) -> None:
+def _render_true_crime_thumbnail(
+    concept: dict,
+    script: dict,
+    profile: dict,
+    tmpdir: str,
+    idx: int,
+) -> str:
+    """Render a True Crime thumbnail variant with dark Nova Canvas background and text overlay."""
+    out_path = os.path.join(tmpdir, f"thumbnail_{idx}.jpg")
+    title = (script.get("title", "") or concept.get("title", ""))[:60].upper()
+
+    # Extract cliffhanger from Act 5 of script if available
+    acts = script.get("acts", script.get("sections", []))
+    cliffhanger = ""
+    for act in acts:
+        if isinstance(act, dict):
+            act_num = act.get("act", act.get("act_number", 0))
+            if act_num == 5:
+                body = act.get("body", act.get("content", ""))
+                if isinstance(body, str) and body:
+                    # Take the last sentence as the cliffhanger
+                    sentences = [s.strip() for s in body.replace("\n", " ").split(".") if s.strip()]
+                    if sentences:
+                        cliffhanger = sentences[-1][:80]
+                break
+    if not cliffhanger:
+        cliffhanger = concept.get("overlay_text", title)[:80]
+
+    concept_desc = concept.get("nova_canvas_prompt", "")
+    ai_bg = os.path.join(tmpdir, f"thumb_bg_{idx}.jpg")
+
+    used_ai_bg = _generate_nova_canvas_background(
+        concept_desc, ai_bg, negative_prompt=_TRUE_CRIME_NEGATIVE_PROMPT
+    )
+
+    eq_path = os.path.join(tmpdir, f"eq_{idx}.jpg")
+    if used_ai_bg:
+        subprocess.run(
+            [FFMPEG_BIN, "-y", "-i", ai_bg,
+             "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+             "-q:v", "2", eq_path],
+            check=True, capture_output=True, timeout=60,
+        )
+    else:
+        # Solid dark fallback if Nova Canvas fails
+        subprocess.run(
+            [FFMPEG_BIN, "-y", "-f", "lavfi",
+             "-i", "color=c=0x0a0a0a:s=1280x720:d=1",
+             "-frames:v", "1", "-q:v", "2", eq_path],
+            check=True, capture_output=True, timeout=30,
+        )
+
+    if not _ensure_pillow():
+        import shutil
+        shutil.copy(eq_path, out_path)
+        return out_path
+
+    from PIL import Image, ImageDraw
+
+    img = Image.open(eq_path).convert("RGBA")
+    W, H = img.size
+
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Top 80%: Nova Canvas output as-is
+    # Bottom 20%: dark gradient overlay
+    bottom_start = int(H * 0.80)
+    for row in range(H - bottom_start):
+        alpha = int(230 * (row / (H - bottom_start)))
+        draw.line([(0, bottom_start + row), (W, bottom_start + row)], fill=(0, 0, 0, alpha))
+
+    # Title text in bold white uppercase
+    font_title = _pil_load_font(THUMBNAIL_FONT, 64)
+    _pil_draw_text_centered(
+        draw, title, font_title, y=int(H * 0.82), img_w=W,
+        fill=(255, 255, 255, 255),
+        shadow=(0, 0, 0, 230),
+        shadow_offset=3,
+    )
+
+    # Cliffhanger subtext — smaller, centered
+    font_sub = _pil_load_font(THUMBNAIL_FONT_LIGHT, 36)
+    _pil_draw_text_centered(
+        draw, cliffhanger, font_sub, y=int(H * 0.90), img_w=W,
+        fill=(220, 220, 220, 255),
+        shadow=(0, 0, 0, 200),
+        shadow_offset=2,
+    )
+
+    # Red accent bar under the title
+    bar_y = int(H * 0.88)
+    draw.rectangle([(W // 4, bar_y), (W * 3 // 4, bar_y + 3)], fill=(220, 20, 20, 200))
+
+    img = Image.alpha_composite(img, overlay).convert("RGB")
+    img.save(out_path, "JPEG", quality=92)
+    return out_path
     try:
         s3 = boto3.client("s3")
         s3.put_object(
@@ -433,10 +566,15 @@ def lambda_handler(event: dict, context) -> dict:
             log.info("Best frame: index=%d score=%.2f", best_frame_idx, max(scores))
 
             log.info("Generating thumbnail concepts")
-            script_summary = script.get("summary", script.get("body", script.get("topic", title)))
-            if not isinstance(script_summary, str):
-                script_summary = json.dumps(script_summary)
-            concepts = _generate_thumbnail_concepts(script_summary, title)
+            is_true_crime = profile.get("script", {}).get("style") == "true_crime"
+            if is_true_crime:
+                log.info("True Crime profile — using dark cinematic thumbnail prompts")
+                concepts = _generate_true_crime_thumbnail_concepts(script, title)
+            else:
+                script_summary = script.get("summary", script.get("body", script.get("topic", title)))
+                if not isinstance(script_summary, str):
+                    script_summary = json.dumps(script_summary)
+                concepts = _generate_thumbnail_concepts(script_summary, title)
             if len(concepts) < 3:
                 concepts += [concepts[0]] * (3 - len(concepts))
 
@@ -444,6 +582,8 @@ def lambda_handler(event: dict, context) -> dict:
 
             def _render_one(args):
                 i, concept = args
+                if is_true_crime:
+                    return i, _render_true_crime_thumbnail(concept, script, profile, tmpdir, i)
                 return i, _render_thumbnail(best_frame, concept, profile, tmpdir, i)
 
             thumbnail_local_paths = [None] * 3

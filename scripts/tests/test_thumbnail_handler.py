@@ -183,3 +183,90 @@ class TestConstants:
     def test_nova_canvas_background_generator_exists(self):
         h = _load()
         assert callable(h._generate_nova_canvas_background)
+
+
+class TestTrueCrimeThumbnails:
+    def test_generate_true_crime_concepts_returns_three_variants(self):
+        h = _load()
+        script = {"title": "The Zodiac Murders", "acts": []}
+        concepts = h._generate_true_crime_thumbnail_concepts(script, "The Zodiac Murders")
+        assert len(concepts) == 3
+        angles = [c["angle"] for c in concepts]
+        assert "victim" in angles
+        assert "evidence" in angles
+        assert "suspect" in angles
+
+    def test_true_crime_concepts_have_dark_prompts(self):
+        h = _load()
+        script = {"title": "Case 47", "acts": []}
+        concepts = h._generate_true_crime_thumbnail_concepts(script, "Case 47")
+        for c in concepts:
+            prompt = c["nova_canvas_prompt"].lower()
+            assert "dark" in prompt or "cinematic" in prompt or "shadow" in prompt
+
+    def test_true_crime_concepts_overlay_text_uppercase(self):
+        h = _load()
+        script = {"title": "Mystery Case", "acts": []}
+        concepts = h._generate_true_crime_thumbnail_concepts(script, "mystery case")
+        for c in concepts:
+            assert c["overlay_text"] == c["overlay_text"].upper()
+
+    def test_true_crime_negative_prompt_excludes_bright_elements(self):
+        h = _load()
+        neg = h._TRUE_CRIME_NEGATIVE_PROMPT
+        assert "bright colors" in neg
+        assert "cheerful" in neg
+        assert "sunny" in neg
+
+    def test_lambda_handler_uses_true_crime_path_for_true_crime_profile(self):
+        h = _load()
+        profile_data = {
+            "script": {"style": "true_crime"},
+            "visuals": {"color_grade_default": "dark_cinematic"},
+        }
+        script_data = {"title": "The Killer Next Door", "acts": []}
+        s3_mock = MagicMock()
+        s3_mock.get_object.side_effect = [
+            {"Body": MagicMock(read=lambda: json.dumps(script_data).encode())},
+            {"Body": MagicMock(read=lambda: json.dumps(profile_data).encode())},
+        ]
+        with patch("boto3.client", return_value=s3_mock):
+            result = h.lambda_handler(
+                {
+                    "run_id": "tc-run-2",
+                    "profile": "true_crime",
+                    "final_video_s3_key": "tc-run-2/review/final_video.mp4",
+                    "script_s3_key": "tc-run-2/script.json",
+                    "dry_run": True,
+                    "title": "The Killer Next Door",
+                },
+                None,
+            )
+        assert result["dry_run"] is True
+        assert len(result["thumbnail_s3_keys"]) == 3
+
+    def test_lambda_handler_uses_standard_path_for_non_true_crime(self):
+        h = _load()
+        profile_data = {
+            "script": {"style": "documentary"},
+            "visuals": {"color_grade_default": "cinematic_warm"},
+        }
+        script_data = {"title": "Tech Documentary", "acts": []}
+        s3_mock = MagicMock()
+        s3_mock.get_object.side_effect = [
+            {"Body": MagicMock(read=lambda: json.dumps(script_data).encode())},
+            {"Body": MagicMock(read=lambda: json.dumps(profile_data).encode())},
+        ]
+        with patch("boto3.client", return_value=s3_mock):
+            result = h.lambda_handler(
+                {
+                    "run_id": "doc-run",
+                    "profile": "documentary",
+                    "final_video_s3_key": "doc-run/review/final_video.mp4",
+                    "script_s3_key": "doc-run/script.json",
+                    "dry_run": True,
+                    "title": "Tech Documentary",
+                },
+                None,
+            )
+        assert result["dry_run"] is True

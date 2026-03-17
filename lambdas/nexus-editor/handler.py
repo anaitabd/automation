@@ -451,6 +451,177 @@ def _build_overlay_filter(overlay_type: str, overlay_text: str, accent_color: st
 
 
 
+def _apply_ken_burns(image_path: str, duration: float, width: int, height: int,
+                     tmpdir: str, idx: int) -> str:
+    """Apply Ken Burns slow zoom-in (scale 1.0 → 1.05) to a static image via FFmpeg zoompan."""
+    out = os.path.join(tmpdir, f"ken_burns_{idx:03d}.mp4")
+    fps = 30
+    duration_frames = int(duration * fps)
+    try:
+        subprocess.run(
+            [
+                FFMPEG_BIN, "-y",
+                "-loop", "1", "-i", image_path,
+                "-vf", (
+                    f"scale={int(width * 1.1)}:{int(height * 1.1)},"
+                    f"zoompan=z='min(zoom+0.0005,1.05)':d={duration_frames}:"
+                    f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                    f"s={width}x{height}:fps={fps}"
+                ),
+                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                "-pix_fmt", "yuv420p", "-t", str(duration),
+                "-an", out,
+            ],
+            check=True, capture_output=True, timeout=120,
+        )
+        return out
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="replace")[-1000:] if exc.stderr else ""
+        log.warning("Ken Burns failed for %s: %s — using static frame", image_path, stderr)
+        # Fallback: static frame for the duration
+        out_static = os.path.join(tmpdir, f"static_{idx:03d}.mp4")
+        subprocess.run(
+            [
+                FFMPEG_BIN, "-y",
+                "-loop", "1", "-i", image_path,
+                "-vf", f"scale={width}:{height}",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-pix_fmt", "yuv420p", "-t", str(duration),
+                "-an", out_static,
+            ],
+            check=True, capture_output=True, timeout=60,
+        )
+        return out_static
+
+
+_TENSE_EMOTIONS = {"urgent", "revelation", "tense"}
+_CAPTION_MAX_WORDS = 6
+
+
+def _load_word_timestamps(s3_client, run_id: str) -> list[dict] | None:
+    """Load word_timestamps.json from S3. Returns list or None if not found."""
+    try:
+        obj = s3_client.get_object(
+            Bucket=S3_OUTPUTS_BUCKET,
+            Key=f"{run_id}/audio/word_timestamps.json",
+        )
+        return json.loads(obj["Body"].read())
+    except Exception:
+        return None
+
+
+def _build_captions_drawtext(word_timestamps: list[dict], is_true_crime: bool) -> list[str]:
+    """Build FFmpeg drawtext filter strings from word timestamps.
+
+    Groups words into caption frames of at most _CAPTION_MAX_WORDS words.
+    Each word is highlighted in yellow while active; base layer is white.
+    Returns a list of drawtext filter strings to be chained with commas.
+
+    Args:
+        word_timestamps: List of word dicts with 'word', 'start_time', 'end_time', 'emotion'.
+        is_true_crime: When True, words in chunks whose first word has a tense emotion
+            (urgent, revelation, tense) are rendered in ALL CAPS.
+    """
+    if not word_timestamps:
+        return []
+
+    filters: list[str] = []
+    chunk: list[dict] = []
+
+    def _emit_chunk(words: list[dict]) -> None:
+        if not words:
+            return
+        chunk_start = words[0].get("start_time", 0.0)
+        chunk_end = words[-1].get("end_time", chunk_start + 0.5)
+        raw_text = " ".join(w.get("word", "") for w in words)
+        # Emotion of first word sets the style for the whole chunk
+        chunk_emotion = words[0].get("emotion", "")
+        use_uppercase = is_true_crime and chunk_emotion in _TENSE_EMOTIONS
+        if use_uppercase:
+            raw_text = raw_text.upper()
+
+        # Escape for drawtext
+        safe_text = _escape_drawtext(raw_text)
+
+        # Base white caption
+        base = (
+            f"drawtext=fontfile={DRAWTEXT_FONT}:text='{safe_text}':"
+            f"fontsize=52:fontcolor=white:"
+            f"box=1:boxcolor=black@0.5:boxborderw=8:"
+            f"x=(w-text_w)/2:y=h-120:"
+            f"enable='between(t,{chunk_start:.3f},{chunk_end:.3f})'"
+        )
+        filters.append(base)
+
+        # Per-word yellow highlight
+        for w in words:
+            wstart = w.get("start_time", chunk_start)
+            wend = w.get("end_time", wstart + 0.3)
+            word_text = w.get("word", "")
+            if use_uppercase:
+                word_text = word_text.upper()
+            safe_word = _escape_drawtext(word_text)
+            highlight = (
+                f"drawtext=fontfile={DRAWTEXT_FONT}:text='{safe_word}':"
+                f"fontsize=52:fontcolor=yellow:"
+                f"box=1:boxcolor=black@0.5:boxborderw=8:"
+                f"x=(w-text_w)/2:y=h-120:"
+                f"enable='between(t,{wstart:.3f},{wend:.3f})'"
+            )
+            filters.append(highlight)
+
+    for entry in word_timestamps:
+        chunk.append(entry)
+        if len(chunk) >= _CAPTION_MAX_WORDS:
+            _emit_chunk(chunk)
+            chunk = []
+    _emit_chunk(chunk)
+
+    return filters
+
+
+def _apply_captions(assembled: str, word_timestamps: list[dict], is_true_crime: bool,
+                    tmpdir: str, run_id: str) -> str:
+    """Apply captions burn-in as a separate FFmpeg pass after assembly."""
+    filters = _build_captions_drawtext(word_timestamps, is_true_crime)
+    if not filters:
+        return assembled
+
+    captioned = os.path.join(tmpdir, "captioned.mp4")
+    vf_chain = ",".join(filters)
+    try:
+        subprocess.run(
+            [
+                FFMPEG_BIN, "-y",
+                "-i", assembled,
+                "-vf", vf_chain,
+                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                "-c:a", "copy",
+                captioned,
+            ],
+            check=True, capture_output=True, timeout=3600,
+        )
+        log.info("[%s] editor: captions applied (%d filter entries)", run_id, len(filters))
+        return captioned
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="replace")[-2000:] if exc.stderr else ""
+        log.error("[%s] editor: captions FFmpeg pass failed: %s", run_id, stderr)
+        try:
+            import boto3 as _boto3
+            _boto3.client("s3").put_object(
+                Bucket=S3_OUTPUTS_BUCKET,
+                Key=f"{run_id}/errors/editor.json",
+                Body=json.dumps({"step": "captions", "error": stderr}).encode(),
+                ContentType="application/json",
+            )
+        except Exception:
+            pass
+        return assembled
+    except Exception as exc:
+        log.error("[%s] editor: captions pass raised: %s", run_id, exc)
+        return assembled
+
+
 def _loop_clip_to_duration(clip_path: str, target_duration: float, tmpdir: str, idx: int) -> str:
     """Loop or extend a clip to fill the target duration using reverse-loop for seamlessness."""
     clip_dur = _get_duration(clip_path)
@@ -821,6 +992,13 @@ def lambda_handler(event: dict, context) -> dict:
                         check=True, capture_output=True,
                     )
 
+                # Apply Ken Burns for static_image flagged clips (from Visuals)
+                if sec.get("clip_type") == "static_image":
+                    kb_duration = section_duration if section_duration > 1.0 else 6.0
+                    section_video = _apply_ken_burns(
+                        section_video, kb_duration, 1920, 1080, tmpdir, len(clip_paths)
+                    )
+
                 # Loop/extend clip to fill narration duration for this section
                 if section_duration > 1.0:
                     section_video = _loop_clip_to_duration(
@@ -986,6 +1164,15 @@ def lambda_handler(event: dict, context) -> dict:
             video_dur = _get_duration(final_local)
             log.info("Final video duration: %.1fs", video_dur)
             final_s3_key = f"{run_id}/review/final_video.mp4"
+
+            # ── Captions burn-in pass (non-fatal) ────────────────────────────
+            is_true_crime = profile.get("script", {}).get("style") == "true_crime"
+            word_timestamps = _load_word_timestamps(s3, run_id)
+            if word_timestamps:
+                log.info("[%s] editor: applying captions burn-in (%d words)", run_id, len(word_timestamps))
+                final_local = _apply_captions(final_local, word_timestamps, is_true_crime, tmpdir, run_id)
+            else:
+                log.warning("[%s] editor: no word timestamps found, skipping captions", run_id)
 
             if video_dur > MEDIACONVERT_THRESHOLD_SECONDS:
                 log.info("Video > %ds — submitting to MediaConvert", MEDIACONVERT_THRESHOLD_SECONDS)

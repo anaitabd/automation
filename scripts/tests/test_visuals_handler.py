@@ -287,3 +287,104 @@ class TestGetSecret:
             h._cache.clear() if hasattr(h, "_cache") else None
             result = h.get_secret("test/secret")
         assert result == {"api_key": "test-key"}
+
+
+class TestRekognitionScoreTrueCrime:
+    def test_boost_dark_labels(self):
+        h = _load()
+        mock_rek = MagicMock()
+        mock_rek.detect_labels.return_value = {
+            "Labels": [
+                {"Name": "Night", "Confidence": 99},
+                {"Name": "Shadow", "Confidence": 90},
+                {"Name": "Forest", "Confidence": 85},
+            ]
+        }
+        profile = {"script": {"style": "true_crime"}}
+        with patch.object(h, "rekognition", mock_rek):
+            score = h._rekognition_score(b"fakejpeg", "night shadow", profile=profile)
+        # Boost from matching dark labels should push score up
+        assert score > 0.0
+
+    def test_penalize_bright_labels(self):
+        h = _load()
+        mock_rek = MagicMock()
+        mock_rek.detect_labels.return_value = {
+            "Labels": [
+                {"Name": "Beach", "Confidence": 99},
+                {"Name": "Sunshine", "Confidence": 90},
+                {"Name": "Party", "Confidence": 80},
+            ]
+        }
+        profile = {"script": {"style": "true_crime"}}
+        with patch.object(h, "rekognition", mock_rek):
+            score_with_profile = h._rekognition_score(
+                b"fakejpeg", "beach sunshine party", profile=profile
+            )
+            score_no_profile = h._rekognition_score(
+                b"fakejpeg", "beach sunshine party", profile=None
+            )
+        # Penalties should reduce the score for a true crime profile
+        assert score_with_profile < score_no_profile
+
+    def test_no_profile_unchanged_behavior(self):
+        h = _load()
+        mock_rek = MagicMock()
+        mock_rek.detect_labels.return_value = {
+            "Labels": [{"Name": "City", "Confidence": 99}]
+        }
+        with patch.object(h, "rekognition", mock_rek):
+            score = h._rekognition_score(b"fakejpeg", "city", profile=None)
+        assert score == 1.0
+
+
+class TestAvoidNovaReel:
+    def test_avoid_nova_reel_flag_respected_in_dry_run(self):
+        h = _load()
+        profile_data = {
+            "script": {"style": "true_crime"},
+            "visuals": {
+                "color_grade_default": "dark_cinematic",
+                "avoid_nova_reel": True,
+                "pexels_keywords": ["dark street night", "crime scene"],
+            }
+        }
+        script_data = {
+            "title": "The Murder Case",
+            "scenes": [{"scene_id": 1, "nova_canvas_prompt": "dark alley", "estimated_duration": 6}],
+        }
+        s3_mock = MagicMock()
+        s3_mock.get_object.side_effect = [
+            {"Body": MagicMock(read=lambda: json.dumps(script_data).encode())},
+            {"Body": MagicMock(read=lambda: json.dumps(profile_data).encode())},
+        ]
+        with patch("boto3.client", return_value=s3_mock):
+            result = h.lambda_handler(
+                {"run_id": "tc-run", "profile": "true_crime", "dry_run": True,
+                 "niche": "true_crime", "script_s3_key": "tc-run/script.json"},
+                None
+            )
+        assert result["dry_run"] is True
+        assert "tc-run" in result["scenes"][0]["clip_s3_key"]
+
+    def test_pexels_video_returns_none_on_missing_key(self):
+        h = _load()
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {
+            "SecretString": json.dumps({"api_key": ""})
+        }
+        with patch("boto3.client", return_value=mock_sm):
+            h._cache.clear()
+            result = h._fetch_pexels_video("dark street", tmpdir="/tmp", scene_id=0)
+        assert result is None
+
+    def test_pexels_photo_returns_none_on_missing_key(self):
+        h = _load()
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {
+            "SecretString": json.dumps({"api_key": ""})
+        }
+        with patch("boto3.client", return_value=mock_sm):
+            h._cache.clear()
+            result = h._fetch_pexels_photo("dark street", tmpdir="/tmp", scene_id=0)
+        assert result is None
