@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 
@@ -9,6 +10,8 @@ from config import (
     FFMPEG_BIN, FFPROBE_BIN, OUTPUT_CRF, OUTPUT_FPS,
     SHORTS_LOOP_THRESHOLD, SHORTS_LOOP_VERIFY,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def build_loop(
@@ -115,8 +118,10 @@ def build_loop(
             os.replace(loop_output, output_path)
             return output_path, loop_point
 
-        print(f"[WARN] Loop similarity {similarity:.2f} < {SHORTS_LOOP_THRESHOLD} "
-              f"(attempt {attempt + 1}/{max_retries})")
+        logger.warning(
+            "Loop similarity %.2f < %.2f (attempt %d/%d)",
+            similarity, SHORTS_LOOP_THRESHOLD, attempt + 1, max_retries,
+        )
 
     # Accept imperfect loop after retries
     if os.path.exists(loop_output):

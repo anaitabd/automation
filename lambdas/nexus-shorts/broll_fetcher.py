@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import urllib.request
 
 import boto3
+
+logger = logging.getLogger(__name__)
 
 from config import (
     FFMPEG_BIN, NOVA_REEL_SHORTS_BUDGET, OUTPUT_HEIGHT, OUTPUT_WIDTH,
@@ -45,8 +48,14 @@ def submit_nova_reel_jobs(
     """Submit all Nova Reel jobs in parallel at batch start.
 
     Returns a dict mapping clip_id → invocation_arn.
+    For true_crime profiles, Nova Reel budget is 0 (use Pexels + Nova Canvas instead).
     Only submits up to NOVA_REEL_SHORTS_BUDGET jobs.
     """
+    profile_style = profile.get("script", {}).get("style", "")
+    if profile_style == "true_crime":
+        logger.info("true_crime profile: Nova Reel budget=0, skipping all Nova Reel jobs")
+        return {}
+
     client = boto3.client("bedrock-runtime")
     invocations: dict[str, str] = {}
 
@@ -73,7 +82,7 @@ def submit_nova_reel_jobs(
             )
             invocations[clip_id] = response["invocationArn"]
         except Exception as exc:
-            print(f"[WARN] Nova Reel submit failed for {clip_id}: {exc}")
+            logger.warning("Nova Reel submit failed for %s: %s", clip_id, exc)
 
     return invocations
 
@@ -110,8 +119,13 @@ def fetch_pexels_clip(
     duration: float,
     tmpdir: str,
     clip_id: str,
+    profile: dict | None = None,
 ) -> str | None:
-    """Fetch a portrait-first clip from Pexels. Returns local path or None."""
+    """Fetch a portrait-first clip from Pexels. Returns local path or None.
+
+    For true_crime profiles, enriches the query with dark profile keywords
+    and enforces portrait orientation first (9:16 aspect ratio for Shorts).
+    """
     try:
         secret = get_secret("nexus/pexels_api_key")
         api_key = secret.get("api_key", "")
@@ -121,6 +135,14 @@ def fetch_pexels_clip(
         return None
 
     import urllib.parse
+
+    # Enrich query with profile-specific Pexels keywords
+    if profile:
+        profile_keywords = profile.get("visuals", {}).get("pexels_keywords", [])
+        if profile_keywords:
+            extra = profile_keywords[0] if isinstance(profile_keywords, list) else str(profile_keywords)
+            query = f"{query} {extra}"
+
     encoded_q = urllib.parse.quote(query)
 
     for orientation in ("portrait", "landscape"):
@@ -273,6 +295,7 @@ def fetch_broll_clip(
     secondary_color: str,
     nova_invocations: dict[str, str],
     tmpdir: str,
+    profile: dict | None = None,
 ) -> str:
     """Fetch a single b-roll clip with 4-tier fallback. Always returns a path."""
 
@@ -297,8 +320,8 @@ def fetch_broll_clip(
             except Exception:
                 pass
 
-    # Tier 2: Pexels
-    pexels_clip = fetch_pexels_clip(search_query, duration, tmpdir, clip_id)
+    # Tier 2: Pexels (portrait-first for Shorts 9:16)
+    pexels_clip = fetch_pexels_clip(search_query, duration, tmpdir, clip_id, profile=profile)
     if pexels_clip:
         return pexels_clip
 

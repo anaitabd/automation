@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import time
 import boto3
@@ -10,6 +11,8 @@ NOVA_CANVAS_HEIGHT = int(os.environ.get("NOVA_CANVAS_HEIGHT", "720"))
 NOVA_CANVAS_QUALITY = os.environ.get("NOVA_CANVAS_QUALITY", "standard")
 NOVA_CANVAS_CFG_SCALE = float(os.environ.get("NOVA_CANVAS_CFG_SCALE", "8.0"))
 NOVA_CANVAS_SEED = int(os.environ.get("NOVA_CANVAS_SEED", "0"))
+
+_log = logging.getLogger(__name__)
 
 
 def generate_image(
@@ -54,7 +57,10 @@ def generate_image(
         except Exception as exc:
             if attempt == retries - 1:
                 raise
-            print(f"[WARN] nova_canvas.generate_image attempt {attempt + 1}/{retries} failed: {exc}")
+            _log.warning(
+                "nova_canvas.generate_image attempt %d/%d failed: %s",
+                attempt + 1, retries, exc,
+            )
             time.sleep(2 ** attempt)
     raise RuntimeError("Unreachable")
 

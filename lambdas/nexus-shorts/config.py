@@ -45,6 +45,7 @@ BPM_DEFAULTS: dict[str, int] = {
     "documentary": 75,
     "finance": 95,
     "entertainment": 120,
+    "true_crime": 65,
 }
 
 # ── Output specs ─────────────────────────────────────────────────────────────

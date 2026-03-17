@@ -1,5 +1,6 @@
 import datetime
 import json
+import logging
 import os
 import time
 import urllib.parse
@@ -9,6 +10,8 @@ import boto3
 import psycopg2
 
 _cache: dict = {}
+
+log = logging.getLogger("nexus-notify")
 
 
 def get_secret(name: str) -> dict:
@@ -153,7 +156,7 @@ def _log_to_db(
 ) -> None:
     dbname = db_config.get("dbname") or "nexus"
     if not db_config.get("dbname"):
-        print("[WARN] _log_to_db: dbname missing/empty in db_credentials, falling back to 'nexus'")
+        log.warning("_log_to_db: dbname missing/empty in db_credentials, falling back to 'nexus'")
     conn = psycopg2.connect(
         host=db_config["host"],
         port=db_config.get("port", 5432),
@@ -223,7 +226,7 @@ def _write_run_log(run_id: str, status: str) -> None:
             },
         )
     except Exception as exc:
-        print(f"[WARN] _write_run_log failed: {exc}")
+        log.warning("_write_run_log failed: %s", exc)
 
 
 def lambda_handler(event: dict, context) -> dict:
@@ -321,7 +324,7 @@ def lambda_handler(event: dict, context) -> dict:
                     video_duration_sec, video_url, elapsed,
                 )
             except Exception as db_exc:
-                print(f"[WARN] _log_to_db failed: {db_exc}")
+                log.warning("_log_to_db failed: %s", db_exc)
 
         return {
             "run_id": run_id,
