@@ -18,6 +18,8 @@ _S3_TRANSFER_CONFIG = TransferConfig(
     multipart_chunksize=16 * 1024 * 1024,
 )
 
+BEDROCK_SONNET = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
 
 def get_secret(name: str) -> dict:
     if name not in _cache:
@@ -126,6 +128,213 @@ def _upload_thumbnail(video_id: str, thumbnail_path: str, access_token: str) -> 
         pass
 
 
+def _bedrock_invoke(prompt: str, max_tokens: int = 512) -> str:
+    """Invoke Claude Sonnet via Bedrock and return the response text."""
+    client = boto3.client("bedrock-runtime")
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    })
+    response = client.invoke_model(
+        modelId=BEDROCK_SONNET,
+        body=body,
+        contentType="application/json",
+        accept="application/json",
+    )
+    result = json.loads(response["body"].read())
+    return result["content"][0]["text"].strip()
+
+
+def _generate_seo_title(script_text: str, profile_name: str, niche: str) -> str:
+    """Generate a YouTube SEO title via Claude Sonnet.
+
+    For True Crime: "[CASE NAME]: [CLIFFHANGER PHRASE] | True Crime" format.
+    Max 70 characters. Must contain a hook.
+    """
+    is_true_crime = profile_name == "true_crime" or "crime" in niche.lower()
+
+    if is_true_crime:
+        prompt = (
+            "You are a True Crime YouTube channel editor. Generate a compelling YouTube title.\n\n"
+            "FORMAT: [CASE NAME]: [CLIFFHANGER PHRASE] | True Crime\n"
+            "RULES:\n"
+            "- Maximum 70 characters total\n"
+            "- Must include a hook or cliffhanger, not just the case name\n"
+            "- Examples: 'The Disappearance of Sarah Chen: What The Police Missed | True Crime'\n"
+            "- Output ONLY the title, nothing else\n\n"
+            f"SCRIPT EXCERPT:\n{script_text[:800]}\n\n"
+            "TITLE:"
+        )
+    else:
+        prompt = (
+            "You are a YouTube SEO expert. Generate a compelling YouTube title.\n\n"
+            "RULES:\n"
+            "- Maximum 70 characters total\n"
+            "- Include a strong hook or benefit\n"
+            "- Output ONLY the title, nothing else\n\n"
+            f"SCRIPT EXCERPT:\n{script_text[:800]}\n\n"
+            "TITLE:"
+        )
+
+    try:
+        title = _bedrock_invoke(prompt, max_tokens=100)
+        title = title.strip('"').strip("'").strip()
+        return title[:70]
+    except Exception as exc:
+        log.warning("SEO title generation failed: %s", exc)
+        return niche.title()[:70]
+
+
+def _generate_seo_description(
+    script_text: str,
+    profile_name: str,
+    niche: str,
+    act_timestamps: list[dict],
+) -> str:
+    """Generate a YouTube description via Claude Sonnet.
+
+    First 150 chars: most compelling sentence (shown before 'show more').
+    Includes timestamps for each Act, hashtags, and standard disclaimer.
+    """
+    is_true_crime = profile_name == "true_crime" or "crime" in niche.lower()
+    hashtag_base = "#TrueCrime #ColdCase #Mystery" if is_true_crime else f"#{niche.replace(' ', '')}"
+
+    prompt = (
+        "You are a YouTube description writer. Create an engaging YouTube video description.\n\n"
+        "REQUIREMENTS:\n"
+        "- First sentence (max 150 chars): the most compelling/shocking line from the script\n"
+        "- Then a brief 2-3 sentence overview (do not reveal the ending)\n"
+        "- End with: 'Watch to find out what really happened.'\n"
+        "- Do NOT include timestamps or hashtags — those will be added separately\n"
+        "- Output ONLY the description body, nothing else\n\n"
+        f"SCRIPT EXCERPT:\n{script_text[:1500]}\n\n"
+        "DESCRIPTION:"
+    )
+
+    try:
+        body = _bedrock_invoke(prompt, max_tokens=400)
+    except Exception as exc:
+        log.warning("SEO description generation failed: %s", exc)
+        body = script_text[:150].strip()
+
+    # Build timestamp section from act_timestamps
+    timestamp_lines = []
+    for act in act_timestamps:
+        label = act.get("label", "")
+        seconds = int(act.get("start_seconds", 0))
+        mm = seconds // 60
+        ss = seconds % 60
+        if label:
+            timestamp_lines.append(f"{mm:02d}:{ss:02d} — {label}")
+
+    timestamp_block = "\n".join(timestamp_lines)
+
+    disclaimer = (
+        "\n\n⚠️ This video is for educational and informational purposes only.\n"
+        "All information is sourced from public records."
+    )
+
+    parts = [body]
+    if timestamp_block:
+        parts.append(f"\n\n📌 CHAPTERS\n{timestamp_block}")
+    parts.append(f"\n\n{hashtag_base} #Documentary #Unsolved")
+    parts.append(disclaimer)
+
+    return "".join(parts)[:5000]
+
+
+def _generate_seo_tags(research_keywords: list[str], niche: str, profile_name: str) -> list[str]:
+    """Generate YouTube tags from research keywords.
+
+    Max 500 characters total including separating commas.
+    Always includes: case-related terms, 'true crime', 'unsolved', 'documentary'.
+    """
+    base_tags = ["true crime", "unsolved", "documentary", "mystery", "investigation"]
+    if "crime" not in niche.lower():
+        base_tags = ["documentary", "investigation", niche.lower()]
+
+    all_tags = base_tags + [kw.lower() for kw in research_keywords if kw]
+
+    # Deduplicate preserving order
+    seen = set()
+    deduped = []
+    for tag in all_tags:
+        tag = tag.strip()
+        if tag and tag not in seen:
+            seen.add(tag)
+            deduped.append(tag)
+
+    # Trim to 500 chars total
+    result = []
+    char_count = 0
+    for tag in deduped:
+        addition = len(tag) + (2 if result else 0)  # 2 for ", "
+        if char_count + addition > 500:
+            break
+        result.append(tag)
+        char_count += addition
+
+    return result
+
+
+def generate_seo_metadata(
+    run_id: str,
+    script_text: str,
+    research_keywords: list[str],
+    profile_name: str,
+    niche: str,
+    act_timestamps: list[dict],
+    playlist_id: str = "",
+) -> dict:
+    """Generate complete YouTube SEO metadata before upload.
+
+    Stores result at s3://nexus-outputs/{run_id}/metadata.json.
+    Returns the metadata dict (never raises — logs and returns partial on error).
+    """
+    metadata: dict = {
+        "run_id": run_id,
+        "profile": profile_name,
+        "niche": niche,
+        "playlist_id": playlist_id,
+    }
+
+    try:
+        metadata["title"] = _generate_seo_title(script_text, profile_name, niche)
+    except Exception as exc:
+        log.warning("[%s] SEO title error: %s", run_id, exc)
+        metadata["title"] = niche.title()[:70]
+
+    try:
+        metadata["description"] = _generate_seo_description(
+            script_text, profile_name, niche, act_timestamps
+        )
+    except Exception as exc:
+        log.warning("[%s] SEO description error: %s", run_id, exc)
+        metadata["description"] = ""
+
+    try:
+        metadata["tags"] = _generate_seo_tags(research_keywords, niche, profile_name)
+    except Exception as exc:
+        log.warning("[%s] SEO tags error: %s", run_id, exc)
+        metadata["tags"] = []
+
+    # Persist to S3
+    try:
+        s3 = boto3.client("s3")
+        s3.put_object(
+            Bucket=S3_OUTPUTS_BUCKET,
+            Key=f"{run_id}/metadata.json",
+            Body=json.dumps(metadata, indent=2).encode("utf-8"),
+            ContentType="application/json",
+        )
+        log.info("[%s] SEO metadata stored at %s/metadata.json", run_id, run_id)
+    except Exception as exc:
+        log.warning("[%s] Failed to store metadata.json: %s", run_id, exc)
+
+    return metadata
+
+
 def _write_error(run_id: str, step: str, exc: Exception) -> None:
     try:
         s3 = boto3.client("s3")
@@ -151,6 +360,33 @@ def _process_record(body: dict) -> dict:
     video_duration_sec: float = float(metadata.get("video_duration_sec", 0))
 
     step_start = notify_step_start("upload", run_id, niche=niche, profile=profile_name, dry_run=dry_run)
+
+    # ── Generate SEO metadata (non-fatal) ────────────────────────────────────
+    script_text: str = metadata.get("script_text", "")
+    research_keywords: list = metadata.get("research_keywords", [])
+    act_timestamps: list = metadata.get("act_timestamps", [])
+    playlist_id: str = metadata.get("playlist_id", "")
+
+    if script_text and not dry_run:
+        try:
+            seo = generate_seo_metadata(
+                run_id=run_id,
+                script_text=script_text,
+                research_keywords=research_keywords,
+                profile_name=profile_name,
+                niche=niche,
+                act_timestamps=act_timestamps,
+                playlist_id=playlist_id,
+            )
+            # Prefer SEO-generated values if metadata didn't provide explicit ones
+            if not metadata.get("title") or metadata.get("title") == "Untitled":
+                metadata["title"] = seo.get("title", "Untitled")
+            if not metadata.get("description"):
+                metadata["description"] = seo.get("description", "")
+            if not metadata.get("tags"):
+                metadata["tags"] = seo.get("tags", [])
+        except Exception as exc:
+            log.warning("[%s] SEO metadata generation failed (non-fatal): %s", run_id, exc)
 
     title = metadata.get("title", "Untitled")
     description = metadata.get("description", "")

@@ -547,6 +547,43 @@ def _apply_audio_processing(
     return output_path
 
 
+def _fetch_s3_music(mood_keyword: str, tmpdir: str) -> str | None:
+    """Fetch background music from the pre-cached S3 music library.
+
+    Checks s3://nexus-assets/music/manifest.json for available tracks,
+    filters by mood_keyword, and downloads a random matching track.
+    Returns local path or None if library is unavailable.
+    """
+    import random
+    try:
+        manifest_obj = s3.get_object(Bucket=S3_ASSETS_BUCKET, Key="music/manifest.json")
+        manifest = json.loads(manifest_obj["Body"].read())
+    except Exception:
+        return None
+
+    tracks = manifest.get(mood_keyword, [])
+    if not tracks:
+        # Try partial mood match
+        for key, values in manifest.items():
+            if mood_keyword in key or key in mood_keyword:
+                tracks = values
+                break
+
+    if not tracks:
+        return None
+
+    track_name = random.choice(tracks)
+    s3_key = f"music/{mood_keyword}/{track_name}"
+    local_path = os.path.join(tmpdir, "background_music_s3.mp3")
+    try:
+        s3.download_file(S3_ASSETS_BUCKET, s3_key, local_path)
+        log.info("Downloaded background music from S3 library: %s", track_name)
+        return local_path
+    except Exception as exc:
+        log.warning("S3 music library download failed: %s", exc)
+        return None
+
+
 def _fetch_pixabay_music(mood_keyword: str, api_key: str, tmpdir: str) -> str | None:
     if not api_key:
         log.warning("No Pixabay API key — skipping background music")
@@ -879,7 +916,9 @@ def lambda_handler(event: dict, context) -> dict:
             )
 
             log.info("Fetching background music (mood=%s)", music_mood)
-            music_path = _fetch_pixabay_music(music_mood, pixabay_api_key, tmpdir)
+            music_path = _fetch_s3_music(music_mood, tmpdir)
+            if not music_path:
+                music_path = _fetch_pixabay_music(music_mood, pixabay_api_key, tmpdir)
 
             log.info("Mixing audio tracks")
             mixed_path = _mix_audio(voiceover_processed, music_path, profile, tmpdir, run_id)

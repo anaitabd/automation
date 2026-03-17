@@ -25,7 +25,8 @@ def detect_beats(audio_path: str, profile_name: str = "documentary") -> list[flo
             raise ValueError("Empty beat list")
         return beat_times
     except Exception as exc:
-        print(f"[WARN] Beat detection failed ({exc}) — using fixed intervals")
+        import logging
+        logging.getLogger(__name__).warning("Beat detection failed (%s) — using fixed intervals", exc)
         return []
 
 
